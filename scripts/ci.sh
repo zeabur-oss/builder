@@ -89,21 +89,25 @@ stop_collecting() {
 # Whether a RUN step reaches the network, as builds see it: each buildkitd's own view, then a
 # one-step build on it.
 network_context() {
+  # Interfaces and their MTUs, with what BusyBox has too. Expanded by the shells that run it.
+  # shellcheck disable=SC2016
+  local links='for i in /sys/class/net/*; do echo "${i##*/} mtu $(cat "$i/mtu")"; done'
   echo "--- runner"
   uname -a
-  ip -br link || true
+  sh -c "$links"
   echo "--- k3s node"
-  docker exec k3d-zeabur-builder-server-0 sh -c 'ip -br link; ip route; iptables -V' || true
+  docker exec k3d-zeabur-builder-server-0 sh -c "$links; ip route; iptables -V" || true
   local pod
   for pod in $(kubectl -n builder-system get pod -l app.kubernetes.io/name=buildkitd -o name); do
     echo "--- $pod: network"
     timeout 300 kubectl -n builder-system exec -i "$pod" -- sh -s <<'EOF' || true
-cat /etc/resolv.conf; ip -br addr; ip route; iptables -V; iptables-save 2>&1 | head -n 60
+for i in /sys/class/net/*; do echo "${i##*/} mtu $(cat "$i/mtu")"; done
+cat /etc/resolv.conf; ip addr; ip route; iptables -V; iptables-save 2>&1 | head -n 80
 wget -T 10 -q -O /dev/null https://dl-cdn.alpinelinux.org/alpine/ && echo "pod: https ok" || echo "pod: https failed"
 probe=$(mktemp -d)
 cat >"$probe/Dockerfile" <<'DOCKERFILE'
 FROM docker.io/library/alpine:3
-RUN cat /etc/resolv.conf; ip -br addr; ip route; \
+RUN cat /etc/resolv.conf; ip addr; ip route; \
   nslookup dl-cdn.alpinelinux.org || echo "RUN: dns failed"; \
   wget -T 10 -q -O /dev/null http://1.1.1.1/ && echo "RUN: ip ok" || echo "RUN: ip failed"; \
   wget -T 10 -q -O /dev/null https://dl-cdn.alpinelinux.org/alpine/ && echo "RUN: https ok" || echo "RUN: https failed"
@@ -114,19 +118,28 @@ EOF
   done
 }
 
+# The logs of the Pods outside kube-system, in $artifacts/pods; with --print, their ends too.
+save_pod_logs() {
+  local ns pod
+  mkdir -p "$artifacts/pods"
+  kubectl get pod -A --no-headers 2>/dev/null | awk '$1 != "kube-system" { print $1, $2 }' |
+    while read -r ns pod; do
+      kubectl -n "$ns" logs "$pod" --all-containers --prefix --timestamps >"$artifacts/pods/$ns.$pod.log" 2>&1 || true
+      if [[ "${1:-}" == --print ]]; then
+        echo "--- $ns/$pod"
+        tail -n 80 "$artifacts/pods/$ns.$pod.log"
+      fi
+    done
+  kubectl get build,buildrun -A -o yaml >"$artifacts/builds.yaml" 2>&1 || true
+}
+
 # What the cluster holds when the job fails: on the console, and in full in $artifacts.
 cluster_failure_context() {
   stop_collecting
   kubectl get build,buildrun,job,pod -A -o wide || true
-  kubectl get build,buildrun -A -o yaml >"$artifacts/builds.yaml" 2>&1 || true
   kubectl -n builder-system logs deployment/zeabur-builder --tail=100 || true
-  local ns pod log
-  kubectl get pod -A --no-headers 2>/dev/null | awk '$1 != "kube-system" { print $1, $2 }' |
-    while read -r ns pod; do
-      echo "--- $ns/$pod"
-      kubectl -n "$ns" logs "$pod" --all-containers --prefix --timestamps >"$artifacts/pods/$ns.$pod.log" 2>&1 || true
-      tail -n 80 "$artifacts/pods/$ns.$pod.log"
-    done
+  save_pod_logs --print
+  local log
   # The build Pods that failed earlier and are gone by now.
   for log in "$artifacts"/pods/*.log; do
     [[ -e "$log" ]] || continue
@@ -175,5 +188,7 @@ case "$job" in
       cluster_failure_context
       exit 1
     fi
+    stop_collecting
+    save_pod_logs
     ;;
 esac
