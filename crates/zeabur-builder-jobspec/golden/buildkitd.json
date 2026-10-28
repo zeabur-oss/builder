@@ -71,6 +71,12 @@
                 "--tlscert=/certs/cert.pem",
                 "--tlskey=/certs/key.pem"
               ],
+              "command": [
+                "/bin/sh",
+                "-c",
+                "if iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; then\n  echo \"RUN steps: TCP MSS clamped to the route MTU (eth0: $(cat /sys/class/net/eth0/mtu))\"\nelse\n  echo 'warning: cannot clamp the TCP MSS of RUN steps; they may hang where the Pod MTU is under 1500' >&2\nfi\nexec buildkitd \"$@\"",
+                "buildkitd"
+              ],
               "image": "docker.io/moby/buildkit:v0.34.1",
               "livenessProbe": {
                 "exec": {

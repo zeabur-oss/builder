@@ -19,6 +19,13 @@ anything; it is withdrawn and was never published. 0.1.1 holds everything listed
   `--signer-workflow zeabur-oss/.github/.github/workflows/release.yml`
   ([releases](docs/operations/releases.mdx)).
 
+### Fixed
+
+- `RUN` steps no longer hang or time out on HTTPS where the Pod's MTU is under 1500, as under
+  flannel's VXLAN on k3s: buildkitd clamps the TCP MSS of their connections to the Pod's route
+  MTU. Before, a step's bridge had an MTU of 1500, full-size replies were dropped wherever the
+  ICMP "fragmentation needed" did not reach the server, and `apk add` or `mise install` stalled.
+
 ## [0.1.0] - 2026-10-28 [YANKED]
 
 Withdrawn: tagged, never published. See 0.1.1.

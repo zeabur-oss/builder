@@ -20,7 +20,8 @@
 //! - **Network.** `RUN` steps get their own network namespace through the config's `networkMode =
 //!   "bridge"`, so they leave through the Pod's address and the cluster-wide egress policy on
 //!   `app.kubernetes.io/name: buildkitd` applies to them; that policy and the config are deployment
-//!   files (`deploy/chart/templates/buildkitd.yaml`).
+//!   files (`deploy/chart/templates/buildkitd.yaml`). Their TCP segments are sized to the Pod's
+//!   interface (`START`).
 //! - **Probes.** `buildctl debug workers` over the local socket, which needs no client certificate;
 //!   every two seconds, since a build waits on readiness after a cold start.
 
@@ -51,6 +52,27 @@ pub const PORT: i32 = 1234;
 pub const APP: &str = "buildkitd";
 const APP_LABEL: &str = "app.kubernetes.io/name";
 const SOCKET: &str = "unix:///run/buildkit/buildkitd.sock";
+
+/// How the container starts buildkitd (`sh -c START buildkitd <args>`): first, the TCP
+/// connections of `RUN` steps get a maximum segment size that fits the Pod's interface.
+///
+/// The steps' bridge and veths have the kernel's default MTU of 1500, and buildkit's `bridge`
+/// network mode has no setting for it (`util/network/cniprovider/bridge.go` in buildkit v0.34.1).
+/// The Pod's interface is often smaller: 1450 under flannel's VXLAN, k3s's default. A step then
+/// announces an MSS of 1460, the server's full-size replies are too large for the Pod's interface,
+/// and unless the ICMP "fragmentation needed" reaches the server the connection hangs once a large
+/// segment comes, such as the TLS certificate. On GitHub's arm64 runners with k3d it did: plain
+/// HTTP and DNS from a step worked, HTTPS hung, `apk add` never ended and `mise install` failed.
+/// Clamping the MSS of forwarded SYNs to the route's MTU (`TCPMSS --clamp-mss-to-pmtu`,
+/// iptables-extensions(8)) keeps every segment within the Pod's MTU. Without the rule buildkitd
+/// still starts, and steps work wherever the Pod's MTU is 1500.
+const START: &str = "\
+if iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; then
+  echo \"RUN steps: TCP MSS clamped to the route MTU (eth0: $(cat /sys/class/net/eth0/mtu))\"
+else
+  echo 'warning: cannot clamp the TCP MSS of RUN steps; they may hang where the Pod MTU is under 1500' >&2
+fi
+exec buildkitd \"$@\"";
 
 /// The Secret with a namespace's CA and certificates. buildkitd mounts its `ca.pem`, `cert.pem`
 /// and `key.pem`; the controller copies the client pair into the namespace.
@@ -260,6 +282,11 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
         containers: vec![Container {
             name: "buildkitd".to_owned(),
             image: Some(inputs.image.to_owned()),
+            command: Some(
+                ["/bin/sh", "-c", START, "buildkitd"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            ),
             args: Some(vec![
                 "--config=/etc/buildkit/buildkitd.toml".to_owned(),
                 format!("--addr={SOCKET}"),
