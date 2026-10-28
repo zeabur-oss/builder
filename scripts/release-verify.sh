@@ -102,5 +102,6 @@ echo "signature and provenance verified: $chart"
 mkdir "$work/chart"
 helm pull "oci://$chart" --destination "$work/chart"
 cmp "$work/chart/zeabur-builder@sha256-${chart##*@sha256:}.tgz" "$directory/$chart_file"
-helm template builder "$directory/$chart_file" --set registry.host=registry.example:5000 >/dev/null
+helm template builder "$directory/$chart_file" --set registry.host=registry.example:5000 \
+  --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer >/dev/null
 echo "release $version verified"
