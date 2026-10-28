@@ -124,5 +124,4 @@ its stages are `scripts/release.sh check|build|publish|assets|verify`. To releas
    to `main`.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
-3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it; the release checks
-   CI and stops otherwise. The workflow leaves a draft release; check it and publish it.
+3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it. The workflow leaves a draft release; check it and publish it.

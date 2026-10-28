@@ -1,6 +1,6 @@
 name: Release
 
-# A tag vX.Y.Z, on a commit whose CI passed on main, runs the shared release workflow of
+# A tag vX.Y.Z on a commit of main runs the shared release workflow of
 # zeabur-oss/.github: it builds the three images on each architecture, smokes them on k3s,
 # publishes them and the chart by digest, signs and attests them, and leaves a draft release that a
 # maintainer checks and publishes. Run by hand, it rehearses: the builds and their smoke tests, nothing published.
@@ -30,7 +30,6 @@ jobs:
   release:
     uses: zeabur-oss/.github/.github/workflows/release.yml@0badbf68744c7690d1b5b613071044bc12b002be # main
     permissions:
-      actions: read
       contents: write
       packages: write
       id-token: write
