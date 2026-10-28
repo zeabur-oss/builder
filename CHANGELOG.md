@@ -4,6 +4,15 @@ All notable changes to Zeabur Builder. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Release notes are the changelog section and a link to the documentation. The digests of every
+  image, index and the chart are in the signed `digests.txt` asset
+  ([releases](docs/operations/releases.mdx)).
+- Images are pushed by digest with no `candidate-*` tags left in GHCR.
+
 ## [0.1.1] - 2026-10-28
 
 The first published release. 0.1.0 was tagged, but its release workflow failed before publishing

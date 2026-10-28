@@ -1,10 +1,10 @@
 ---
 title: 发行文件与验证
 description: 了解发行流程会生成的镜像、chart 和 Sigstore 签名，并用 cosign verify 和 gh attestation verify 验证。
-source: "4fef4d242d64"
+source: "3607de86defc"
 ---
 
-Zeabur Builder 目前还没有发行版。这里介绍 `main` 分支的发行流程执行后会生成的文件和签名。安装镜像前，你可以用 `cosign verify` 验证签名。
+[GitHub](https://github.com/zeabur-oss/builder/releases) 上的每个发行版都由发行流程构建、签名并证明构建来源。发行文件包括打包好的 chart、`digests.txt`，以及 `SHA256SUMS` 和它的 Sigstore bundle。安装镜像前，你可以用 `cosign verify` 验证签名。
 
 ## 发行流程
 
@@ -16,6 +16,27 @@ Zeabur Builder 目前还没有发行版。这里介绍 `main` 分支的发行流
 - 使用 Sigstore，以无密钥方式为所有镜像和 chart 签名，并证明其构建来源（provenance）。
 
 流程完成后，维护者再发布草稿版本。
+
+## 找到 digest
+
+`digests.txt` 每行列出发行版的一个镜像、index 或 chart 及其 digest：
+
+```text
+builder linux/amd64  ghcr.io/zeabur-oss/builder@sha256:...
+builder index  ghcr.io/zeabur-oss/builder@sha256:...
+chart  ghcr.io/zeabur-oss/charts/zeabur-builder@sha256:...
+```
+
+`SHA256SUMS` 涵盖 `digests.txt` 和 chart，`SHA256SUMS.sigstore.json` 是它的签名。用和镜像相同的身份验证：
+
+```sh
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-github-workflow-repository zeabur-oss/builder \
+  --certificate-github-workflow-ref refs/tags/v<version>
+sha256sum --check SHA256SUMS
+```
 
 ## 验证镜像
 

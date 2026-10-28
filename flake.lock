@@ -14,9 +14,30 @@
         "url": "https://flakehub.com/f/NixOS/nixpkgs/0.1"
       }
     },
+    "oss-release": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793215228,
+        "narHash": "sha256-OhIOHMoPmk3nozBYNjZ5OAmPdMyNAC9qeDaSGtDqfLY=",
+        "owner": "zeabur-oss",
+        "repo": ".github",
+        "rev": "c01530cc3366fe0d2a6026103a3f24c3f9e2263f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "zeabur-oss",
+        "repo": ".github",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "oss-release": "oss-release",
         "rust-overlay": "rust-overlay"
       }
     },

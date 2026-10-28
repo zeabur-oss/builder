@@ -3,7 +3,7 @@ title: Release artifacts and verification
 description: Learn which images, charts, and Sigstore signatures the release workflow produces, and verify them with cosign verify and gh attestation verify.
 ---
 
-Zeabur Builder has no releases yet. This page describes the artifacts and signatures that the release workflow on the `main` branch will produce when it runs. You can use `cosign verify` to verify an image's signature before installing it.
+Each release on [GitHub](https://github.com/zeabur-oss/builder/releases) is built, signed and attested by the release workflow. Its assets are the packaged chart, `digests.txt` and `SHA256SUMS` with its Sigstore bundle. You can use `cosign verify` to verify an image's signature before installing it.
 
 ## Release workflow
 
@@ -15,6 +15,27 @@ A `v<version>` tag triggers the release workflow, which runs the shared release 
 - Sign all images and the chart with Sigstore's keyless signing, and attest their build provenance.
 
 After the workflow completes, maintainers publish the draft release.
+
+## Find the digests
+
+`digests.txt` lists every image, index and chart of a release by digest, one per line:
+
+```text
+builder linux/amd64  ghcr.io/zeabur-oss/builder@sha256:...
+builder index  ghcr.io/zeabur-oss/builder@sha256:...
+chart  ghcr.io/zeabur-oss/charts/zeabur-builder@sha256:...
+```
+
+`SHA256SUMS` covers `digests.txt` and the chart, and `SHA256SUMS.sigstore.json` is its signature. Verify it with the same identity as the images:
+
+```sh
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-github-workflow-repository zeabur-oss/builder \
+  --certificate-github-workflow-ref refs/tags/v<version>
+sha256sum --check SHA256SUMS
+```
 
 ## Verify an image
 

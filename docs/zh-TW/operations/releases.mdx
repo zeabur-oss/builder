@@ -1,10 +1,10 @@
 ---
 title: 發行檔與驗證
 description: 了解發行流程會產出的映像檔、chart 與 Sigstore 簽章，並用 cosign verify 與 gh attestation verify 驗證。
-source: "4fef4d242d64"
+source: "3607de86defc"
 ---
 
-Zeabur Builder 目前還沒有發行版。本頁說明 `main` 分支的發行流程，以及執行後會產出哪些檔案與簽章。安裝映像檔前，你可以用 `cosign verify` 驗證簽章。
+[GitHub](https://github.com/zeabur-oss/builder/releases) 上的每個發行版都由發行流程建置、簽章並證明建置來源。發行檔包含打包好的 chart、`digests.txt`，以及 `SHA256SUMS` 和它的 Sigstore bundle。安裝映像檔前，你可以用 `cosign verify` 驗證簽章。
 
 ## 發行流程
 
@@ -16,6 +16,27 @@ Zeabur Builder 目前還沒有發行版。本頁說明 `main` 分支的發行流
 - 用 Sigstore 的無金鑰簽章功能，為所有映像檔與 chart 簽章，並證明其建置來源（provenance）。
 
 流程完成後，維護者再發布草稿版本。
+
+## 找到 digest
+
+`digests.txt` 每行列出發行版的一個映像檔、index 或 chart 及其 digest：
+
+```text
+builder linux/amd64  ghcr.io/zeabur-oss/builder@sha256:...
+builder index  ghcr.io/zeabur-oss/builder@sha256:...
+chart  ghcr.io/zeabur-oss/charts/zeabur-builder@sha256:...
+```
+
+`SHA256SUMS` 涵蓋 `digests.txt` 和 chart，`SHA256SUMS.sigstore.json` 是它的簽章。用和映像檔相同的身分驗證：
+
+```sh
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-github-workflow-repository zeabur-oss/builder \
+  --certificate-github-workflow-ref refs/tags/v<version>
+sha256sum --check SHA256SUMS
+```
 
 ## 驗證映像檔
 

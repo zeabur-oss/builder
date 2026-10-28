@@ -20,8 +20,8 @@ concurrency:
 
 jobs:
   ci:
-    uses: zeabur-oss/.github/.github/workflows/ci.yml@0badbf68744c7690d1b5b613071044bc12b002be # main
+    uses: zeabur-oss/.github/.github/workflows/ci.yml@c01530cc3366fe0d2a6026103a3f24c3f9e2263f # main
     with:
       rust-cache: true
   dco:
-    uses: zeabur-oss/.github/.github/workflows/dco.yml@0badbf68744c7690d1b5b613071044bc12b002be # main
+    uses: zeabur-oss/.github/.github/workflows/dco.yml@c01530cc3366fe0d2a6026103a3f24c3f9e2263f # main
