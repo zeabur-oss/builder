@@ -8,7 +8,8 @@
 #   HOST_USERS            buildkitd's hostUsers (false: a user namespace per buildkitd)
 #   IDLE                  seconds before an idle buildkitd scales to zero (600)
 #   NAMESPACES            build namespaces to create (team-a team-b)
-#   TIMEOUT               seconds to wait for each Build (900)
+#   TIMEOUT               seconds to wait for the Builds (900); the first failed BuildRun stops
+#                         the wait
 set -euo pipefail
 
 context="${1:?usage: deploy-example.sh <context> [[namespace/]build...]}"
@@ -69,31 +70,40 @@ k -n builder-system rollout status deployment/zeabur-builder --timeout 120s
 k -n builder-registry rollout status deployment/registry --timeout 120s
 
 start=$(date +%s)
+deadline=$((start + timeout))
 k apply -f "$manifests/builds.yaml" >/dev/null
+pending=()
 for build in "${builds[@]}"; do
   [[ $build == */* ]] || build="team-a/$build"
-  ns="${build%%/*}"
-  build="${build#*/}"
-  echo "waiting for $ns/$build"
-  deadline=$((start + timeout))
-  while :; do
-    image=$(k -n "$ns" get build "$build" -o jsonpath='{.status.latestImage}')
+  pending+=("$build")
+done
+echo "waiting for ${pending[*]}"
+# All at once, so that the first failure stops the wait, whichever Build it is.
+while :; do
+  waiting=()
+  for build in "${pending[@]}"; do
+    ns="${build%%/*}"
+    name="${build#*/}"
+    image=$(k -n "$ns" get build "$name" -o jsonpath='{.status.latestImage}')
     if [[ -n $image ]]; then
       echo "$build: $image after $(($(date +%s) - start))s"
-      break
+      continue
     fi
-    failed=$(k -n "$ns" get buildrun -l "builder.zeabur.com/build=$build" \
+    failed=$(k -n "$ns" get buildrun -l "builder.zeabur.com/build=$name" \
       -o jsonpath='{range .items[?(@.status.phase=="Failed")]}{.metadata.name}{" "}{.status.reason}{": "}{.status.message}{"\n"}{end}')
     if [[ -n $failed ]]; then
       echo "$build failed: $failed" >&2
       exit 1
     fi
-    if (($(date +%s) > deadline)); then
-      echo "$build: no image after ${timeout}s" >&2
-      k -n "$ns" get build,buildrun,job,pod >&2
-      exit 1
-    fi
-    sleep 5
+    waiting+=("$build")
   done
+  [[ ${#waiting[@]} -gt 0 ]] || break
+  pending=("${waiting[@]}")
+  if (($(date +%s) > deadline)); then
+    echo "${pending[*]}: no image after ${timeout}s" >&2
+    k get build,buildrun,job,pod -A >&2
+    exit 1
+  fi
+  sleep 5
 done
 k get build,buildrun -A
