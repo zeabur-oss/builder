@@ -1,5 +1,7 @@
 name: CI
 
+# Every job of `scripts/ci.sh --list`, as `scripts/ci.sh <job>`, and the DCO check, in the shared
+# workflows of zeabur-oss/.github. The jobs themselves live in scripts/ci.sh.
 on:
   push:
     branches: [main]
@@ -16,66 +18,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  # Every job's checks are in scripts/ci.sh, which runs the same on any Linux machine with Nix; the
-  # jobs here only check out, install Nix and restore caches.
-  check:
-    name: ${{ matrix.name }}
-    runs-on: ubuntu-26.04-arm
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: format
-          - name: clippy
-          - name: docs
-          - name: test
-          - name: cargo-deny
-          - name: levels
-          - name: chart
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: DeterminateSystems/determinate-nix-action@f296148a827001a9a82d3685b53210c06e5d3b67 # v3.24.0
-      # rust-cache keys on `rustc -vV`: put the pinned toolchain from the dev shell on PATH first,
-      # otherwise it fails ("Command failed: rustc -vV") or keys on the image's rustc.
-      - run: dirname "$(nix develop --command bash -c 'command -v rustc')" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ matrix.name }}
-      - run: ./scripts/ci.sh ${{ matrix.name }}
-
-  kubernetes:
-    name: kubernetes (k3s ${{ matrix.k3s }})
-    runs-on: ubuntu-26.04-arm
-    strategy:
-      fail-fast: false
-      matrix:
-        k3s: [v1.36.5-k3s1]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: DeterminateSystems/determinate-nix-action@f296148a827001a9a82d3685b53210c06e5d3b67 # v3.24.0
-      - run: dirname "$(nix develop --command bash -c 'command -v rustc')" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: kubernetes
-      - name: The chart on k3s, Dockerfile and Railpack builds from Git, namespace isolation
-        env:
-          K3S_IMAGE: rancher/k3s:${{ matrix.k3s }}
-        run: ./scripts/ci.sh kubernetes
-
+  ci:
+    uses: zeabur-oss/.github/.github/workflows/ci.yml@9d500376d4e7202c9343656fb6b85dc2eba26dd3 # main
+    with:
+      rust-cache: true
   dco:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-slim
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - run: ./scripts/check-dco.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+    uses: zeabur-oss/.github/.github/workflows/dco.yml@9d500376d4e7202c9343656fb6b85dc2eba26dd3 # main

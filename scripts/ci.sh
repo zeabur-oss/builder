@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# One CI job, as .github/workflows/ci.yml runs it and as anyone runs it locally: the workflow only
-# checks out, installs Nix and restores caches, then calls this script. A job behaves the same on
-# GitHub and on any Linux machine with Nix (and Docker for the cluster job).
+# One CI job, as the shared CI workflow of zeabur-oss/.github runs it (from .github/workflows/ci.yml)
+# and as anyone runs it locally: the workflow only checks out, installs Nix and restores caches,
+# then calls this script once per job of --list. A job behaves the same on GitHub and on any Linux
+# machine with Nix (and Docker for the cluster job).
 #
 #   scripts/ci.sh <job>      # run one job; it enters the Nix dev shell itself
-#   scripts/ci.sh --list     # the job names, `check` matrix first
+#   scripts/ci.sh --list     # the job names
 #
 # The kubernetes job creates the k3d cluster `zeabur-builder` and deletes it when it ends; set
 # ZEABUR_CI_KEEP=1 to keep it. K3S_IMAGE picks the k3s release. K3D_REGISTRY_CONFIG passes a
@@ -35,18 +36,6 @@ fi
 export RUSTDOCFLAGS="-D warnings"
 k3s_image="${K3S_IMAGE:-rancher/k3s:v1.36.5-k3s1}"
 
-# The `check` matrix in ci.yml must list exactly the jobs above, or a job runs only locally.
-check_matrix() {
-  local listed
-  listed=$(awk '/^  check:/{in_check=1} /^  [a-z]/ && !/^  check:/{in_check=0}
-    in_check && /^          - name: /{sub(/^          - name: /, ""); print}' .github/workflows/ci.yml)
-  if [[ "$listed" != "$(printf '%s\n' "${check_jobs[@]}")" ]]; then
-    echo "error: the check matrix in ci.yml differs from scripts/ci.sh:" >&2
-    diff <(printf '%s\n' "${check_jobs[@]}") <(echo "$listed") >&2 || true
-    return 1
-  fi
-}
-
 # The disposable cluster, in a kubeconfig of its own so that the machine's context never changes.
 start_cluster() {
   export KUBECONFIG="$root/target/ci/kubeconfig"
@@ -75,7 +64,6 @@ cluster_failure_context() {
 
 case "$job" in
   format)
-    check_matrix
     cargo fmt --all --check
     nixfmt --check flake.nix
     shellcheck scripts/*.sh
