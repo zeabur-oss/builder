@@ -1,32 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Cargo crates and action digests. Lock file maintenance also updates flake.lock, and with it the Rust nightly.",
+  "description": "The shared preset of zeabur-oss, plus Cargo crates and Nix. Lock file maintenance also updates flake.lock, and with it the Rust nightly.",
   "extends": [
-    "config:recommended",
-    ":semanticCommitTypeAll(chore)",
-    "helpers:pinGitHubActionDigests"
+    "github>zeabur-oss/.github"
   ],
-  "timezone": "Asia/Taipei",
-  "schedule": [
-    "* 0-5 * * 1"
-  ],
-  "labels": [
-    "dependencies"
-  ],
-  "commitBody": "Signed-off-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
   "enabledManagers": [
     "cargo",
     "github-actions",
     "nix"
   ],
-  "minimumReleaseAge": "7 days",
-  "internalChecksFilter": "strict",
-  "lockFileMaintenance": {
-    "enabled": true,
-    "schedule": [
-      "* 0-5 * * 1"
-    ]
-  },
   "packageRules": [
     {
       "description": "One pull request for compatible crate updates; majors stay separate.",
@@ -38,12 +20,6 @@
         "patch"
       ],
       "groupName": "cargo (non-major)"
-    },
-    {
-      "matchManagers": [
-        "github-actions"
-      ],
-      "groupName": "github actions"
     }
   ]
 }
