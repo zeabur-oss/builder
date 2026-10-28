@@ -21,11 +21,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1793215228,
-        "narHash": "sha256-OhIOHMoPmk3nozBYNjZ5OAmPdMyNAC9qeDaSGtDqfLY=",
+        "lastModified": 1793215461,
+        "narHash": "sha256-FS5eePCeOz2N7PTomPbr1c5F7n77Hu5qjhSoqq6LSRc=",
         "owner": "zeabur-oss",
         "repo": ".github",
-        "rev": "c01530cc3366fe0d2a6026103a3f24c3f9e2263f",
+        "rev": "d372cc7913ed9692161a23a65ac5f3aa73f30eab",
         "type": "github"
       },
       "original": {
