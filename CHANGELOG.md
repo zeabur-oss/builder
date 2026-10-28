@@ -4,7 +4,24 @@ All notable changes to Zeabur Builder. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - 2026-10-28
+## [0.1.1] - 2026-10-28
+
+The first published release. 0.1.0 was tagged, but its release workflow failed before publishing
+anything; it is withdrawn and was never published. 0.1.1 holds everything listed under 0.1.0, and:
+
+### Changed
+
+- Releases are built, signed and attested by the shared release workflow of
+  [zeabur-oss/.github](https://github.com/zeabur-oss/.github). Verify signatures with
+  `--certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@'`,
+  `--certificate-github-workflow-repository zeabur-oss/builder` and
+  `--certificate-github-workflow-ref refs/tags/v0.1.1`, and attestations with
+  `--signer-workflow zeabur-oss/.github/.github/workflows/release.yml`
+  ([releases](docs/operations/releases.mdx)).
+
+## [0.1.0] - 2026-10-28 [YANKED]
+
+Withdrawn: tagged, never published. See 0.1.1.
 
 ### Added
 

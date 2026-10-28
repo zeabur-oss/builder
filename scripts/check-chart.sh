@@ -43,9 +43,9 @@ require() { # $1 = rendered chart, $2 = what is checked, then patterns it must h
 plain=$(helm template builder "$chart" "${base[@]}")
 require "$plain" "default install" 'name: dockerfile$' 'name: railpack$' 'name: buildkitd$' \
   'name: buildkitd-egress$' '- 169.254.0.0/16$' 'ghcr.io/railwayapp/railpack-frontend",$' \
-  'image: "ghcr.io/zeabur-oss/builder:0.1.0"$' 'kind: ValidatingAdmissionPolicy$' \
+  'image: "ghcr.io/zeabur-oss/builder:0.1.1"$' 'kind: ValidatingAdmissionPolicy$' \
   "request.userInfo.username == 'system:serviceaccount:default:zeabur-builder'" \
-  "c.image in \['ghcr.io/zeabur-oss/builder-job:0.1.0', 'ghcr.io/zeabur-oss/builder-railpack:0.1.0'\]" \
+  "c.image in \['ghcr.io/zeabur-oss/builder-job:0.1.1', 'ghcr.io/zeabur-oss/builder-railpack:0.1.1'\]" \
   '--buildkitd-image=docker.io/moby/buildkit:' "c.image == 'docker.io/moby/buildkit:" \
   "request.namespace in \['default', 'zot'\]"
 if grep -qE '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)' <<<"$plain"; then
