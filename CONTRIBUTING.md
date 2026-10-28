@@ -14,7 +14,10 @@ messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## Before you open a pull request
 
-Run what CI runs, inside `nix develop`:
+CI is the shared workflow of [zeabur-oss/.github](https://github.com/zeabur-oss/.github): it runs
+every job of `scripts/ci.sh --list` as `scripts/ci.sh <job>`, which enters the Nix dev shell
+itself, so `scripts/ci.sh clippy` runs a job exactly as CI does. Or run what CI runs, inside
+`nix develop`:
 
 ```sh
 cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && actionlint
@@ -83,7 +86,10 @@ with its own kubeconfig (`target/ci/kubeconfig`), builds the images, installs th
 `deploy/chart`, builds the sample Builds from Git (a Dockerfile in `team-a` and `team-b`, Railpack
 in `team-a`), waits for the two samples that fail on purpose, runs `scripts/example-isolation.sh`,
 `scripts/example-admission.sh` and `scripts/example-archive.sh`, and deletes the cluster. Run it on a Linux machine with Docker; `ZEABUR_CI_KEEP=1` keeps the
-cluster.
+cluster. It keeps the log of every Pod, the build Pods included, in `$CI_ARTIFACTS/pods`
+(`target/ci/artifacts` by default; the artifact `ci-kubernetes` in CI). When it fails, it also
+keeps the Builds, BuildRuns and events there, and prints each buildkitd's network and the result of
+a one-step build that fetches from a `RUN` step.
 
 To work against a cluster by hand, use a disposable one with its own kubeconfig, never your normal
 context:
@@ -106,3 +112,16 @@ kubectl -n team-a get buildrun             # Phase, Reason, Started, Finished
 kubectl -n team-a logs job/<buildrun>      # buildctl progress
 k3d cluster delete zeabur-builder
 ```
+
+## Releases
+
+The release workflow is the shared one of [zeabur-oss/.github](https://github.com/zeabur-oss/.github);
+its stages are `scripts/release.sh check|build|publish|assets|verify`. To release `vX.Y.Z`:
+
+1. Set the version in `Cargo.toml` (`[workspace.package]`, then `cargo update -w` for
+   `Cargo.lock`) and in `deploy/chart/Chart.yaml` (`version` and `appVersion`), update the images
+   that `scripts/check-chart.sh` expects, add the `## [X.Y.Z]` section to `CHANGELOG.md`, and merge
+   to `main`.
+2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
+   the images and publishes nothing.
+3. Push the tag `vX.Y.Z` from `main`. The workflow leaves a draft release; check it and publish it.
