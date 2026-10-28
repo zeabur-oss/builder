@@ -35,7 +35,7 @@ jobs:
   release:
     needs: checks
     if: ${{ !cancelled() && (needs.checks.result == 'success' || inputs.verify_only) }}
-    uses: zeabur-oss/.github/.github/workflows/release.yml@9d500376d4e7202c9343656fb6b85dc2eba26dd3 # main
+    uses: zeabur-oss/.github/.github/workflows/release.yml@0badbf68744c7690d1b5b613071044bc12b002be # main
     permissions:
       contents: write
       packages: write
