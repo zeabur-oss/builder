@@ -1,27 +1,37 @@
 ---
 title: Release artifacts and verification
-description: Learn which images, charts, and Sigstore signatures the release workflow produces, and verify images with cosign verify.
+description: Learn which images, charts, and Sigstore signatures the release workflow produces, and verify them with cosign verify and gh attestation verify.
 ---
 
 Zeabur Builder has no releases yet. This page describes the artifacts and signatures that the release workflow on the `main` branch will produce when it runs. You can use `cosign verify` to verify an image's signature before installing it.
 
 ## Release workflow
 
-A `v<version>` tag triggers the release workflow:
+A `v<version>` tag triggers the release workflow, which runs the shared release workflow of [zeabur-oss/.github](https://github.com/zeabur-oss/.github):
 
 - Build images for `linux/amd64` and `linux/arm64`, and run smoke tests on a k3s cluster.
 - Publish `ghcr.io/zeabur-oss/builder`, `builder-job`, and `builder-railpack` to the registry by digest.
 - Pin these image digests in the chart, and push the chart to `oci://ghcr.io/zeabur-oss/charts/zeabur-builder`.
-- Sign all images and the chart with Sigstore's keyless signing.
+- Sign all images and the chart with Sigstore's keyless signing, and attest their build provenance.
 
 After the workflow completes, maintainers publish the draft release.
 
 ## Verify an image
 
-Before installing, replace `<digest>` with the image's digest and `<version>` with the corresponding version, then run:
+The signatures name the workflow that signed them, the shared `release.yml` of `zeabur-oss/.github`, and the repository and tag it ran for. Before installing, replace `<digest>` with the image's digest and `<version>` with the corresponding version, then run:
 
 ```sh
 cosign verify ghcr.io/zeabur-oss/builder@sha256:<digest> \
-  --certificate-identity https://github.com/zeabur-oss/builder/.github/workflows/release.yml@refs/tags/v<version> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-github-workflow-repository zeabur-oss/builder \
+  --certificate-github-workflow-ref refs/tags/v<version>
+```
+
+To verify the image's build provenance:
+
+```sh
+gh attestation verify oci://ghcr.io/zeabur-oss/builder@sha256:<digest> \
+  --repo zeabur-oss/builder \
+  --signer-workflow zeabur-oss/.github/.github/workflows/release.yml
 ```

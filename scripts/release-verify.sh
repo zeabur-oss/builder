@@ -2,35 +2,51 @@
 # Checks a downloaded draft release as someone installing it would, with no registry login and
 # nothing rebuilt: the signed checksums, every signature and provenance attestation, each image
 # index, and the chart's pinned images. Run inside `nix develop`; `gh` must be signed in (the
-# attestations are read from GitHub's API).
-#   scripts/release-verify.sh v0.0.2 downloaded \
-#     https://github.com/zeabur-oss/builder/.github/workflows/release.yml@refs/tags/v0.0.2
+# attestations are read from GitHub's API). The release workflow runs it as
+# `scripts/release.sh verify`.
+#   gh release download v0.1.1 --repo zeabur-oss/builder --dir downloaded
+#   scripts/release-verify.sh v0.1.1 downloaded
+#
+# The signatures name the workflow that signed, the shared release workflow of zeabur-oss/.github,
+# and the repository and tag it ran for. The workflow passes them; the defaults are the same:
+#   RELEASE_CERT_IDENTITY_REGEXP  the certificate's identity (the signing workflow), a regexp
+#   RELEASE_SIGNER_WORKFLOW       the signing workflow, for `gh attestation verify --signer-workflow`
+#   RELEASE_SOURCE_REPOSITORY     the repository released (zeabur-oss/builder)
+#   RELEASE_SOURCE_REF            the ref released (refs/tags/<version>)
 set -euo pipefail
 
-if [[ $# != 3 ]]; then
-  echo "usage: release-verify.sh <vVERSION> <directory> <certificate-identity>" >&2
+if [[ $# != 2 ]]; then
+  echo "usage: release-verify.sh <vVERSION> <directory>" >&2
   exit 2
 fi
 version="$1"
 directory="$(cd "$2" && pwd)"
-identity="$3"
 : "${IN_NIX_SHELL:?run inside nix develop}"
-if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || -z "$identity" ]]; then
-  echo "expected a version like v0.0.2 and the exact signing identity" >&2
+if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "expected a version like v0.1.1" >&2
   exit 2
 fi
 plain="${version#v}"
-repository="${GITHUB_REPOSITORY:-zeabur-oss/builder}"
+identity="${RELEASE_CERT_IDENTITY_REGEXP:-^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@}"
+signer="${RELEASE_SIGNER_WORKFLOW:-zeabur-oss/.github/.github/workflows/release.yml}"
+repository="${RELEASE_SOURCE_REPOSITORY:-zeabur-oss/builder}"
+ref="${RELEASE_SOURCE_REF:-refs/tags/$version}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 # A fresh, empty registry configuration: a publisher's login must not hide a private package.
 export DOCKER_CONFIG="$work/docker" HELM_REGISTRY_CONFIG="$work/docker/config.json"
 mkdir -p "$DOCKER_CONFIG"
-certificate=(--certificate-identity "$identity" --certificate-oidc-issuer https://token.actions.githubusercontent.com)
-attestation=(--repo "$repository" --cert-identity "$identity")
+certificate=(
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-identity-regexp "$identity"
+  --certificate-github-workflow-repository "$repository"
+  --certificate-github-workflow-ref "$ref"
+)
+attestation=(--repo "$repository" --signer-workflow "$signer" --source-ref "$ref")
 chart_file="zeabur-builder-$plain.tgz"
 
-# 1. The checksums: signed by the release workflow at this tag, and covering every asset.
+# 1. The checksums: signed by the release workflow for this repository at this tag, and covering
+# every asset.
 cosign verify-blob "${certificate[@]}" --bundle "$directory/SHA256SUMS.sigstore.json" "$directory/SHA256SUMS"
 listed="$(awk '{ print $2 }' "$directory/SHA256SUMS" | sort)"
 if [[ "$listed" != "$(printf '%s\n' digests.txt "$chart_file" | sort)" ]]; then
@@ -38,7 +54,10 @@ if [[ "$listed" != "$(printf '%s\n' digests.txt "$chart_file" | sort)" ]]; then
   exit 1
 fi
 (cd "$directory" && sha256sum --check --strict SHA256SUMS)
-gh attestation verify "$directory/$chart_file" "${attestation[@]}" >/dev/null
+for asset in "$chart_file" digests.txt; do
+  gh attestation verify "$directory/$asset" "${attestation[@]}" >/dev/null
+  echo "provenance verified: $asset"
+done
 
 # 2. Each image and the chart: the digests that the signed digests.txt records, signed and
 # attested. Exactly one line of each kind.

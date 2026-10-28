@@ -1,28 +1,38 @@
 ---
 title: 發行檔與驗證
-description: 了解發行流程會產出的映像檔、chart 與 Sigstore 簽章，並用 cosign verify 驗證映像檔。
-source: "9275a9de94f9"
+description: 了解發行流程會產出的映像檔、chart 與 Sigstore 簽章，並用 cosign verify 與 gh attestation verify 驗證。
+source: "4fef4d242d64"
 ---
 
 Zeabur Builder 目前還沒有發行版。本頁說明 `main` 分支的發行流程，以及執行後會產出哪些檔案與簽章。安裝映像檔前，你可以用 `cosign verify` 驗證簽章。
 
 ## 發行流程
 
-`v<version>` tag 會觸發發行流程：
+`v<version>` tag 會觸發發行流程，由 [zeabur-oss/.github](https://github.com/zeabur-oss/.github) 的共用發行流程執行：
 
 - 建置 `linux/amd64` 與 `linux/arm64` 的映像檔，並在 k3s 叢集上執行煙霧測試。
 - 依 digest 將 `ghcr.io/zeabur-oss/builder`、`builder-job` 與 `builder-railpack` 發布到 registry。
 - 在 chart 中固定這些映像檔的 digest，再將 chart 推送到 `oci://ghcr.io/zeabur-oss/charts/zeabur-builder`。
-- 用 Sigstore 的無金鑰簽章功能，為所有映像檔與 chart 簽章。
+- 用 Sigstore 的無金鑰簽章功能，為所有映像檔與 chart 簽章，並證明其建置來源（provenance）。
 
 流程完成後，維護者再發布草稿版本。
 
 ## 驗證映像檔
 
-安裝前，先將 `<digest>` 換成映像檔的 digest，並將 `<version>` 換成對應的版本，再執行以下指令：
+簽章記載的是簽署它的流程，也就是 `zeabur-oss/.github` 的共用 `release.yml`，以及它為哪個儲存庫、哪個 tag 執行。安裝前，先將 `<digest>` 換成映像檔的 digest，並將 `<version>` 換成對應的版本，再執行以下指令：
 
 ```sh
 cosign verify ghcr.io/zeabur-oss/builder@sha256:<digest> \
-  --certificate-identity https://github.com/zeabur-oss/builder/.github/workflows/release.yml@refs/tags/v<version> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-github-workflow-repository zeabur-oss/builder \
+  --certificate-github-workflow-ref refs/tags/v<version>
+```
+
+驗證映像檔的建置來源：
+
+```sh
+gh attestation verify oci://ghcr.io/zeabur-oss/builder@sha256:<digest> \
+  --repo zeabur-oss/builder \
+  --signer-workflow zeabur-oss/.github/.github/workflows/release.yml
 ```

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Builds one architecture's release images and publishes nothing. .github/workflows/release.yml
-# runs it on a runner of each architecture, smokes the images (`ZEABUR_CI_IMAGE_TAG=release-<arch>
-# scripts/ci.sh kubernetes`), then release-publish.sh publishes them. Linux only, native
-# architecture, inside `nix develop`, from a git checkout. Docker builds the images.
-#   scripts/release-build.sh v0.0.2 arm64 dist
+# Builds one architecture's release images and publishes nothing. `scripts/release.sh build` runs
+# it on a runner of each architecture, then smokes the images (`ZEABUR_CI_IMAGE_TAG=release-<arch>
+# scripts/ci.sh kubernetes`); release-publish.sh publishes them. Linux only, native architecture,
+# inside `nix develop`, from a git checkout. Docker builds the images.
+#   scripts/release-build.sh v0.1.1 arm64 dist
 #
 # <out> receives builder.tar, builder-job.tar and builder-railpack.tar (`docker image save` of
 # zeabur-builder/<name>:release-<arch>).
@@ -18,7 +18,7 @@ arch="$2"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 : "${IN_NIX_SHELL:?run inside nix develop}"
 if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "expected a version like v0.0.2" >&2
+  echo "expected a version like v0.1.1" >&2
   exit 2
 fi
 case "$(uname -s):$arch:$(uname -m)" in
