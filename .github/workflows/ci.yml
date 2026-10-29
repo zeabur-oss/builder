@@ -6,22 +6,18 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The release workflow runs all of CI on the commit it releases.
-  workflow_call:
 
 permissions:
   contents: read
 
-# Called from the release workflow, `github.workflow` is the caller's name; the prefix keeps this
-# group apart from the caller's own (group names ignore case).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   ci:
-    uses: zeabur-oss/.github/.github/workflows/ci.yml@d372cc7913ed9692161a23a65ac5f3aa73f30eab # main
+    uses: zeabur-oss/.github/.github/workflows/ci.yml@7d6a88c38a442a28ea31397854a188699798731a # main
     with:
       rust-cache: true
   dco:
-    uses: zeabur-oss/.github/.github/workflows/dco.yml@d372cc7913ed9692161a23a65ac5f3aa73f30eab # main
+    uses: zeabur-oss/.github/.github/workflows/dco.yml@7d6a88c38a442a28ea31397854a188699798731a # main

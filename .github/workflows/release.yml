@@ -1,11 +1,7 @@
 name: Release
 
-# A tag vX.Y.Z runs all of CI on its commit, then the shared release workflow of zeabur-oss/.github:
-# it builds the three images on each architecture, smokes them on k3s, publishes them and the chart
-# by digest, signs and attests them, and leaves a draft release that a maintainer checks and
-# publishes. Run by hand, it rehearses: CI, the builds and their smoke tests, nothing published.
-# With verify_only it checks an existing draft again with this commit's scripts. The stages are
-# scripts/release.sh.
+# Tag vX.Y.Z on main: the shared release builds, publishes and signs the images and chart, then
+# leaves a draft. Manual run: rehearse.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -27,15 +23,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The whole of CI on this commit, the cluster job included.
-  checks:
-    if: ${{ !inputs.verify_only }}
-    uses: ./.github/workflows/ci.yml
-
   release:
-    needs: checks
-    if: ${{ !cancelled() && (needs.checks.result == 'success' || inputs.verify_only) }}
-    uses: zeabur-oss/.github/.github/workflows/release.yml@d372cc7913ed9692161a23a65ac5f3aa73f30eab # main
+    uses: zeabur-oss/.github/.github/workflows/release.yml@7d6a88c38a442a28ea31397854a188699798731a # main
     permissions:
       contents: write
       packages: write
