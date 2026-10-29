@@ -303,7 +303,7 @@ mod tests {
     /// A server that accepts one client key and answers `git-upload-pack` like Git does: the
     /// advertisement, then a wait for the client's wants.
     mod server {
-        use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session};
+        use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session, VerifiedPublicKey};
         use russh::{Channel, ChannelId};
 
         use super::*;
@@ -321,9 +321,9 @@ mod tests {
             fn auth_publickey(
                 &mut self,
                 _user: &str,
-                key: &PublicKey,
+                key: VerifiedPublicKey<'_>,
             ) -> impl Future<Output = Result<Auth, Self::Error>> + Send {
-                let auth = if key.key_data() == self.client.key_data() {
+                let auth = if key.public_key.key_data() == self.client.key_data() {
                     Auth::Accept
                 } else {
                     Auth::reject()
