@@ -36,6 +36,12 @@
       "sourceType": "github",
       "skillPath": "skills/zeabur-oss-workflow/SKILL.md",
       "computedHash": "4071f7bce2c9f72ca0ca27d32c6f262f7c84d749b7773e31dda971cad930dce3"
+    },
+    "zeabur-writing": {
+      "source": "zeabur-oss/skills",
+      "sourceType": "github",
+      "skillPath": "skills/zeabur-writing/SKILL.md",
+      "computedHash": "93e138d2cc879da75f4a84b6924e75ab8e6d20d2d4b1e4babeae37c21358a767"
     }
   }
 }
