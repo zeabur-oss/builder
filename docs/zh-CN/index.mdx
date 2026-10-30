@@ -1,10 +1,10 @@
 ---
 title: 开始使用 Zeabur Builder
 description: 在 Kubernetes 上用 BuildKit 从 Git 构建镜像，并把结果交给你的部署工具。
-source: "968b6f881daa"
+source: "961ca0a0911f"
 ---
 
-Zeabur Builder 是一个 Kubernetes operator。你创建一个 `Build`，指向 Git 仓库。它会为每个新 commit 构建镜像，推送到镜像仓库，并把 `<repository>:<tag>@<digest>` 写入 `status.latestImage`。
+Zeabur Builder 是一个 Kubernetes operator。你创建一个 `Build`，指向 Git 仓库。Zeabur Builder 会为每个新 commit 构建镜像，推送到镜像仓库，并把 `<repository>:<tag>@<digest>` 写入 `status.latestImage`。
 
 Zeabur Builder 只构建镜像。测试、部署和日志存储交给你的 pipeline、部署工具和日志收集工具。
 

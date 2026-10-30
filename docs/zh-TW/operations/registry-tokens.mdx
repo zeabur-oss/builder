@@ -110,7 +110,7 @@ oras push --registry-config auth.json zot.zot.svc:5000/zeabur_admin/tools:v1 ./f
 
 <Callout type="warn">
 
-在 Zot 中，手動刪除 registry 的所有 tag，也會刪除其下的倉庫，包括 `<repository>/source` 中的來源封存檔。
+在 Zot 中，手動刪除某個倉庫的所有 tag，也會刪除它底下的子倉庫，包括 `<repository>/source` 中的來源封存檔。
 
 </Callout>
 
@@ -166,5 +166,5 @@ Helm chart 會在金鑰所在的 Namespace 新增 Role，只授予該 Secret 的
 
 ## 已知限制
 
-- **刪除 Build 不會撤銷權杖。** 權杖在到期前仍然有效。持有 run 權杖的人可以在清理後再次推送映像檔，控制器會在下一次掃描時刪除這些映像檔。
-- **權杖綁定倉庫名稱，不綁定 Namespace UID。** 刪除 Namespace 後，如果有人建立同名 Namespace，舊 run 權杖到期前，還是能推送到新 Namespace 的倉庫。使用預設 Job 執行期限時，權杖最長可有效 70 分鐘（60 分鐘加上 10 分鐘）。將已刪除的 Namespace 名稱交給另一個團隊前，請先等待 70 分鐘。
+- **刪除 Build 不會撤銷權杖**。權杖在到期前仍然有效。持有 run 權杖的人可以在清理後再次推送映像檔，控制器會在下一次掃描時刪除這些映像檔。
+- **權杖綁定倉庫名稱，不綁定 Namespace UID**。刪除 Namespace 後，如果有人建立同名 Namespace，舊 run 權杖到期前，還是能推送到新 Namespace 的倉庫。使用預設 Job 執行期限時，權杖最長可有效 70 分鐘（60 分鐘加上 10 分鐘）。將已刪除的 Namespace 名稱交給另一個團隊前，請先等待 70 分鐘。

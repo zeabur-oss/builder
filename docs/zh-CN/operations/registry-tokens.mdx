@@ -110,7 +110,7 @@ oras push --registry-config auth.json zot.zot.svc:5000/zeabur_admin/tools:v1 ./f
 
 <Callout type="warn">
 
-在 Zot 中，手动删除镜像仓库的所有标签，也会删除其下的仓库，包括 `<repository>/source` 中的源代码归档。
+在 Zot 中，手动删除镜像仓库的所有标签，也会删除它底下的子仓库，包括 `<repository>/source` 中的源代码归档。
 
 </Callout>
 
@@ -166,5 +166,5 @@ Helm chart 会在密钥所在的 Namespace 中添加 Role，只授予该 Secret 
 
 ## 已知限制
 
-- **删除 Build 不会撤销令牌。** 令牌会持续有效，直到过期。run 令牌能在清理后再次推送镜像，控制器会在下一次扫描时删除这些镜像。
-- **令牌绑定仓库名称，不绑定 Namespace UID。** 删除 Namespace 后，如果有人创建同名 Namespace，旧 Namespace 的 run 令牌仍能推送到新 Namespace 的仓库，直到令牌过期。使用默认 Job 运行时限时，最长为 70 分钟（60 分钟加上 10 分钟）。将已删除的 Namespace 名称交给另一个团队前，先等待 70 分钟。
+- **删除 Build 不会撤销令牌**。令牌过期前会持续有效。run 令牌能在清理后再次推送镜像，控制器会在下一次扫描时删除这些镜像。
+- **令牌绑定仓库名称，不绑定 Namespace UID**。删除 Namespace 后，如果有人创建同名 Namespace，旧 Namespace 的 run 令牌过期前，仍能推送到新 Namespace 的仓库。使用默认 Job 运行时限时，最长为 70 分钟（60 分钟加上 10 分钟）。将已删除的 Namespace 名称交给另一个团队前，先等待 70 分钟。
