@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "zeabur-oss-ci": {
+      "source": "zeabur-oss/skills",
+      "sourceType": "github",
+      "skillPath": "skills/zeabur-oss-ci/SKILL.md",
+      "computedHash": "e8252fde58b6c4f506a9d150af1da80f08e4d2b39ecdcfe366b45f74aa72fbf4"
+    },
+    "zeabur-oss-cluster-tests": {
+      "source": "zeabur-oss/skills",
+      "sourceType": "github",
+      "skillPath": "skills/zeabur-oss-cluster-tests/SKILL.md",
+      "computedHash": "760218f87adb0f8a145fad0903e827055ebeca6224ad73e9feb955174e9ce722"
+    },
+    "zeabur-oss-dependencies": {
+      "source": "zeabur-oss/skills",
+      "sourceType": "github",
+      "skillPath": "skills/zeabur-oss-dependencies/SKILL.md",
+      "computedHash": "c47dc51f5977e468be971fa8426dea10828b841e7b27e4dc580402eb223363bd"
+    },
+    "zeabur-oss-rust": {
+      "source": "zeabur-oss/skills",
+      "sourceType": "github",
+      "skillPath": "skills/zeabur-oss-rust/SKILL.md",
+      "computedHash": "07b708cfe23fa03196847e4d5776eca16bf7171c1fa2c97ab9d4db7eac15991a"
+    },
+    "zeabur-oss-standards": {
+      "source": "zeabur-oss/skills",
+      "sourceType": "github",
+      "skillPath": "skills/zeabur-oss-standards/SKILL.md",
+      "computedHash": "0268d3fd9213e30e184c784575be13177e780b5115c9f0bd566ab6e0dfe2e437"
+    },
+    "zeabur-oss-workflow": {
+      "source": "zeabur-oss/skills",
+      "sourceType": "github",
+      "skillPath": "skills/zeabur-oss-workflow/SKILL.md",
+      "computedHash": "2c8af5bb8f8919115cfc9dd50472ab26b5d9801e472fc5942cd9563c626bd054"
+    }
+  }
+}
