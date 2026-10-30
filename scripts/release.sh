@@ -38,11 +38,7 @@ fi
 scripts="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$scripts/.." && pwd)"
 version="$2"
-if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "expected a version like v0.1.1, not $version" >&2
-  exit 2
-fi
-plain="${version#v}"
+plain="$(zeabur-oss-release version "$version" | sed -n 's/^plain=//p')" || exit 2
 names=(builder builder-job builder-railpack)
 chart_file="zeabur-builder-$plain.tgz"
 
