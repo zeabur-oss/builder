@@ -114,7 +114,7 @@ archive-1761058800-3e1a9c2
 
 ## 旧归档文件的保留方式
 
-每次上传的内容都会留在 registry，直到 registry 清理它，或你删除所属的 `Build`。删除 `Build` 时的清理方式见 [Registry 令牌](../operations/registry-tokens.mdx)。
+registry 清理这些内容或你删除所属的 `Build` 之前，每次上传的内容都会留在 registry。删除 `Build` 时的清理方式见 [Registry 令牌](../operations/registry-tokens.mdx)。
 
 Zeabur Catalog 中的 Zot 会保留每个仓库最近推送的 20 个标签，并在两小时后删除没有标签的 manifest。因此，`<namespace>/<build>/source` 会保留最近的 20 次上传。
 

@@ -40,7 +40,7 @@ registry 决定还有谁能读取归档文件。Zeabur Catalog 的 Zot 与测试
 
 ### 控制器权限
 
-控制器具备等同于集群管理员的能力：它能在所有 Namespace 中创建 Job、写入 Secret，以及创建特权模式的 buildkitd StatefulSet。
+控制器具备等同于集群管理员的能力，能在所有 Namespace 中创建 Job、写入 Secret，以及创建特权模式的 buildkitd StatefulSet。
 
 Helm chart 的 ValidatingAdmissionPolicies 将控制器 ServiceAccount 创建的资源限制为：
 

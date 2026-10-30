@@ -43,6 +43,6 @@ Zeabur Builder 还没有发行版，API 是 `v1alpha1`。
 
 ## 已知问题
 
-控制器的 ClusterRole 目前对所有 Namespace 的 Secret 都有 `get`、`create`、`update` 和 `delete` 权限。控制器用这些权限读取 Build 指定的 Secret，并写入副本。
+控制器的 ClusterRole 目前对所有 Namespace 的 Secret 都有 `get`、`create`、`update` 和 `delete` 权限。控制器用这些权限读取 Build 指定的 Secret，并复制一份写入。
 
-控制器实际只需要访问带有 `builder.zeabur.com/git-credentials` 或 `builder.zeabur.com/push-credentials` 标签的 Secret，以及控制器自己创建的副本。目前的 ClusterRole 授权范围超出了这项需求。
+控制器实际只需要访问带有 `builder.zeabur.com/git-credentials` 或 `builder.zeabur.com/push-credentials` 标签的 Secret，以及控制器自己复制出来的 Secret。目前的 ClusterRole 授权范围超出了这项需求。

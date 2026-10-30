@@ -3,7 +3,7 @@ title: Get started with Zeabur Builder
 description: Build images from Git with BuildKit on Kubernetes, and pass the results to your deployment tool.
 ---
 
-Zeabur Builder is a Kubernetes operator. You create a `Build` that points to a Git repository. It builds an image for each new commit, pushes the image to a registry, and writes `<repository>:<tag>@<digest>` to `status.latestImage`.
+Zeabur Builder is a Kubernetes operator. You create a `Build` that points to a Git repository. Zeabur Builder builds an image for each new commit, pushes the image to a registry, and writes `<repository>:<tag>@<digest>` to `status.latestImage`.
 
 Zeabur Builder only builds images. Your pipeline, deployment tool, and log collector handle testing, deployment, and log storage.
 

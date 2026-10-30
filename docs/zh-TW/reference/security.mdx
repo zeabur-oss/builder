@@ -40,7 +40,7 @@ Zeabur Builder 以 Namespace 為隔離單位。即使多個團隊共用叢集，
 
 ### 控制器權限
 
-控制器具有等同叢集管理員的能力。它能在所有 Namespace 建立 Job、寫入 Secret，以及建立具特權的 buildkitd StatefulSet。
+控制器具有等同叢集管理員的能力，能在所有 Namespace 建立 Job、寫入 Secret，以及建立具特權的 buildkitd StatefulSet。
 
 Helm chart 附的 ValidatingAdmissionPolicies 只允許控制器的 ServiceAccount 建立這兩種資源：
 
