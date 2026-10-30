@@ -6,6 +6,12 @@ standards add to each section.
 
 ## 1. Comments, doc comments and commit messages
 
+A comment or doc comment says only what the code cannot: a constraint that is not visible, a
+library or platform quirk and its cause, a workaround, a link to the specification. It holds no
+design rationale, history or restated code. A decision and its reasons go in the docs (the
+README, a design doc, an ADR), and the comment links there when the reader needs it. A
+repository's own standards do not loosen this rule.
+
 Prose follows ASD-STE100 Issue 9 (Simplified Technical English), adapted to code. Code spans,
 identifiers, Kubernetes kinds and fields, CSS properties and tokens, numbers with units and RFC
 designators are technical nouns: each counts as one word and is never reworded.
@@ -36,8 +42,7 @@ designators are technical nouns: each counts as one word and is never reworded.
 
 Leave alone: code, literals, log keys and metric names; quoted upstream text, licence headers and
 generated files; tags and labels (`# Safety`, `SAFETY:`, `TODO(name):`, `@param`); RFC 2119
-MUST/SHOULD in a contract; comments the change does not touch. These rules govern how a comment
-reads, not whether to write one.
+MUST/SHOULD in a contract; comments the change does not touch.
 
 ```text
 Before: Fixing sessions getting lost on restart

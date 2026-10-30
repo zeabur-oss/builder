@@ -67,9 +67,10 @@ nix develop -c cargo deny --locked check
 Iterate per crate with `-p <crate>` to keep builds short. Drop `--check` from `cargo fmt` to
 apply the formatting.
 
-## Rationale and comments
+## Comments
 
-Behaviour that rests on a specification, paper or prior art is cited in rustdoc next to the
-code, with the invariant and why (`zeabur-oss-spec-work`). Never cite something you have not
-read; write "not verified" instead. How much else a comment carries differs per repository: the
-dev skill says. How comments and commit messages read: `zeabur-oss-standards`.
+Comments and rustdoc follow `zeabur-oss-standards`, section 1: only what the code cannot say.
+Behaviour that rests on a specification carries the constraint and the citation in rustdoc next
+to the code (`zeabur-oss-spec-work`); the reasons for the design go in the docs. Cite only what
+you have read. A source you have not read is not cited at all; if it matters, note it in the
+internal docs or an issue.

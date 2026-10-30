@@ -29,9 +29,9 @@ files. This skill is what every zeabur-oss repository shares.
    any failed. Without `--watch` it only reports the current state and exits 8 while checks are
    pending, so never merge on its answer alone. A red check is investigated (`zeabur-oss-ci`),
    not re-run until green.
-6. Pull requests are squash-merged (`gh pr merge <n> --squash`). The subject on `main` is the
-   commit's for a single commit and the pull request title otherwise, so keep both in
-   Conventional Commits form.
+6. Pull requests are squash-merged (`gh pr merge <n> --squash`); no other merge method is used.
+   The subject on `main` is the commit's for a single commit and the pull request title
+   otherwise, so keep both in Conventional Commits form.
 
 ## Releases
 
@@ -68,6 +68,7 @@ maintainers'. A failed release run: `zeabur-oss-ci`.
 
 - English, plain words, decisions stated as facts about the design, not as history. How text
   reads, in every language: `zeabur-writing`.
-- Cite public sources only, and only what you have read; otherwise write "not verified".
+- Cite public sources only, and only what you have read. A source you have not read is not
+  cited at all; if it matters, note it in the internal docs or an issue.
 - No private notes, internal plans or names of people's decisions; no milestone code names.
 - A claim that a project does something better or safer has a test behind it.

@@ -11,7 +11,7 @@ maintainers'. Propose the command or the setting instead.
 Once `publish` succeeded, the images, charts and the draft's assets are signed by the shared
 workflow (`https://github.com/zeabur-oss/.github/.github/workflows/release.yml@…`) for
 `zeabur-oss/<repo>` at `refs/tags/v<version>`. Do not rebuild, re-sign, overwrite or delete
-them to make a check pass (zeabur's `scripts/release-publish.sh` refuses an existing release,
+them to make a check pass (zeabur's `scripts/release.sh publish` refuses an existing release,
 image tag or chart version on purpose). Fix the check on `main`, then a maintainer runs
 `gh workflow run release.yml --ref main -f version=v<version> -F verify_only=true`, which takes
 the scripts from `main` and the Nix shell from the tag. Re-running the failed run reuses its old
