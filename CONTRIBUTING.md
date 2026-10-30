@@ -38,9 +38,11 @@ ZEABUR_BUILDER_BLESS=1 cargo nextest run -p zeabur-builder-jobspec   # build Job
 
 Review a golden-file diff like code: it is exactly what will run in every build.
 
-Design rationale lives next to the code, in rustdoc: state the decision and its reason, and
-cite the specification, upstream source or prior art it rests on. Never cite something you have
-not read; write "not verified" instead. Documentation is written in English.
+A comment says only what the code cannot: a quirk and its cause, a workaround, or the specification,
+upstream source or prior art behind behaviour that must not change, cited in rustdoc. It holds no
+design rationale. Cite only what you have read. Do not cite an unread source; if it matters, note it
+in internal docs or an issue. Write documentation first in English, Traditional Chinese or
+Simplified Chinese.
 
 ## Crate levels
 
