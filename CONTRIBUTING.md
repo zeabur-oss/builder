@@ -122,9 +122,9 @@ its stages are `scripts/release.sh check|build|publish|assets|verify`. To releas
 
 1. Set the version in `Cargo.toml` (`[workspace.package]`, then `cargo update -w` for
    `Cargo.lock`) and in `deploy/chart/Chart.yaml` (`version` and `appVersion`), update the images
-   that `scripts/check-chart.sh` expects, add the `## [X.Y.Z]` section to `CHANGELOG.md`, and merge
+   that `scripts/check-chart.sh` expects, add the `## X.Y.Z (YYYY-MM-DD)` section to `CHANGELOG.md`, and merge
    to `main`. The section becomes the release body as it is, so keep each paragraph and list item
-   on one line. A pre-release such as `vX.Y.Z-rc.1` needs its own `## [X.Y.Z-rc.1]` section.
+   on one line. A pre-release such as `vX.Y.Z-rc.1` needs its own `## X.Y.Z-rc.1 (YYYY-MM-DD)` section.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
 3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it. The workflow leaves a draft release; check it and publish it.

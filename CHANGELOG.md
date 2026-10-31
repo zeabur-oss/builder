@@ -1,15 +1,15 @@
 # Changelog
 
-All notable changes to Zeabur Builder. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
+All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## Unreleased
 
 ### Changed
 
 - Release notes are the changelog section and a link to the documentation. The digests of every image, index and the chart are in the signed `digests.txt` asset ([releases](docs/operations/releases.mdx)).
 - Images are pushed by digest with no `candidate-*` tags left in GHCR.
 
-## [0.1.1] - 2026-10-28
+## 0.1.1 (2026-10-28)
 
 The first published release. 0.1.0 was tagged, but its release workflow failed before publishing anything; it is withdrawn and was never published. 0.1.1 holds everything listed under 0.1.0, and:
 
@@ -21,7 +21,7 @@ The first published release. 0.1.0 was tagged, but its release workflow failed b
 
 - `RUN` steps no longer hang or time out on HTTPS where the Pod's MTU is under 1500, as under flannel's VXLAN on k3s: buildkitd clamps the TCP MSS of their connections to the Pod's route MTU. Before, a step's bridge had an MTU of 1500, full-size replies were dropped wherever the ICMP "fragmentation needed" did not reach the server, and `apk add` or `mise install` stalled.
 
-## [0.1.0] - 2026-10-28 [YANKED]
+## 0.1.0 (2026-10-28)
 
 Withdrawn: tagged, never published. See 0.1.1.
 

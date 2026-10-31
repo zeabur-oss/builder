@@ -53,7 +53,7 @@ chart_key() {
 # The version's CHANGELOG.md section, as the release body. Its lines are not wrapped: a release
 # body shows every line break.
 notes() {
-  awk -v v="$plain" '/^## /{ if (p) exit; p = ($2 == v || $2 == "[" v "]"); next } p' "$root/CHANGELOG.md"
+  awk -v v="$plain" '/^## /{ if (p) exit; p = ($2 == v); next } p' "$root/CHANGELOG.md"
 }
 
 # Fails unless the registry answers that the reference does not exist.
