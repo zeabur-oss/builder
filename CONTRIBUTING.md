@@ -21,6 +21,7 @@ itself, so `scripts/ci.sh clippy` runs a job exactly as CI does. Or run what CI 
 
 ```sh
 cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && actionlint
+bun install --frozen-lockfile && bun fmt --check scripts/release.ts && bun check scripts/
 cargo lint                                   # clippy, all targets and features, -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 cargo nextest run --workspace

@@ -8,6 +8,11 @@
       url = "https://flakehub.com/f/oxalica/rust-overlay/0.1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Bun's own release binaries; Nixpkgs is behind, and bun fmt and bun check are newer.
+    nix-bun = {
+      url = "github:zeabur-oss/nix-bun";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -29,6 +34,7 @@
               inherit system;
               overlays = [
                 inputs.rust-overlay.overlays.default
+                inputs.nix-bun.overlays.default
                 inputs.self.overlays.default
               ];
             };
