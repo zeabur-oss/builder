@@ -119,13 +119,34 @@ k3d cluster delete zeabur-builder
 ## Releases
 
 The release workflow is the shared one of [zeabur-oss/.github](https://github.com/zeabur-oss/.github);
-its stages are `bun scripts/release.ts check|build|publish|assets|verify`. To release `vX.Y.Z`:
+its stages are `bun scripts/release.ts check|build|publish|assets|verify`.
 
-1. Set the version in `Cargo.toml` (`[workspace.package]`, then `cargo update -w` for
-   `Cargo.lock`) and in `deploy/chart/Chart.yaml` (`version` and `appVersion`), update the images
-   that `scripts/check-chart.sh` expects, add the `## X.Y.Z (YYYY-MM-DD)` section to `CHANGELOG.md`, and merge
-   to `main`. The section becomes the release body as it is, so keep each paragraph and list item
-   on one line. A pre-release such as `vX.Y.Z-rc.1` needs its own `## X.Y.Z-rc.1 (YYYY-MM-DD)` section.
+A pull request that changes what users of the controller, the images or the chart see adds a change
+file. `nix develop -c knope document-change` asks for its level and summary and writes it to
+`.changeset/`; add paragraphs under the summary when it needs them:
+
+```md
+---
+default: patch
+---
+
+# Railpack builds keep the frontend's cache between builds
+```
+
+Choose the level by the effect on users: `major` when they have to change something (`minor`
+before 1.0), `minor` for something new, `patch` for a fix. A change only to CI or tooling needs
+none; label the pull request `changelog: none` when its title is `feat`, `fix` or `perf` and users
+see no difference. The Changeset check enforces this. Keep each paragraph on one line: the section
+becomes the release body as it is.
+
+To release:
+
+1. Run the Release pull request workflow, with `prerelease: rc` for a release candidate. knope
+   turns the change files into the next `CHANGELOG.md` section and sets `Cargo.toml`;
+   `bun scripts/release.ts bump` sets `Cargo.lock` and the chart's `version` and `appVersion`, and
+   zeabur-oss-bot opens `chore(release): vX.Y.Z`. Edit `CHANGELOG.md` on that branch if the section
+   should read differently.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
-3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it. The workflow leaves a draft release; check it and publish it. If its verify job fails because of the check itself, fix the check and run `verify` again from a checkout, as zeabur-oss/.github's README shows.
+3. Merge the release pull request. zeabur-oss-bot tags the merge commit, and the Release workflow
+   leaves a draft release; check it and publish it. If its verify job fails because of the check itself, fix the check and run `verify` again from a checkout, as zeabur-oss/.github's README shows.

@@ -4,6 +4,7 @@
 // itself checks the CHANGELOG.md section, signs SHA256SUMS and writes the notes. This script keeps
 // what is Zeabur Builder's own.
 //
+//   bump    <version>                           after knope set Cargo.toml: Cargo.lock and the chart
 //   check   <version>                           the version is the crate's and the chart's
 //   build   <version> <os> <arch> <dist>        build the three images into <dist>, smoke them on k3s
 //   publish <version> <artifacts> <published>   push and sign the images and the chart by digest
@@ -59,6 +60,27 @@ async function scratch(): Promise<{
       HELM_REGISTRY_CONFIG: join(docker, "config.json"),
     },
   };
+}
+
+// knope (knope.toml) has set [workspace.package] in Cargo.toml; the workspace's crates in
+// Cargo.lock and the chart's version and appVersion follow.
+async function bump(version: string) {
+  const plain = version.slice(1);
+  const metadata =
+    await $`cargo metadata --manifest-path ${join(root, "Cargo.toml")} --no-deps --format-version 1`.json();
+  const lockFile = join(root, "Cargo.lock");
+  let lock = await Bun.file(lockFile).text();
+  for (const { name } of metadata.packages as { name: string }[]) {
+    const entry = new RegExp(`(\nname = "${name}"\nversion = )"[^"]*"`);
+    if (!entry.test(lock)) fail(`Cargo.lock has no package ${name}`);
+    lock = lock.replace(entry, `$1"${plain}"`);
+  }
+  await Bun.write(lockFile, lock);
+  const chartFile = join(root, "deploy/chart/Chart.yaml");
+  const chart = (await Bun.file(chartFile).text())
+    .replace(/^version: .*$/m, `version: ${plain}`)
+    .replace(/^appVersion: .*$/m, `appVersion: "${plain}"`);
+  await Bun.write(chartFile, chart);
 }
 
 async function check(version: string) {
@@ -199,13 +221,14 @@ async function verify(
 
 const [stage, version, ...rest] = process.argv.slice(2);
 const usage =
-  "usage: bun scripts/release.ts check|build|publish|assets|verify <version> ... (see the script's header)";
+  "usage: bun scripts/release.ts bump|check|build|publish|assets|verify <version> ... (see the script's header)";
 if (!version?.startsWith("v")) fail(usage);
 const args = rest.map((a, i) =>
   (stage === "build" || stage === "verify") && i < 2 ? a : resolve(a),
 );
 try {
-  if (stage === "check" && args.length === 0) await check(version);
+  if (stage === "bump" && args.length === 0) await bump(version);
+  else if (stage === "check" && args.length === 0) await check(version);
   else if (stage === "build" && args.length === 3)
     await build(args[0], args[1], args[2]);
   else if (stage === "publish" && args.length === 2)
