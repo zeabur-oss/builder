@@ -15,6 +15,7 @@
 import {
   Failure,
   absent,
+  pinDigest,
   pushChart,
   pushImage,
   verifyChart,
@@ -148,16 +149,7 @@ async function publish(version: string, artifacts: string, out: string) {
         "linux/arm64": join(artifacts, "candidate-linux-arm64", `${name}.tar`),
       },
     );
-    // A text edit of the key's `digest: ""`, so the comments and blank lines of values.yaml stay.
-    values = values.replace(
-      new RegExp(`^(${key}:\\n(?:  .*\\n|\\s*\\n)*?  digest: )""$`, "m"),
-      `$1"${index}"`,
-    );
-    if (
-      (Bun.YAML.parse(values) as Record<string, { digest: string }>)[key]
-        .digest !== index
-    )
-      fail(`could not pin ${key}.digest in values.yaml`);
+    values = pinDigest(values, [key], index);
   }
   await Bun.write(valuesFile, values);
 
