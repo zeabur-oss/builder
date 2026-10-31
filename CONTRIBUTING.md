@@ -118,7 +118,7 @@ k3d cluster delete zeabur-builder
 ## Releases
 
 The release workflow is the shared one of [zeabur-oss/.github](https://github.com/zeabur-oss/.github);
-its stages are `scripts/release.sh check|build|publish|assets|verify`. To release `vX.Y.Z`:
+its stages are `bun scripts/release.ts check|build|publish|assets|verify`. To release `vX.Y.Z`:
 
 1. Set the version in `Cargo.toml` (`[workspace.package]`, then `cargo update -w` for
    `Cargo.lock`) and in `deploy/chart/Chart.yaml` (`version` and `appVersion`), update the images

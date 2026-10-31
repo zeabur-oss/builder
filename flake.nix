@@ -8,6 +8,11 @@
       url = "https://flakehub.com/f/oxalica/rust-overlay/0.1";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # zeabur-oss-release: pushes, signs and verifies a release (scripts/release.ts).
+    oss-release = {
+      url = "github:zeabur-oss/.github";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -79,10 +84,10 @@
               openssl
 
               # Releases
+              inputs.oss-release.packages.${system}.zeabur-oss-release
               crane
-              cosign
               gh
-              yq-go
+              bun
 
               self.formatter.${system}
             ];

@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   release:
-    uses: zeabur-oss/.github/.github/workflows/release.yml@9a1863f91c2f8253ec3c970b6c91b3fd01a9a69f # main
+    uses: zeabur-oss/.github/.github/workflows/release.yml@ee40c03f00639913fb719bc498b5d5e59e85001e # ci/release-shell
     permissions:
       contents: write
       packages: write
@@ -33,5 +33,6 @@ jobs:
       attestations: write
     with:
       name: Zeabur Builder
+      docs: https://oss.zeabur.com/docs/builder/
       version: ${{ inputs.version }}
       verify-only: ${{ inputs.verify_only == true }}
