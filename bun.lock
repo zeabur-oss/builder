@@ -4,11 +4,11 @@
   "workspaces": {
     "": {
       "dependencies": {
-        "@zeabur-oss/release": "github:zeabur-oss/.github#baac4bf8ba370582803e0b6310faf9254bbcb1bd",
+        "@zeabur-oss/release": "github:zeabur-oss/.github#d87a67f968ce55f306dab269668076aebc51695f",
       },
     },
   },
   "packages": {
-    "@zeabur-oss/release": ["@zeabur-oss/release@github:zeabur-oss/.github#baac4bf", { "bin": { "zeabur-oss-release": "./release/zeabur-oss-release.ts" } }, "zeabur-oss-.github-baac4bf", "sha512-6q2nm6jc/hguO9f1ylv5iLLjSSVEqmlBDhXPJ+FL4jQibI2ypPdraoqn8LtxFzuDebOXOu/KbV790f0yzKcjcw=="],
+    "@zeabur-oss/release": ["@zeabur-oss/release@github:zeabur-oss/.github#d87a67f", { "bin": { "zeabur-oss-release": "./release/zeabur-oss-release.ts" } }, "zeabur-oss-.github-d87a67f", "sha512-+yVzKQJlXoQ67c3PIFZ1CKMrEFNmtGgLM9KHxjpnefCnvmNAd0lZt3P5U4nL06N087Zr4/quGw1r9NsWiWqeCw=="],
   }
 }
