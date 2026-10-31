@@ -520,34 +520,6 @@ pub(crate) fn owned(build: &Build, default_registry: &str) -> Result<Owned, Stri
     })
 }
 
-/// The namespace and `Build` a repository of the default registry belongs to, when it has the
-/// layout the controller writes: `<namespace>/<name>` or `<namespace>/<name>/source`, below the
-/// default registry's path. Any other repository is not the controller's.
-pub(crate) fn repository_owner<'a>(
-    repository: &'a str,
-    default_registry: &str,
-) -> Option<(&'a str, &'a str)> {
-    let registry = default_registry.trim_end_matches('/');
-    let rest = match registry.split_once('/') {
-        Some((_, prefix)) => repository.strip_prefix(prefix)?.strip_prefix('/')?,
-        None => repository,
-    };
-    let mut parts = rest.split('/');
-    let (namespace, name) = (parts.next()?, parts.next()?);
-    match (parts.next(), parts.next()) {
-        (None | Some(zeabur_builder_core::archive::REPOSITORY_SUFFIX), None) => {}
-        _ => return None,
-    }
-    let dns = |s: &str| {
-        s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            && s.starts_with(|c: char| c.is_ascii_alphanumeric())
-            && s.ends_with(|c: char| c.is_ascii_alphanumeric())
-    };
-    let name_ok = name.len() <= 253 && name.split('.').all(|label| !label.is_empty() && dns(label));
-    (namespace.len() <= 63 && dns(namespace) && name_ok).then_some((namespace, name))
-}
-
 /// A ref without its `refs/heads/` or `refs/tags/` prefix.
 pub(crate) fn short_ref(git_ref: &str) -> &str {
     git_ref

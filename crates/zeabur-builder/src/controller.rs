@@ -23,10 +23,11 @@
 //!
 //! Each run gets a token for its own repositories only
 //! ([`crate::registry`]), and a `Build` whose `builder.zeabur.com/upload-token-request` changes
-//! gets an upload token for its archive repository. The repositories of a deleted `Build` are
-//! deleted on its delete event and by a sweep of the registry catalog at start and every
-//! [`SWEEP`], so a namespace never waits for the controller to go. A new `Build` first deletes
-//! what an earlier `Build` of its name left, before any token names those repositories.
+//! gets an upload token for its archive repository. Before either token is signed, the repository
+//! it pushes to is recorded ([`crate::record`]). The recorded repositories of a deleted `Build`
+//! are deleted on its delete event and by a sweep of the records at start and every [`SWEEP`], so
+//! a namespace never waits for the controller to go. A new `Build` first deletes what an earlier
+//! `Build` of its name left, before any token names those repositories.
 //!
 //! Only the holder of the Lease reconciles ([`crate::leader`]). The other replicas watch and
 //! receive webhooks.
@@ -40,7 +41,7 @@ use futures_util::future::BoxFuture;
 use jiff::Timestamp;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Namespace, ObjectReference, Pod, Secret};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, ObjectReference, Pod, Secret};
 use kube::api::{
     Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams, PropagationPolicy,
 };
@@ -71,7 +72,7 @@ use crate::notify::{self, Credentials};
 use crate::registry::{self, Registry, Signer};
 use crate::remote::{self, HttpClient, Resolver};
 use crate::webhook::{self, Lookup, Receiver};
-use crate::{daemon, tls};
+use crate::{daemon, record, tls};
 
 const MANAGER: &str = "zeabur-builder";
 /// The field manager of `status.lastWebhookAt`, apart from [`MANAGER`] so neither removes the
@@ -87,7 +88,7 @@ const UNFINISHED: &str = "status.phase!=Succeeded,status.phase!=Failed,status.ph
 const PAGE: u32 = 100;
 /// The name of the client certificate Secret in a build namespace.
 const CLIENT_TLS_COPY: &str = "zeabur-builder-buildkit-client";
-/// How often the registry catalog is swept for repositories of deleted `Build`s.
+/// How often the records are swept for repositories of deleted `Build`s.
 const SWEEP: Duration = Duration::from_mins(10);
 /// How long a run's registry token outlives the Job's deadline.
 const TOKEN_MARGIN: Duration = Duration::from_mins(10);
@@ -1271,7 +1272,14 @@ async fn registry_auth(
         Err(message) => return Ok(Err(message)),
     };
     let deadline = Duration::from_secs(u64::try_from(settings.job_deadline_seconds).unwrap_or(0));
-    let token = signer.token(&grants, now(), deadline + TOKEN_MARGIN);
+    let at = now();
+    if let Some(image) = &owned.image {
+        let until = at
+            .checked_add(deadline + TOKEN_MARGIN)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        record_push(ctx, build, image, until).await?;
+    }
+    let token = signer.token(&grants, at, deadline + TOKEN_MARGIN);
     registry::with_token(&base, &owned.host, &token)
         .map(|config| Ok(ByteString(config)))
         .map_err(Error::Invalid)
@@ -1315,6 +1323,7 @@ async fn claim_repositories(ctx: &Context, build: &Build) -> Result<(), Error> {
     let namespace = build.namespace().unwrap_or_default();
     clear_repositories(ctx, &namespace, &build.name_any())
         .await
+        .map(drop)
         .map_err(Error::Invalid)
 }
 
@@ -1355,6 +1364,10 @@ async fn upload_token(
     let name = build.name_any();
     let [source, _] = decide::repositories(&ctx.settings.default_registry, &namespace, &name);
     let signer = signer(ctx).await.map_err(Error::Invalid)?;
+    let expires = at
+        .checked_add(UPLOAD_TTL)
+        .map_err(|e| Error::Invalid(e.to_string()))?;
+    record_push(ctx, build, &source, expires).await?;
     let token = signer.token(&[(source.as_str(), registry::Access::PUSH)], at, UPLOAD_TTL);
     let host = decide::registry_host(&ctx.settings.default_registry);
     let secret_name = format!("{name}-upload");
@@ -1394,9 +1407,6 @@ async fn upload_token(
         };
         secrets.create(&PostParams::default(), &secret).await?;
     }
-    let expires = at
-        .checked_add(UPLOAD_TTL)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
     tracing::info!(build = %name, namespace = %namespace, request, "upload token issued");
     Ok(UploadToken {
         request: request.to_owned(),
@@ -1405,20 +1415,53 @@ async fn upload_token(
     })
 }
 
-/// Deletes the repositories `<namespace>/<name>/source` and `<namespace>/<name>` in the default
-/// registry.
-async fn clear_repositories(ctx: &Context, namespace: &str, name: &str) -> Result<(), String> {
-    let repositories = decide::repositories(&ctx.settings.default_registry, namespace, name);
-    let signer = signer(ctx).await?;
-    let grants: Vec<_> = repositories
-        .iter()
-        .map(|r| (r.as_str(), registry::Access::DELETE))
-        .collect();
-    let token = signer.token(&grants, now(), DELETE_TTL);
-    for repository in &repositories {
-        ctx.registry.delete_repository(repository, &token).await?;
+/// The records, in the controller's namespace.
+fn records(ctx: &Context) -> Api<ConfigMap> {
+    Api::namespaced(ctx.client.clone(), &ctx.settings.namespace)
+}
+
+/// Records that `repository` gets a token for `build` that pushes to it until `until`.
+async fn record_push(
+    ctx: &Context,
+    build: &Build,
+    repository: &str,
+    until: Timestamp,
+) -> Result<(), Error> {
+    let namespace = build.namespace().unwrap_or_default();
+    record::add(
+        &records(ctx),
+        &namespace,
+        &build.name_any(),
+        repository,
+        until,
+    )
+    .await
+    .map_err(Error::Invalid)
+}
+
+/// Deletes the repositories recorded for the `Build` `namespace/name` in the default registry,
+/// and says whether it had a record. The record goes once no token pushes to them any more.
+async fn clear_repositories(ctx: &Context, namespace: &str, name: &str) -> Result<bool, String> {
+    let records = records(ctx);
+    let Some(record) = record::get(&records, namespace, name).await? else {
+        return Ok(false);
+    };
+    if !record.repositories.is_empty() {
+        let signer = signer(ctx).await?;
+        let grants: Vec<_> = record
+            .repositories
+            .iter()
+            .map(|r| (r.as_str(), registry::Access::DELETE))
+            .collect();
+        let token = signer.token(&grants, now(), DELETE_TTL);
+        for repository in &record.repositories {
+            ctx.registry.delete_repository(repository, &token).await?;
+        }
     }
-    Ok(())
+    if record.tokens_until < now() {
+        record::remove(&records, namespace, name).await?;
+    }
+    Ok(true)
 }
 
 /// Clears the repositories of a `Build` unless one of that name exists again.
@@ -1428,10 +1471,9 @@ async fn clear_if_gone(ctx: &Context, namespace: &str, name: &str) -> Result<(),
         .await
         .map_err(|e| e.to_string())?
         .is_some();
-    if exists {
+    if exists || !clear_repositories(ctx, namespace, name).await? {
         return Ok(());
     }
-    clear_repositories(ctx, namespace, name).await?;
     tracing::info!(
         namespace,
         build = name,
@@ -1459,27 +1501,14 @@ async fn all_builds(client: &Client) -> Result<std::collections::HashSet<(String
     }
 }
 
-/// Deletes the repositories of every `Build` that no longer exists.
+/// Deletes the recorded repositories of every `Build` that no longer exists.
 async fn sweep_registry(ctx: &Context) -> Result<(), String> {
-    let signer = signer(ctx).await?;
-    let token = signer.token(
-        &[(registry::CATALOG, registry::Access::PULL)],
-        now(),
-        DELETE_TTL,
-    );
-    let repositories = ctx.registry.catalog(&token).await?;
+    let records = record::list(&records(ctx), PAGE).await?;
     let builds = all_builds(&ctx.client).await.map_err(|e| e.to_string())?;
-    let mut gone = std::collections::BTreeSet::new();
-    for repository in &repositories {
-        if let Some((namespace, name)) =
-            decide::repository_owner(repository, &ctx.settings.default_registry)
-            && !builds.contains(&(namespace.to_owned(), name.to_owned()))
-        {
-            gone.insert((namespace, name));
+    for record in records {
+        if !builds.contains(&(record.namespace.clone(), record.name.clone())) {
+            clear_if_gone(ctx, &record.namespace, &record.name).await?;
         }
-    }
-    for (namespace, name) in gone {
-        clear_if_gone(ctx, namespace, name).await?;
     }
     Ok(())
 }

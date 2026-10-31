@@ -9,6 +9,7 @@ mod github_app;
 mod leader;
 mod notify;
 mod output;
+mod record;
 mod registry;
 mod remote;
 mod ssh;

@@ -94,7 +94,7 @@ printf '{"auths":{"zot.zot.svc:5000":{"registrytoken":"%s"}}}' "$TOKEN" > auth.j
 oras push --registry-config auth.json zot.zot.svc:5000/zeabur_admin/tools:v1 ./file
 ```
 
-Avoid the `<namespace>/<name>` format for these images' repository paths. For example, the first path segment can contain `_` or `.`, which Namespace names don't permit. Otherwise, the controller deletes these images during cleanup.
+The controller doesn't delete these images, even when the path has the `<namespace>/<name>` format. It deletes only repositories it pushed to for a Build, as described below. If a Build of the same name later pushes to the same repository, deleting that Build also deletes your tags.
 
 ## Clean up images and sources
 
@@ -103,7 +103,9 @@ When you delete a Build, either on its own or along with its Namespace, the cont
 - `<namespace>/<build>/source`
 - `<namespace>/<build>`
 
-The controller handles deletion events. It also scans the registry's repository catalog at startup and every 10 minutes to catch missed cleanup. Images are therefore removed within one scan cycle after deletion.
+The controller deletes only the repositories it pushed to for that Build. Before it issues a token that pushes to a repository, it records the repository in a ConfigMap in its own Namespace, one per Build. A repository without a record stays, even if its path matches.
+
+The controller handles deletion events. It also checks its records at startup and every 10 minutes to catch missed cleanup. Images are therefore removed within one scan cycle after deletion.
 
 While the controller is running, admins can use `registry-token --delete` to get a token, then manually delete images with `DELETE /v2/<repository>/manifests/<digest>`.
 
@@ -162,6 +164,8 @@ kubectl -n zot rollout restart statefulset/zot
 The Helm chart adds a Role in the Namespace that holds the key. The Role grants only `get` permission for that Secret.
 
 The controller uses its existing Secret permissions to write the `<build>-upload` Secret.
+
+The records are ConfigMaps in the controller's Namespace with the label `builder.zeabur.com/repositories: "true"`. A record stays after its Build is deleted until the Build's tokens expire.
 
 ## Known limitations
 
