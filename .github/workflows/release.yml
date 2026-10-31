@@ -9,12 +9,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to rehearse or verify, as in Cargo.toml (v0.1.1); a rehearsal never publishes'
+        description: 'Version to rehearse, as in Cargo.toml (v0.1.1); a rehearsal never publishes'
         required: true
-      verify_only:
-        description: 'Verify the existing draft release of this version; build and publish nothing'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -25,7 +21,7 @@ concurrency:
 
 jobs:
   release:
-    uses: zeabur-oss/.github/.github/workflows/release.yml@cd8171d0dc9923e3ab495f4eb35815c90e40d4e8 # ci/release-shell
+    uses: zeabur-oss/.github/.github/workflows/release.yml@594f6faaa5ffa5283585e5fe46122a3526c27d08 # ci/release-shell
     permissions:
       contents: write
       packages: write
@@ -35,4 +31,3 @@ jobs:
       name: Zeabur Builder
       docs: https://oss.zeabur.com/docs/builder/
       version: ${{ inputs.version }}
-      verify-only: ${{ inputs.verify_only == true }}

@@ -127,4 +127,4 @@ its stages are `bun scripts/release.ts check|build|publish|assets|verify`. To re
    on one line. A pre-release such as `vX.Y.Z-rc.1` needs its own `## X.Y.Z-rc.1 (YYYY-MM-DD)` section.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
-3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it. The workflow leaves a draft release; check it and publish it.
+3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it. The workflow leaves a draft release; check it and publish it. If its verify job fails because of the check itself, fix the check and run `verify` again from a checkout, as zeabur-oss/.github's README shows.
