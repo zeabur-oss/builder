@@ -8,9 +8,9 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Bun's own release binaries; Nixpkgs is behind, and bun fmt and bun check are newer.
-    nix-bun = {
-      url = "github:zeabur-oss/nix-bun";
+    # The base shell of every zeabur-oss repository: Bun, the release tools and the shared linters.
+    oss = {
+      url = "github:zeabur-oss/.github";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -34,7 +34,6 @@
               inherit system;
               overlays = [
                 inputs.rust-overlay.overlays.default
-                inputs.nix-bun.overlays.default
                 inputs.self.overlays.default
               ];
             };
@@ -65,6 +64,7 @@
         { pkgs, system }:
         {
           default = pkgs.mkShell {
+            inputsFrom = [ inputs.oss.devShells.${system}.base ];
             packages = with pkgs; [
               rustToolchain
 
@@ -72,25 +72,13 @@
               cargo-auditable
               cargo-deny
               cargo-nextest
-              jq
-              shellcheck
-              actionlint
 
               # Kubernetes and BuildKit integration tests
               kind
               k3d
               kubectl
-              kubernetes-helm
               buildkit
               openssl
-
-              # Releases: scripts/release.ts and @zeabur-oss/release (package.json) call these
-              bun
-              crane
-              cosign
-              gh
-
-              self.formatter.${system}
             ];
 
             env = {
