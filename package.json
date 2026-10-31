@@ -1,6 +1,6 @@
 {
   "private": true,
   "dependencies": {
-    "@zeabur-oss/release": "github:zeabur-oss/.github#9dec226b569285584db939acfaadf3a1a2ab7750"
+    "@zeabur-oss/release": "github:zeabur-oss/.github#61718ad36d7316f2e2d253de5f24f5fd73a3822d"
   }
 }
