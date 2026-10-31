@@ -2,10 +2,10 @@
   description = "zeabur-builder development environment";
 
   inputs = {
-    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1"; # unstable Nixpkgs
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     # Rust toolchains. The locked revision sets the nightly (overlays.default).
     rust-overlay = {
-      url = "https://flakehub.com/f/oxalica/rust-overlay/0.1";
+      url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # Bun's own release binaries; Nixpkgs is behind, and bun fmt and bun check are newer.
