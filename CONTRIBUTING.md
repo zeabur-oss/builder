@@ -21,6 +21,7 @@ itself, so `scripts/ci.sh clippy` runs a job exactly as CI does. Or run what CI 
 
 ```sh
 cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && actionlint
+bun install --frozen-lockfile && bun fmt --check scripts/release.ts && bun check scripts/
 cargo lint                                   # clippy, all targets and features, -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 cargo nextest run --workspace
@@ -118,12 +119,13 @@ k3d cluster delete zeabur-builder
 ## Releases
 
 The release workflow is the shared one of [zeabur-oss/.github](https://github.com/zeabur-oss/.github);
-its stages are `scripts/release.sh check|build|publish|assets|verify`. To release `vX.Y.Z`:
+its stages are `bun scripts/release.ts check|build|publish|assets|verify`. To release `vX.Y.Z`:
 
 1. Set the version in `Cargo.toml` (`[workspace.package]`, then `cargo update -w` for
    `Cargo.lock`) and in `deploy/chart/Chart.yaml` (`version` and `appVersion`), update the images
-   that `scripts/check-chart.sh` expects, add the `## [X.Y.Z]` section to `CHANGELOG.md`, and merge
-   to `main`.
+   that `scripts/check-chart.sh` expects, add the `## X.Y.Z (YYYY-MM-DD)` section to `CHANGELOG.md`, and merge
+   to `main`. The section becomes the release body as it is, so keep each paragraph and list item
+   on one line. A pre-release such as `vX.Y.Z-rc.1` needs its own `## X.Y.Z-rc.1 (YYYY-MM-DD)` section.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
-3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it. The workflow leaves a draft release; check it and publish it.
+3. Once CI has passed on `main` for that commit, push the tag `vX.Y.Z` on it. The workflow leaves a draft release; check it and publish it. If its verify job fails because of the check itself, fix the check and run `verify` again from a checkout, as zeabur-oss/.github's README shows.
