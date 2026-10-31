@@ -5,8 +5,7 @@
 # the tag being verified. crane pushes the images, helm the chart, cosign signs and verifies them.
 #
 #   scripts/release.sh check   <version>                                the version is the crate's
-#                                                                       and the chart's, with a
-#                                                                       CHANGELOG.md section
+#                                                                       and the chart's
 #   scripts/release.sh build   <version> <os> <arch> <dist>             build the three images into
 #                                                                       <dist>, smoke them on k3s
 #   scripts/release.sh publish <version> <artifacts> <published>        push and sign the images
@@ -48,21 +47,6 @@ chart_key() {
     builder-job) echo jobImage ;;
     builder-railpack) echo railpackImage ;;
   esac
-}
-
-# The CHANGELOG.md section of the version, or of its normal version for a pre-release, with the
-# wrapped lines joined: a release body shows every line break.
-notes() {
-  local v section
-  for v in "$plain" "${plain%%-*}"; do
-    section="$(awk -v v="$v" '/^## /{ if (p) exit; p = ($2 == v || $2 == "[" v "]"); next } p' "$root/CHANGELOG.md")"
-    if [[ -n "${section//[[:space:]]/}" ]]; then
-      pandoc --from gfm --to gfm --wrap none <<<"$section"
-      return
-    fi
-  done
-  echo "CHANGELOG.md has no section for $plain" >&2
-  return 1
 }
 
 # Fails unless the registry answers that the reference does not exist.
@@ -135,7 +119,6 @@ case "$stage" in
     [[ "$version" == "v$crate" ]] || { echo "the tag $version is not v$crate, the crate zeabur-builder's version" >&2; status=1; }
     [[ "$chart" == "$plain $plain" ]] ||
       { echo "deploy/chart/Chart.yaml has version and appVersion $chart, not $plain" >&2; status=1; }
-    notes >/dev/null || status=1
     exit $status
     ;;
 
@@ -231,10 +214,11 @@ case "$stage" in
     recorded "$out/assets/digests.txt" chart >/dev/null
     (cd "$out/assets" && LC_ALL=C sha256sum -- * >SHA256SUMS)
     cosign sign-blob --yes --bundle "$out/assets/SHA256SUMS.sigstore.json" "$out/assets/SHA256SUMS"
-    {
-      notes
-      printf '\nInstall, upgrade and verify: [oss.zeabur.com/docs/builder](https://oss.zeabur.com/docs/builder/)\n'
-    } >"$out/notes.md"
+    cat >"$out/notes.md" <<NOTES
+What changed: [CHANGELOG.md](https://github.com/zeabur-oss/builder/blob/$version/CHANGELOG.md)
+
+Install, upgrade and verify: [oss.zeabur.com/docs/builder](https://oss.zeabur.com/docs/builder/)
+NOTES
     ;;
 
   verify)

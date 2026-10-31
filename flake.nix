@@ -82,7 +82,6 @@
               crane
               cosign
               gh
-              pandoc
               yq-go
 
               self.formatter.${system}
