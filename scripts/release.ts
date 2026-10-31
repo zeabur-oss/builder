@@ -1,6 +1,6 @@
 // One stage of a release, as the shared release workflow of zeabur-oss/.github runs it, in the dev
 // shell of the commit being released: `bun scripts/release.ts <stage> <version> ...`.
-// zeabur-oss-release (zeabur-oss/.github, release/) pushes, signs and verifies; the workflow
+// @zeabur-oss/release (zeabur-oss/.github, release/) pushes, signs and verifies; the workflow
 // itself checks the CHANGELOG.md section, signs SHA256SUMS and writes the notes. This script keeps
 // what is Zeabur Builder's own.
 //
@@ -12,6 +12,7 @@
 //
 // <artifacts> holds the workflow's earlier artifacts: candidate-linux-<arch>/ from build and
 // published/ from publish. Linux only; build is native (amd64 on x86_64, arm64 on aarch64).
+import { Failure, absent, pushChart, pushImage, verifyChart, verifyImage } from "@zeabur-oss/release";
 import { $ } from "bun";
 import { rmSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -31,15 +32,6 @@ const images = [
 function fail(message: string): never {
   console.error(message);
   process.exit(1);
-}
-
-// The one reference digests.txt records for a kind, such as `builder index`.
-async function recorded(digests: string, kind: string): Promise<string> {
-  for (const line of (await Bun.file(digests).text()).split("\n")) {
-    const at = line.lastIndexOf(" ");
-    if (line.slice(0, at).trim() === kind) return line.slice(at + 1);
-  }
-  fail(`${digests} records no ${kind}`);
 }
 
 // A directory of this run's own, removed when it ends, with an empty registry login. Helm reads
@@ -96,7 +88,7 @@ async function publish(version: string, artifacts: string, out: string) {
   // Every tag is refused before the first push, so a release never stops halfway on a tag that was
   // there from the start.
   const tags = [...images.map(({ name }) => `ghcr.io/${owner}/${name}:${plain}`), `${charts}/zeabur-builder:${plain}`];
-  await $`zeabur-oss-release absent ${tags}`;
+  await absent(...tags);
 
   const chart = join(dir, "chart");
   await cp(join(root, "deploy/chart"), chart, { recursive: true });
@@ -105,8 +97,10 @@ async function publish(version: string, artifacts: string, out: string) {
   const valuesFile = join(chart, "values.yaml");
   let values = await Bun.file(valuesFile).text();
   for (const { name, key } of images) {
-    await $`zeabur-oss-release push-image ${out} ${name} ghcr.io/${owner}/${name}:${plain} linux/amd64=${join(artifacts, "candidate-linux-amd64", `${name}.tar`)} linux/arm64=${join(artifacts, "candidate-linux-arm64", `${name}.tar`)}`;
-    const index = (await recorded(join(out, "digests.txt"), `${name} index`)).split("@")[1];
+    const { digest: index } = await pushImage(out, name, `ghcr.io/${owner}/${name}:${plain}`, {
+      "linux/amd64": join(artifacts, "candidate-linux-amd64", `${name}.tar`),
+      "linux/arm64": join(artifacts, "candidate-linux-arm64", `${name}.tar`),
+    });
     // A text edit of the key's `digest: ""`, so the comments and blank lines of values.yaml stay.
     values = values.replace(new RegExp(`^(${key}:\\n(?:  .*\\n|\\s*\\n)*?  digest: )""$`, "m"), `$1"${index}"`);
     if ((Bun.YAML.parse(values) as Record<string, { digest: string }>)[key].digest !== index)
@@ -117,7 +111,7 @@ async function publish(version: string, artifacts: string, out: string) {
   // The chart at the version of Chart.yaml (checked equal to the release's by `check`).
   await $`helm lint --strict ${chart} --set registry.host=registry.example:5000`;
   await $`helm package ${chart} --destination ${out}`;
-  await $`zeabur-oss-release push-chart ${out} oci://${charts} ${join(out, `zeabur-builder-${plain}.tgz`)}`;
+  await pushChart(out, `oci://${charts}`, join(out, `zeabur-builder-${plain}.tgz`));
   await $`cat ${join(out, "subjects.json")} ${join(out, "digests.txt")}`;
 }
 
@@ -135,13 +129,12 @@ async function verify(version: string, os: string, arch: string, downloaded: str
   const digests = join(downloaded, "digests.txt");
   const values = Bun.YAML.parse(await $`helm show values ${chart}`.text()) as Record<string, { repository: string; digest: string }>;
   for (const { name, key } of images) {
-    await $`zeabur-oss-release verify-image ${digests} ${name} linux/amd64 linux/arm64`;
     // The chart installs this index by default.
-    const index = await recorded(digests, `${name} index`);
+    const index = String(await verifyImage(digests, name, ["linux/amd64", "linux/arm64"]));
     const pinned = `${values[key].repository}@${values[key].digest}`;
     if (pinned !== index) fail(`the chart's ${key} is ${pinned}, not ${index}`);
   }
-  await $`zeabur-oss-release verify-chart ${digests} ${chart}`;
+  await verifyChart(digests, chart);
   await $`helm template builder ${chart} --set registry.host=registry.example:5000 --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer > /dev/null`;
   console.log(`release ${version} verified`);
 }
@@ -158,6 +151,7 @@ try {
   else if (stage === "verify" && args.length === 3) await verify(version, args[0], args[1], args[2]);
   else fail(usage);
 } catch (e) {
+  if (e instanceof Failure) fail(e.message);
   // The command has printed its own error.
   if (e instanceof $.ShellError) process.exit(e.exitCode);
   throw e;

@@ -1,0 +1,14 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "@zeabur-oss/release": "github:zeabur-oss/.github#cd8171d0dc9923e3ab495f4eb35815c90e40d4e8",
+      },
+    },
+  },
+  "packages": {
+    "@zeabur-oss/release": ["@zeabur-oss/release@github:zeabur-oss/.github#cd8171d", { "bin": { "zeabur-oss-release": "./release/zeabur-oss-release.ts" } }, "zeabur-oss-.github-cd8171d", "sha512-AuPEFDl2+YubuLEn+g4h4BcsX5ZBn0w+ekN5ZuawW9P0TbBohGGxBNU0OQhgzXOghodUe3B/mXM24jylqWWAXA=="],
+  }
+}
