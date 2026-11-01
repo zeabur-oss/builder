@@ -44,8 +44,8 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ .Rele
 subjects:
   - {kind: ServiceAccount, name: zeabur-builder, namespace: {{ .Release.Namespace }}}
 ---
-# Each namespace's buildkitd, the GitHub App's installation grants and the leader election Lease,
-# in this namespace only.
+# Each namespace's buildkitd, the GitHub App's installation grants, the records of the
+# repositories pushed for each Build and the leader election Lease, in this namespace only.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -64,10 +64,10 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
     verbs: [get, create, patch, delete]
+  # The grants, and one record per Build. `create` and `list` cannot be limited to names.
   - apiGroups: [""]
     resources: [configmaps]
-    resourceNames: [{{ .Values.githubApp.grantsName }}]
-    verbs: [get]
+    verbs: [get, list, create, update, delete]
   # The leader election Lease. `create` cannot be limited to one name.
   - apiGroups: [coordination.k8s.io]
     resources: [leases]

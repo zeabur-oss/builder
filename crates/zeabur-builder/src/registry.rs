@@ -26,7 +26,6 @@ use crate::remote::HttpClient;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ANSWER: usize = 4 << 20;
-const CATALOG_PAGE: usize = 1000;
 const DOCKER_CONFIG_JSON: &str = "kubernetes.io/dockerconfigjson";
 const USER_AGENT: &str = concat!("zeabur-builder/", env!("CARGO_PKG_VERSION"));
 const INDEX_TYPES: [&str; 2] = [
@@ -72,9 +71,6 @@ impl Access {
         actions
     }
 }
-
-/// The grant name that lists the catalog: the legacy `repository::pull` scope.
-pub(crate) const CATALOG: &str = "";
 
 /// The key that signs tokens.
 pub(crate) struct Signer {
@@ -230,12 +226,6 @@ pub(crate) struct Registry {
 }
 
 #[derive(Deserialize)]
-struct Catalog {
-    #[serde(default)]
-    repositories: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
 struct Tags {
     #[serde(default)]
     tags: Option<Vec<String>>,
@@ -293,31 +283,6 @@ impl Registry {
             .map_err(|e| format!("{method} {url}: {e}"))?
             .to_bytes();
         Ok((parts.status, parts.headers, body))
-    }
-
-    /// Every repository, with a token for [`CATALOG`].
-    pub(crate) async fn catalog(&self, token: &str) -> Result<Vec<String>, String> {
-        let mut all = Vec::new();
-        let mut last: Option<String> = None;
-        loop {
-            let path = last.as_ref().map_or_else(
-                || format!("_catalog?n={CATALOG_PAGE}"),
-                |last| format!("_catalog?n={CATALOG_PAGE}&last={last}"),
-            );
-            let (status, _, body) = self.send(Method::GET, &path, token).await?;
-            if status != StatusCode::OK {
-                return Err(format!("listing the catalog: {status}"));
-            }
-            let page: Catalog =
-                serde_json::from_slice(&body).map_err(|e| format!("listing the catalog: {e}"))?;
-            let page = page.repositories.unwrap_or_default();
-            let full = page.len() >= CATALOG_PAGE;
-            last = page.last().cloned();
-            all.extend(page);
-            if !full {
-                return Ok(all);
-            }
-        }
     }
 
     /// Deletes every tagged manifest of `repository`, and the manifests its indexes list. The

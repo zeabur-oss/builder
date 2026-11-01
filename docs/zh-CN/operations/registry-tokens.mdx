@@ -95,7 +95,7 @@ printf '{"auths":{"zot.zot.svc:5000":{"registrytoken":"%s"}}}' "$TOKEN" > auth.j
 oras push --registry-config auth.json zot.zot.svc:5000/zeabur_admin/tools:v1 ./file
 ```
 
-这类镜像的仓库路径应避开 `<namespace>/<name>` 格式。例如，第一段名称可以包含 Namespace 名称不允许的 `_` 或 `.`。否则，控制器会在清理时删除这些镜像。
+即使路径是 `<namespace>/<name>` 格式，控制器也不会删除这些镜像。控制器只删除它为 Build 推送过的仓库，详见下方说明。如果之后有同名的 Build 推送到同一个仓库，删除那个 Build 时也会一并删除你推送的标签。
 
 ## 清理镜像与源代码
 
@@ -104,7 +104,9 @@ oras push --registry-config auth.json zot.zot.svc:5000/zeabur_admin/tools:v1 ./f
 - `<namespace>/<build>/source`
 - `<namespace>/<build>`
 
-控制器会处理删除事件，也会在启动时及每 10 分钟扫描 registry 的仓库目录，补上遗漏的清理。因此，控制器会在 Build 删除后的一个扫描周期内移除镜像。
+控制器只删除它为这个 Build 推送过的仓库。发出能推送到某个仓库的令牌前，控制器会先把仓库记在自己 Namespace 的 ConfigMap 里，每个 Build 一个。没有记录的仓库会保留，即使路径相符也一样。
+
+控制器会处理删除事件，也会在启动时及每 10 分钟检查这些记录，补上遗漏的清理。因此，控制器会在 Build 删除后的一个扫描周期内移除镜像。
 
 控制器运行期间，管理员可以使用 `registry-token --delete` 获取令牌，再用 `DELETE /v2/<repository>/manifests/<digest>` 手动删除镜像。
 
@@ -163,6 +165,8 @@ kubectl -n zot rollout restart statefulset/zot
 Helm chart 会在密钥所在的 Namespace 中添加 Role，只授予该 Secret 的 `get` 权限。
 
 控制器使用现有的 Secret 权限写入 `<build>-upload` Secret。
+
+记录是控制器 Namespace 中带有 `builder.zeabur.com/repositories: "true"` 标签的 ConfigMap。Build 删除后，记录会保留到它的令牌全部过期为止。
 
 ## 已知限制
 
