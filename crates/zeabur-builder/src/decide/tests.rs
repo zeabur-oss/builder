@@ -921,37 +921,6 @@ fn an_image_elsewhere_is_not_owned() {
 }
 
 #[test]
-fn only_the_controllers_layout_has_an_owner() {
-    let registry = "zot.zot.svc:5000";
-    assert_eq!(
-        repository_owner("team-a/api", registry),
-        Some(("team-a", "api"))
-    );
-    assert_eq!(
-        repository_owner("team-a/api.v2/source", registry),
-        Some(("team-a", "api.v2"))
-    );
-    for other in [
-        "team-a",
-        "team-a/api/web",
-        "team-a/api/source/x",
-        "zeabur_admin/tools",
-        "admin.images/tools",
-        "team-a/Api",
-        "-a/api",
-    ] {
-        assert_eq!(repository_owner(other, registry), None, "{other}");
-    }
-    let registry = "registry.local:5000/builds/";
-    assert_eq!(
-        repository_owner("builds/team-a/api", registry),
-        Some(("team-a", "api"))
-    );
-    assert_eq!(repository_owner("team-a/api", registry), None);
-    assert_eq!(repository_owner("buildsx/team-a/api", registry), None);
-}
-
-#[test]
 fn a_deleted_run_is_not_created_again() {
     let mut build = build();
     build.status = Some(BuildStatus {

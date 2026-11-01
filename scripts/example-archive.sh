@@ -4,7 +4,9 @@
 #   scripts/example-archive.sh <context>
 # Asks A/app for an upload token, pushes a small Dockerfile app with it to
 # <registry>/A/app/source, as docs/builds/archive-source.mdx describes, and builds it in A. A Build of the same name in B and another
-# Build in A name the same digest and must fail at the source. Removes its Builds at the end.
+# Build in A name the same digest and must fail at the source. Deleting A/app removes its
+# repositories, while A/handmade, pushed by hand, stays through a Build of that name being created
+# and deleted. Removes its Builds at the end.
 # Environment: A and B (team-a, team-b), TIMEOUT (600).
 set -euo pipefail
 
@@ -23,7 +25,8 @@ wrong() {
 }
 
 cleanup() {
-  k -n "$a" delete build app other --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  k -n "$a" delete build app other handmade --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  k -n "$a" delete pod registry-check --ignore-not-found --wait=false >/dev/null 2>&1 || true
   k -n "$b" delete build app --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -141,6 +144,66 @@ for target in "$b/app" "$a/other"; do
     wrong "$target: $result"
   fi
 done
+
+echo "== cleanup"
+admin=$(k -n builder-system exec deploy/zeabur-builder -- /zeabur-builder registry-token \
+  --repository "$a/handmade" --repository "$a/app" --repository "$a/app/source" --push --ttl 1800)
+k -n "$a" run registry-check --restart Never --image docker.io/curlimages/curl:8.11.1 \
+  --command -- sleep 1800 >/dev/null
+k -n "$a" wait pod/registry-check --for=condition=Ready --timeout 120s >/dev/null
+check() {
+  k -n "$a" exec -i registry-check -- \
+    env "AUTH=Authorization: Bearer $admin" "BASE=http://$registry" "$@"
+}
+status() { # $1 = path below /v2/
+  # shellcheck disable=SC2016 # expanded in the Pod
+  check sh -c 'curl -s -o /dev/null -w "%{http_code}" -H "$AUTH" "$BASE/v2/$0"' "$1"
+}
+tagged() { # $1 = repository; succeeds when it has a tag. Zot answers [] or 404 for none.
+  # shellcheck disable=SC2016 # expanded in the Pod
+  check sh -c 'curl -s -H "$AUTH" "$BASE/v2/$0/tags/list"' "$1" | grep -q '"tags":\["'
+}
+
+# An image someone pushed to a path of the Build layout, before any Build of that name.
+check env "REPO=$a/handmade" sh -eu -s <<'EOF'
+cd /tmp && printf '{}' > empty
+digest="sha256:$(sha256sum empty | cut -d' ' -f1)"
+location=$(curl -fsS -H "$AUTH" -X POST -o /dev/null -D - "$BASE/v2/$REPO/blobs/uploads/" |
+  tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+case $location in /*) location="$BASE$location" ;; esac
+case $location in *\?*) sep='&' ;; *) sep='?' ;; esac
+curl -fsS -H "$AUTH" -X PUT -H 'Content-Type: application/octet-stream' \
+  --data-binary @empty "$location${sep}digest=$digest" -o /dev/null
+printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.example.handmade","config":{"mediaType":"application/vnd.oci.empty.v1+json","digest":"%s","size":2},"layers":[{"mediaType":"application/vnd.oci.empty.v1+json","digest":"%s","size":2}]}' \
+  "$digest" "$digest" > manifest.json
+curl -fsS -H "$AUTH" -X PUT -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' \
+  --data-binary @manifest.json "$BASE/v2/$REPO/manifests/1" -o /dev/null
+EOF
+
+recorded=$(k -n builder-system get configmap -l builder.zeabur.com/repositories=true -o json |
+  jq -r --arg ns "$a" '.items[].data | select(.namespace == $ns and .name == "app") | .repositories')
+if [[ $recorded == "$a/app"$'\n'"$a/app/source" ]]; then
+  ok "the controller records $a/app's repositories"
+else
+  wrong "the record of $a/app: $recorded"
+fi
+
+# A Build of that name claims its repositories when it starts and clears them when it goes. The
+# controller handles delete events in order, so A/handmade is done once A/app's repositories are.
+build "$a" handmade "{archive: {}}" | k apply -f - >/dev/null
+k -n "$a" wait build/handmade --timeout 60s --for=jsonpath='{.status.observedGeneration}'=1 >/dev/null
+k -n "$a" delete build handmade >/dev/null
+k -n "$a" delete build app >/dev/null
+deadline=$(($(date +%s) + 120))
+while (($(date +%s) < deadline)); do
+  tagged "$a/app" || tagged "$a/app/source" || break
+  sleep 3
+done
+for repository in "$a/app" "$a/app/source"; do
+  if tagged "$repository"; then wrong "$repository has tags after deleting $a/app"; else ok "deleting $a/app deletes $repository"; fi
+done
+code=$(status "$a/handmade/manifests/1")
+if [[ $code == 200 ]]; then ok "$a/handmade, pushed by hand, stays"; else wrong "$a/handmade after its Build came and went: $code"; fi
 
 if ((failures)); then
   echo "$failures checks failed" >&2

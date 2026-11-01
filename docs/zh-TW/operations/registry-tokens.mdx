@@ -95,7 +95,7 @@ printf '{"auths":{"zot.zot.svc:5000":{"registrytoken":"%s"}}}' "$TOKEN" > auth.j
 oras push --registry-config auth.json zot.zot.svc:5000/zeabur_admin/tools:v1 ./file
 ```
 
-這類映像檔的倉庫路徑應避開 `<namespace>/<name>` 格式。例如，可以在第一段名稱中加入 Namespace 名稱不允許的 `_` 或 `.`。否則，控制器會在清理時刪除這些映像檔。
+即使路徑是 `<namespace>/<name>` 格式，控制器也不會刪除這些映像檔。控制器只刪除它替 Build 推送過的倉庫，詳見下方說明。如果之後有同名的 Build 推送到同一個倉庫，刪除那個 Build 時也會一併刪除你推送的 tag。
 
 ## 清理映像檔與來源
 
@@ -104,7 +104,9 @@ oras push --registry-config auth.json zot.zot.svc:5000/zeabur_admin/tools:v1 ./f
 - `<namespace>/<build>/source`
 - `<namespace>/<build>`
 
-控制器會處理刪除事件，也會在啟動時及每 10 分鐘掃描 registry 的倉庫目錄，清理先前遺漏的資料。因此，刪除 Build 後，控制器會在一個掃描週期內移除映像檔。
+控制器只刪除它替這個 Build 推送過的倉庫。發出能推送到某個倉庫的權杖前，控制器會先把倉庫記在自己 Namespace 的 ConfigMap 裡，每個 Build 一個。沒有紀錄的倉庫會留著，即使路徑相符也一樣。
+
+控制器會處理刪除事件，也會在啟動時及每 10 分鐘檢查這些紀錄，清理先前遺漏的資料。因此，刪除 Build 後，控制器會在一個掃描週期內移除映像檔。
 
 控制器運作期間，管理員可以使用 `registry-token --delete` 取得權杖，再用 `DELETE /v2/<repository>/manifests/<digest>` 手動刪除映像檔。
 
@@ -163,6 +165,8 @@ kubectl -n zot rollout restart statefulset/zot
 Helm chart 會在金鑰所在的 Namespace 新增 Role，只授予該 Secret 的 `get` 權限。
 
 控制器使用既有的 Secret 權限寫入 `<build>-upload` Secret。
+
+紀錄是控制器 Namespace 中帶有 `builder.zeabur.com/repositories: "true"` 標籤的 ConfigMap。Build 刪除後，紀錄會留到它的權杖都過期為止。
 
 ## 已知限制
 
