@@ -5,6 +5,8 @@
 set -euo pipefail
 
 chart="$(dirname "$0")/../deploy/chart"
+version=$(helm show chart "$chart" | sed -n 's/^appVersion: "*\([^"]*\)"*$/\1/p')
+version=${version//./\\.}
 base=(--set registry.host=registry.example:5000 --set registry.tokenKey.namespace=zot
   --set registry.tokenKey.secret=zot-token-signer)
 
@@ -43,9 +45,9 @@ require() { # $1 = rendered chart, $2 = what is checked, then patterns it must h
 plain=$(helm template builder "$chart" "${base[@]}")
 require "$plain" "default install" 'name: dockerfile$' 'name: railpack$' 'name: buildkitd$' \
   'name: buildkitd-egress$' '- 169.254.0.0/16$' 'ghcr.io/railwayapp/railpack-frontend",$' \
-  'image: "ghcr.io/zeabur-oss/builder:0.1.1"$' 'kind: ValidatingAdmissionPolicy$' \
+  "image: \"ghcr.io/zeabur-oss/builder:$version\"\$" 'kind: ValidatingAdmissionPolicy$' \
   "request.userInfo.username == 'system:serviceaccount:default:zeabur-builder'" \
-  "c.image in \['ghcr.io/zeabur-oss/builder-job:0.1.1', 'ghcr.io/zeabur-oss/builder-railpack:0.1.1'\]" \
+  "c.image in \\['ghcr.io/zeabur-oss/builder-job:$version', 'ghcr.io/zeabur-oss/builder-railpack:$version'\\]" \
   '--buildkitd-image=docker.io/moby/buildkit:' "c.image == 'docker.io/moby/buildkit:" \
   "request.namespace in \['default', 'zot'\]"
 if grep -qE '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)' <<<"$plain"; then
