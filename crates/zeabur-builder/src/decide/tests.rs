@@ -943,3 +943,12 @@ fn a_deleted_run_is_not_created_again() {
         "a rebuild still builds it"
     );
 }
+
+#[test]
+fn tokens_count_as_expired_once_the_registry_clock_has_passed_them_too() {
+    let until: Timestamp = "2026-11-01T10:20:00Z".parse().unwrap();
+    let at = |t: &str| t.parse::<Timestamp>().unwrap();
+    assert!(!tokens_expired(until, at("2026-11-01T10:20:30Z")));
+    assert!(!tokens_expired(until, at("2026-11-01T10:21:00Z")));
+    assert!(tokens_expired(until, at("2026-11-01T10:21:01Z")));
+}
