@@ -435,16 +435,17 @@ mod tests {
     async fn refuses_another_host_key() {
         let url = serve(1, 2, refs()).await;
         let answer = ask(&url, 2, &known_hosts(&url, 3)).await;
-        assert!(
-            matches!(answer, Err(ResolveError::HostKey(_))),
-            "{answer:?}"
-        );
+        let Err(ResolveError::HostKey(_)) = answer else {
+            panic!("expected a host key error");
+        };
     }
 
     #[tokio::test]
     async fn reports_a_refused_client_key() {
         let url = serve(1, 2, refs()).await;
         let answer = ask(&url, 4, &known_hosts(&url, 1)).await;
-        assert!(matches!(answer, Err(ResolveError::Denied(_))), "{answer:?}");
+        let Err(ResolveError::Denied(_)) = answer else {
+            panic!("expected the client key to be refused");
+        };
     }
 }
