@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::Timestamp;
 use k8s_openapi::api::core::v1::ConfigMap;
-use kube::api::{Api, ListParams, ObjectMeta, PostParams};
+use kube::api::{Api, DeleteParams, ListParams, ObjectMeta, PostParams, Preconditions};
 use zeabur_builder_api::labels;
 
 /// Selects the records among the controller's `ConfigMap`s.
@@ -130,17 +130,20 @@ pub(crate) async fn add(
     result.map(drop).map_err(|e| e.to_string())
 }
 
-/// The record of the `Build` `namespace/name`, if there is one.
+/// The record of the `Build` `namespace/name` and its resource version, if there is one.
 pub(crate) async fn get(
     api: &Api<ConfigMap>,
     namespace: &str,
     name: &str,
-) -> Result<Option<Record>, String> {
+) -> Result<Option<(Record, String)>, String> {
     let object = object_name(namespace, name);
     api.get_opt(&object)
         .await
         .map_err(|e| e.to_string())?
-        .map(|c| Record::from_config_map(&c))
+        .map(|c| {
+            let version = c.metadata.resource_version.clone().unwrap_or_default();
+            Record::from_config_map(&c).map(|r| (r, version))
+        })
         .transpose()
 }
 
@@ -165,21 +168,23 @@ pub(crate) async fn list(api: &Api<ConfigMap>, page: u32) -> Result<Vec<Record>,
     }
 }
 
-/// Deletes the record of the `Build` `namespace/name`.
+/// Deletes the record of the `Build` `namespace/name` unless it changed since `version`.
 pub(crate) async fn remove(
     api: &Api<ConfigMap>,
     namespace: &str,
     name: &str,
+    version: &str,
 ) -> Result<(), String> {
-    match api
-        .delete(
-            &object_name(namespace, name),
-            &kube::api::DeleteParams::default(),
-        )
-        .await
-    {
+    let params = DeleteParams {
+        preconditions: Some(Preconditions {
+            resource_version: Some(version.to_owned()),
+            uid: None,
+        }),
+        ..DeleteParams::default()
+    };
+    match api.delete(&object_name(namespace, name), &params).await {
         Ok(_) => Ok(()),
-        Err(kube::Error::Api(e)) if e.code == 404 => Ok(()),
+        Err(kube::Error::Api(e)) if e.code == 404 || e.code == 409 => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }

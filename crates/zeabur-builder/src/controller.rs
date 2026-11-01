@@ -1443,9 +1443,11 @@ async fn record_push(
 /// and says whether it had a record. The record goes once no token pushes to them any more.
 async fn clear_repositories(ctx: &Context, namespace: &str, name: &str) -> Result<bool, String> {
     let records = records(ctx);
-    let Some(record) = record::get(&records, namespace, name).await? else {
+    let Some((record, version)) = record::get(&records, namespace, name).await? else {
         return Ok(false);
     };
+    // A push token valid when the pass started could still add a tag it misses.
+    let started = now();
     if !record.repositories.is_empty() {
         let signer = signer(ctx).await?;
         let grants: Vec<_> = record
@@ -1458,8 +1460,8 @@ async fn clear_repositories(ctx: &Context, namespace: &str, name: &str) -> Resul
             ctx.registry.delete_repository(repository, &token).await?;
         }
     }
-    if record.tokens_until < now() {
-        record::remove(&records, namespace, name).await?;
+    if record.tokens_until < started {
+        record::remove(&records, namespace, name, &version).await?;
     }
     Ok(true)
 }
