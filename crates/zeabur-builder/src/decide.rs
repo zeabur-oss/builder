@@ -91,6 +91,14 @@ pub(crate) fn next_poll(status: &BuildStatus, interval: Duration, now: Timestamp
     interval.max(failing.min(MAX_BACKOFF))
 }
 
+/// Whether the registry refuses, at `now`, every token that expires by `until`, even with its
+/// clock [`crate::registry::CLOCK_SKEW`] behind the controller's.
+pub(crate) fn tokens_expired(until: Timestamp, now: Timestamp) -> bool {
+    until
+        .checked_add(crate::registry::CLOCK_SKEW)
+        .is_ok_and(|t| t < now)
+}
+
 /// Finished `BuildRun`s kept when the `Build` sets no limit.
 pub(crate) const DEFAULT_HISTORY: usize = 10;
 

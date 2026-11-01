@@ -25,6 +25,8 @@ use zeabur_builder_api::labels;
 use crate::remote::HttpClient;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// How far the registry's clock may be from the controller's, either way.
+pub(crate) const CLOCK_SKEW: Duration = Duration::from_mins(1);
 const MAX_ANSWER: usize = 4 << 20;
 const DOCKER_CONFIG_JSON: &str = "kubernetes.io/dockerconfigjson";
 const USER_AGENT: &str = concat!("zeabur-builder/", env!("CARGO_PKG_VERSION"));
@@ -107,6 +109,7 @@ impl Signer {
     pub(crate) fn token(&self, grants: &[(&str, Access)], now: Timestamp, ttl: Duration) -> String {
         let now = now.as_second();
         let ttl = i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX);
+        let skew = i64::try_from(CLOCK_SKEW.as_secs()).unwrap_or(i64::MAX);
         let access: Vec<_> = grants
             .iter()
             .map(|(name, access)| {
@@ -117,7 +120,7 @@ impl Signer {
         let claims = json!({
             "iss": "zeabur-builder",
             "iat": now,
-            "nbf": now - 60,
+            "nbf": now.saturating_sub(skew),
             "exp": now.saturating_add(ttl),
             "access": access,
         });

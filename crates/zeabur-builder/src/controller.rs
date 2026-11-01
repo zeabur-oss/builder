@@ -1446,7 +1446,7 @@ async fn clear_repositories(ctx: &Context, namespace: &str, name: &str) -> Resul
     let Some((record, version)) = record::get(&records, namespace, name).await? else {
         return Ok(false);
     };
-    // A push token valid when the pass started could still add a tag it misses.
+    // A push token the registry still accepted when the pass started could add a tag it misses.
     let started = now();
     if !record.repositories.is_empty() {
         let signer = signer(ctx).await?;
@@ -1460,7 +1460,7 @@ async fn clear_repositories(ctx: &Context, namespace: &str, name: &str) -> Resul
             ctx.registry.delete_repository(repository, &token).await?;
         }
     }
-    if record.tokens_until < started {
+    if decide::tokens_expired(record.tokens_until, started) {
         record::remove(&records, namespace, name, &version).await?;
     }
     Ok(true)
