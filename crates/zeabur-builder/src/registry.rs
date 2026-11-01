@@ -488,13 +488,19 @@ mod tests {
             push_config("push", &secret(Some("true"), DOCKER_CONFIG_JSON, config)).unwrap(),
             config.as_bytes()
         );
-        for refused in [
-            secret(None, DOCKER_CONFIG_JSON, config),
-            secret(Some("false"), DOCKER_CONFIG_JSON, config),
-            secret(Some("true"), "Opaque", config),
-            secret(Some("true"), DOCKER_CONFIG_JSON, "[]"),
+        for (case, refused) in [
+            ("no label", secret(None, DOCKER_CONFIG_JSON, config)),
+            (
+                "label false",
+                secret(Some("false"), DOCKER_CONFIG_JSON, config),
+            ),
+            ("Opaque type", secret(Some("true"), "Opaque", config)),
+            (
+                "not an object",
+                secret(Some("true"), DOCKER_CONFIG_JSON, "[]"),
+            ),
         ] {
-            assert!(push_config("push", &refused).is_err(), "{refused:?}");
+            assert!(push_config("push", &refused).is_err(), "{case}");
         }
     }
 }
