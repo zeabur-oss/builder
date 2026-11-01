@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   release:
-    uses: zeabur-oss/.github/.github/workflows/release.yml@3d106187b96a11dcc2b1c3024c95400a074de1a1 # main
+    uses: zeabur-oss/.github/.github/workflows/release.yml@0c71bf4017582c7cabe03d79842254694964a385 # main
     permissions:
       contents: write
       packages: write
