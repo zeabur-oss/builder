@@ -4,8 +4,8 @@ description: >-
   Builds container images from Git repositories on Kubernetes: the controller, the shared
   buildkitd config and egress policy, and the dockerfile and railpack ClusterBuilders.
 type: application
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.1.2-beta.0
+appVersion: "0.1.2-beta.0"
 home: https://github.com/zeabur-oss/builder
 sources:
   - https://github.com/zeabur-oss/builder
