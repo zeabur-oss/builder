@@ -268,6 +268,21 @@ fn network_policy(
     }
 }
 
+/// `request`, or `limit` when that is lower: Kubernetes rejects a request above its limit.
+fn within(request: Option<&String>, limit: Option<&String>) -> Option<String> {
+    let lower = |request: &str, limit: &str| {
+        let (request, limit) = (
+            ParsedQuantity::try_from(request).ok()?,
+            ParsedQuantity::try_from(limit).ok()?,
+        );
+        (limit < request).then_some(())
+    };
+    match (request, limit) {
+        (Some(r), Some(l)) if lower(r, l).is_some() => Some(l.clone()),
+        _ => request.cloned(),
+    }
+}
+
 /// The container's requests and limits: one build's, times the builds the daemon runs.
 fn requirements(inputs: &DaemonInputs<'_>) -> ResourceRequirements {
     let resources = inputs.resources;
@@ -285,8 +300,17 @@ fn requirements(inputs: &DaemonInputs<'_>) -> ResourceRequirements {
     };
     ResourceRequirements {
         requests: quantities([
-            ("cpu", &resources.cpu_request),
-            ("memory", &resources.memory_request),
+            (
+                "cpu",
+                &within(resources.cpu_request.as_ref(), resources.cpu_limit.as_ref()),
+            ),
+            (
+                "memory",
+                &within(
+                    resources.memory_request.as_ref(),
+                    resources.memory_limit.as_ref(),
+                ),
+            ),
         ]),
         limits: quantities([
             ("cpu", &resources.cpu_limit),
@@ -481,6 +505,26 @@ mod tests {
         assert_eq!(text(container.limits, "memory"), "3Gi");
         assert_eq!(text(container.requests.clone(), "cpu"), "300m");
         assert_eq!(text(container.requests, "memory"), "768Mi");
+    }
+
+    #[test]
+    fn requests_stay_within_lowered_limits() {
+        let resources = Resources {
+            cpu_request: Some("100m".to_owned()),
+            memory_request: Some("256Mi".to_owned()),
+            cpu_limit: Some("50m".to_owned()),
+            memory_limit: Some("128Mi".to_owned()),
+        };
+        for (builds, cpu, memory) in [(1, "50m", "128Mi"), (2, "100m", "256Mi")] {
+            let mut inputs = inputs(&resources);
+            inputs.builds = builds;
+            let container = requirements(&inputs);
+            let text = |m: Option<BTreeMap<String, Quantity>>, key: &str| m.unwrap()[key].0.clone();
+            assert_eq!(text(container.requests.clone(), "cpu"), cpu);
+            assert_eq!(text(container.requests, "memory"), memory);
+            assert_eq!(text(container.limits.clone(), "cpu"), cpu);
+            assert_eq!(text(container.limits, "memory"), memory);
+        }
     }
 
     #[test]
