@@ -18,6 +18,7 @@ workspace = true
 zeabur-builder-core.workspace = true
 zeabur-builder-api.workspace = true
 k8s-openapi.workspace = true
+kube_quantity.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -43,6 +43,7 @@ use k8s_openapi::api::networking::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use kube_quantity::ParsedQuantity;
 use zeabur_builder_api::labels;
 use zeabur_builder_core::daemon;
 
@@ -122,23 +123,13 @@ pub struct Resources {
     pub memory_limit: Option<String>,
 }
 
-/// A Kubernetes quantity of decimal or binary SI form, such as `250m` or `1.5Gi`, times `n`;
-/// `None` for anything else, a zero or a negative number.
+/// A Kubernetes quantity, such as `250m`, `1.5Gi` or `1e3`, times `n`; `None` for anything
+/// else, a zero or a negative number.
 #[must_use]
 pub fn times(quantity: &str, n: u32) -> Option<String> {
-    let split = quantity
-        .find(|c: char| c.is_ascii_alphabetic())
-        .unwrap_or(quantity.len());
-    let (number, suffix) = quantity.split_at(split);
-    if !["", "m", "k", "K", "M", "G", "T", "Ki", "Mi", "Gi", "Ti"].contains(&suffix) {
-        return None;
-    }
-    let number: f64 = number
-        .parse()
-        .ok()
-        .filter(|v: &f64| v.is_finite() && *v > 0.0)?;
-    let total = (number * f64::from(n) * 1000.0).round() / 1000.0;
-    (n > 0 && total > 0.0).then(|| format!("{total}{suffix}"))
+    let parsed = ParsedQuantity::try_from(quantity).ok()?;
+    let zero = ParsedQuantity::try_from("0").ok()?;
+    (n > 0 && parsed > zero).then(|| (parsed * n).to_string_with_precision(28))
 }
 
 /// The objects of one namespace's buildkitd.
@@ -497,7 +488,8 @@ mod tests {
         assert_eq!(times("1", 2).as_deref(), Some("2"));
         assert_eq!(times("1.5Gi", 2).as_deref(), Some("3Gi"));
         assert_eq!(times("250m", 3).as_deref(), Some("750m"));
-        for bad in ["", "0", "-1", "abc", "1e3", "1Xi", "1Gi ", "m"] {
+        assert_eq!(times("1e3", 2).as_deref(), Some("2000"));
+        for bad in ["", "0", "-1", "abc", "1Xi", "1Gi ", "m"] {
             assert_eq!(times(bad, 2), None, "{bad:?}");
         }
         assert_eq!(times("1", 0), None);
