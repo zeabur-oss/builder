@@ -75,6 +75,10 @@
               {
                 "name": "DOCKER_CONFIG",
                 "value": "/etc/zeabur-builder/registry"
+              },
+              {
+                "name": "ZB_REGISTRY_CA",
+                "value": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
               }
             ],
             "image": "ghcr.io/zeabur-oss/builder-job:v0.0.1",

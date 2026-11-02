@@ -682,6 +682,15 @@
                     "maxItems": 8,
                     "type": "array"
                   },
+                  "exposedPorts": {
+                    "description": "Ports the newest successful build's image declares in its `ExposedPorts`, as the image\nconfig writes them (`3000/tcp`, `53/udp`), sorted. Empty when it declares none.",
+                    "items": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
                   "lastBuildRunRef": {
                     "description": "The newest `BuildRun`.",
                     "maxLength": 253,
@@ -959,6 +968,15 @@
                     "format": "date-time",
                     "nullable": true,
                     "type": "string"
+                  },
+                  "exposedPorts": {
+                    "description": "Ports the image declares in its `ExposedPorts`, as the image config writes them\n(`3000/tcp`), sorted.",
+                    "items": {
+                      "maxLength": 32,
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
                   },
                   "imageDigest": {
                     "description": "The pushed manifest's digest.",

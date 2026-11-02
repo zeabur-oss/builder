@@ -122,6 +122,11 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 10), inner(length(max = 1024)))]
     pub base_images: Vec<String>,
+    /// Ports the image declares in its `ExposedPorts`, as the image config writes them
+    /// (`3000/tcp`), sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 32), inner(length(max = 32)))]
+    pub exposed_ports: Vec<String>,
     /// Time per phase (`fetch`, `plan`, `build`, `push`), as durations such as `82.0s`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("maxProperties" = 8, "additionalProperties" = {"type": "string", "maxLength": 32}))]

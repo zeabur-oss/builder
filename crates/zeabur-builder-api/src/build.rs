@@ -34,6 +34,9 @@ pub const MAX_ENV: usize = 128;
 pub const MAX_NOTIFY: usize = 8;
 /// Most base images remembered.
 pub const MAX_BASE_IMAGES: usize = 10;
+
+/// The most exposed ports a `Build` or `BuildRun` records.
+pub const MAX_EXPOSED_PORTS: usize = 32;
 /// Most conditions.
 pub const MAX_CONDITIONS: usize = 8;
 /// The longest upload token request the controller answers.
@@ -396,6 +399,11 @@ pub struct BuildStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = MAX_BASE_IMAGES), inner(length(max = 1024)))]
     pub base_images: Vec<String>,
+    /// Ports the newest successful build's image declares in its `ExposedPorts`, as the image
+    /// config writes them (`3000/tcp`, `53/udp`), sorted. Empty when it declares none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = MAX_EXPOSED_PORTS), inner(length(max = 32)))]
+    pub exposed_ports: Vec<String>,
     /// `SourceReady`, `BuilderReady` and `Ready`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = MAX_CONDITIONS))]

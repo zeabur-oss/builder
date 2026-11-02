@@ -1,7 +1,7 @@
 //! `zeabur-builder-job`: the build container's entry point.
 //!
 //! ```text
-//! zeabur-builder-job [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …]
+//! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …]
 //! zeabur-builder-job fetch-archive [--plain-http] <repository> <digest> <dir>
 //! ```
 //!
@@ -15,6 +15,10 @@
 //! reads it from the Pod's status ([`zeabur_builder_core::result`]). The same JSON is the last
 //! line on stdout. The result is the last command's digest and tags; `{digest}` in a command
 //! stands for the digest of the one before it.
+//!
+//! After a success it reads the pushed image's config from the registry (`--plain-http` if the
+//! registry speaks http) and reports its `ExposedPorts`; failing to read them does not fail the
+//! build.
 //!
 //! `--secrets-hash-env` names variables whose values are hashed into
 //! `--opt build-arg:secrets-hash=…` on the first command, so Railpack's frontend invalidates the
@@ -50,6 +54,7 @@ const DIGEST: &str = "{digest}";
 
 #[derive(Debug, PartialEq, Eq)]
 struct Args {
+    plain_http: bool,
     secrets_hash_env: Vec<String>,
     non_root: Option<String>,
     commands: Vec<Vec<String>>,
@@ -58,6 +63,7 @@ struct Args {
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut secrets_hash_env = Vec::new();
     let mut non_root = None;
+    let mut plain_http = false;
     let mut rest = args.iter();
     loop {
         match rest.next().map(String::as_str) {
@@ -68,6 +74,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             Some("--non-root") => {
                 non_root = Some(rest.next().ok_or("--non-root needs a directory")?.clone());
             }
+            Some("--plain-http") => plain_http = true,
             Some("--") => break,
             Some(other) => return Err(format!("unexpected argument `{other}`")),
             None => return Err("missing `-- buildctl …`".to_owned()),
@@ -82,6 +89,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         return Err("missing a command after `--` or `--then`".to_owned());
     }
     Ok(Args {
+        plain_http,
         secrets_hash_env,
         non_root,
         commands,
@@ -171,6 +179,49 @@ fn tags(command: &[String]) -> Vec<String> {
         .filter_map(|name| name.rsplit_once(':').map(|(_, tag)| tag.to_owned()))
         .filter(|tag| !tag.contains('/'))
         .collect()
+}
+
+/// The repository (`<host>/<name>`) of the first image name in `--output`.
+fn pushed_repository(command: &[String]) -> Option<String> {
+    let output = flag_value(command, "--output")?;
+    let name = csv_fields(output)
+        .iter()
+        .find_map(|field| field.strip_prefix("name=").map(str::to_owned))?
+        .split(',')
+        .next()?
+        .to_owned();
+    let repository = match name.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => &name,
+    };
+    Some(repository.to_owned())
+}
+
+/// The ports the pushed image declares, read back from the registry the build pushed to.
+fn image_ports(repository: &str, plain_http: bool, digest: &str) -> Result<Vec<String>, String> {
+    let mut repository = open_repository(repository, plain_http)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    runtime.block_on(repository.exposed_ports(digest))
+}
+
+/// A client for `repository` with the credentials in `$DOCKER_CONFIG/config.json`.
+fn open_repository(repository: &str, plain_http: bool) -> Result<registry::Repository, String> {
+    let host = repository.split('/').next().unwrap_or_default();
+    let config_path = format!(
+        "{}/config.json",
+        std::env::var("DOCKER_CONFIG").unwrap_or_default()
+    );
+    let credentials = match std::fs::read(&config_path) {
+        Ok(config) => registry::credentials(&config, host)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("cannot read {config_path}: {e}")),
+    };
+    let ca = std::env::var(REGISTRY_CA_ENV).ok();
+    let client = registry::client(ca.as_deref())?;
+    registry::Repository::new(client, repository, plain_http, credentials)
 }
 
 /// Rewrites the Railpack plan in `dir` and writes the second build's Dockerfile.
@@ -287,8 +338,17 @@ fn run(args: &Args) -> BuildResult {
     match (outcome, built) {
         (Ok(()), Some(digest)) => {
             result.result = Outcome::Succeeded;
-            result.digest = Some(digest);
+            result.digest = Some(digest.clone());
             result.tags = commands.last().map_or_default(|c| tags(c));
+            if let Some(repository) = commands.last().and_then(|c| pushed_repository(c)) {
+                match image_ports(&repository, args.plain_http, &digest) {
+                    Ok(ports) => result.exposed_ports = ports,
+                    Err(e) => drop(writeln!(
+                        std::io::stderr().lock(),
+                        "cannot read the image's exposed ports: {e}"
+                    )),
+                }
+            }
         }
         (Ok(()), None) => {
             result.reason = Some(FailureReason::BuildFailed);
@@ -346,20 +406,7 @@ fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
     for dir in [OUT, PLAN] {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {dir}: {e}"))?;
     }
-    let host = args.repository.split('/').next().unwrap_or_default();
-    let config_path = format!(
-        "{}/config.json",
-        std::env::var("DOCKER_CONFIG").unwrap_or_default()
-    );
-    let credentials = match std::fs::read(&config_path) {
-        Ok(config) => registry::credentials(&config, host)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("cannot read {config_path}: {e}")),
-    };
-    let ca = std::env::var(REGISTRY_CA_ENV).ok();
-    let client = registry::client(ca.as_deref())?;
-    let mut repository =
-        registry::Repository::new(client, &args.repository, args.plain_http, credentials)?;
+    let mut repository = open_repository(&args.repository, args.plain_http)?;
     let file = std::path::Path::new(WORKSPACE).join("archive.tar.gz");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -435,6 +482,7 @@ mod tests {
                 "build"
             ])),
             Ok(Args {
+                plain_http: false,
                 secrets_hash_env: strings(&["ZB_SECRET_A"]),
                 non_root: None,
                 commands: vec![strings(&["buildctl", "build"])],
@@ -454,6 +502,7 @@ mod tests {
                 "context:app=docker-image://r/a@{digest}",
             ])),
             Ok(Args {
+                plain_http: false,
                 secrets_hash_env: Vec::new(),
                 non_root: Some("/workspace/plan".to_owned()),
                 commands: vec![
@@ -553,5 +602,29 @@ mod tests {
         ]);
         assert_eq!(tags(&single), ["v1"]);
         assert_eq!(tags(&strings(&["build"])), Vec::<String>::new());
+    }
+
+    #[test]
+    fn pushed_repository_from_the_output() {
+        let quoted = strings(&[
+            "--output",
+            "type=image,\"name=r.local:5000/a/api:main-1-abc,r.local:5000/a/api:latest\",push=true",
+        ]);
+        assert_eq!(
+            pushed_repository(&quoted).as_deref(),
+            Some("r.local:5000/a/api")
+        );
+        let untagged = strings(&["--output", "type=image,name=r.local:5000/a/api,push=true"]);
+        assert_eq!(
+            pushed_repository(&untagged).as_deref(),
+            Some("r.local:5000/a/api")
+        );
+        assert_eq!(pushed_repository(&strings(&["build"])), None);
+    }
+
+    #[test]
+    fn plain_http_flag() {
+        let args = parse_args(&strings(&["--plain-http", "--", "buildctl"])).unwrap();
+        assert!(args.plain_http);
     }
 }
