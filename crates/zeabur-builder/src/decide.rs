@@ -450,15 +450,21 @@ pub(crate) fn limits(
     }
 }
 
+/// Whether `status` holds a slot: the run was admitted, which records its buildkitd Pod, or has
+/// a Job.
+pub(crate) const fn admitted(status: &BuildRunStatus) -> bool {
+    status.job_ref.is_some() || status.buildkitd_instance.is_some()
+}
+
 fn holds_slot(run: &BuildRun) -> bool {
-    !is_finished(phase(run)) && run.status.as_ref().is_some_and(|s| s.job_ref.is_some())
+    !is_finished(phase(run)) && run.status.as_ref().is_some_and(admitted)
 }
 
 /// Whether `run` waits for a slot, as opposed to waiting on something else, such as credentials.
 fn queued(run: &BuildRun) -> bool {
     let status = run.status.as_ref();
     !is_finished(phase(run))
-        && status.is_none_or(|s| s.job_ref.is_none())
+        && status.is_none_or(|s| !admitted(s))
         && status.is_none_or(|s| s.reason.is_none_or(|r| r == Reason::QuotaExceeded))
 }
 
@@ -471,8 +477,9 @@ fn age_key(run: &BuildRun) -> (Option<Timestamp>, Option<&str>) {
 
 /// Whether `run` may start, given every unfinished run in the cluster, or why it waits.
 ///
-/// A run holds a slot from the moment it has a Job. The cluster's slots go to the oldest runs
-/// first: a run starts only when the free slots outnumber the older runs waiting for one.
+/// A run holds a slot from the moment it is admitted until it finishes, through its daemon's
+/// start and its Job's creation. The cluster's slots go to the oldest runs first: a run starts
+/// only when the free slots outnumber the older runs waiting for one.
 pub(crate) fn admission(
     runs: &[BuildRun],
     run: &BuildRun,

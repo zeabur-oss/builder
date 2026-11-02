@@ -141,6 +141,8 @@ struct Context {
     recorder: Recorder,
     settings: Settings,
     github: Arc<GitHub>,
+    /// Held from a run's admission until its slot is recorded.
+    admitting: tokio::sync::Mutex<()>,
 }
 
 /// What the receiver reads: `Build`s from the reconciler's cache, Secrets from the API server.
@@ -268,6 +270,7 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
     let daemon_settings = Arc::clone(&settings.daemon);
     let context = Arc::new(Context {
         leader: leader.clone(),
+        admitting: tokio::sync::Mutex::new(()),
         github: Arc::clone(&github),
         recorder: Recorder::new(
             client.clone(),
@@ -1152,6 +1155,40 @@ async fn admit(
         .map_err(|message| (Reason::RegistryCredentialsMissing, message)))
 }
 
+/// [`admit`], then the slot recorded in `status`, one run at a time: an admitted run holds its
+/// slot through its daemon's start and its Job's creation.
+async fn reserve(
+    ctx: &Context,
+    run: &BuildRun,
+    build: &Build,
+    owned: &decide::Owned,
+    limits: &decide::Limits,
+    status: &mut BuildRunStatus,
+) -> Result<Result<ByteString, (Reason, String)>, Error> {
+    let _admitting = ctx.admitting.lock().await;
+    let auth = match admit(ctx, run, build, owned, limits).await? {
+        Ok(auth) => auth,
+        Err(wait) => return Ok(Err(wait)),
+    };
+    let namespace = run.namespace().unwrap_or_default();
+    status.buildkitd_instance = Some(zeabur_builder_core::daemon::pod(&namespace));
+    if run
+        .status
+        .as_ref()
+        .is_none_or(|s| s.buildkitd_instance.is_none())
+    {
+        status.reason = None;
+        status.message = None;
+        apply_status(
+            &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
+            &run.name_any(),
+            status,
+        )
+        .await?;
+    }
+    Ok(Ok(auth))
+}
+
 /// Records the Job a run waits on.
 async fn job_created(
     ctx: &Context,
@@ -1193,9 +1230,11 @@ fn static_checks(
     Ok((tags, decide::owned(build, &settings.default_registry)?))
 }
 
-async fn start(ctx: &Context, run: &BuildRun, status: BuildRunStatus) -> Result<Action, Error> {
+async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Result<Action, Error> {
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
+    // A run that waits before admission gives its slot back.
+    status.buildkitd_instance = None;
     let (build, builder) = match build_and_builder(ctx, run).await? {
         Ok(found) => found,
         Err(message) => return pending(ctx, run, status, Reason::InfraError, message).await,
@@ -1231,7 +1270,7 @@ async fn start(ctx: &Context, run: &BuildRun, status: BuildRunStatus) -> Result<
 
     let settings = &ctx.settings;
     let limits = namespace_limits(ctx, &namespace).await?;
-    let registry_auth = match admit(ctx, run, &build, &owned, &limits).await? {
+    let registry_auth = match reserve(ctx, run, &build, &owned, &limits, &mut status).await? {
         Ok(auth) => auth,
         Err((reason, message)) => return pending(ctx, run, status, reason, message).await,
     };

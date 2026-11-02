@@ -463,6 +463,35 @@ fn the_oldest_waiting_run_gets_a_free_slot() {
 }
 
 #[test]
+fn an_admitted_run_holds_its_slot_while_its_daemon_starts() {
+    let mut old = waiting("team-a", "api-a", "2026-10-22T07:00:00Z");
+    if let Some(status) = old.status.as_mut() {
+        status.reason = Some(Reason::BuildkitdStarting);
+        status.buildkitd_instance = Some("buildkitd-team-a-0".to_owned());
+    }
+    let new = waiting("team-b", "web-a", "2026-10-22T07:30:00Z");
+    let runs = [old.clone(), new.clone()];
+    assert!(admission(&runs, &new, 1, 1).is_err(), "cluster full");
+    assert!(admission(&runs, &old, 1, 1).is_ok());
+    let sibling = waiting("team-a", "api-b", "2026-10-22T07:30:00Z");
+    assert!(
+        admission(&[old.clone(), sibling.clone()], &sibling, 1, 5).is_err(),
+        "namespace full"
+    );
+}
+
+#[test]
+fn a_run_that_finishes_before_its_job_gives_its_slot_back() {
+    let mut old = run("api-a", A, Some(Phase::Failed), "2026-10-22T07:00:00Z");
+    old.metadata.namespace = Some("team-a".to_owned());
+    if let Some(status) = old.status.as_mut() {
+        status.buildkitd_instance = Some("buildkitd-team-a-0".to_owned());
+    }
+    let new = waiting("team-b", "web-a", "2026-10-22T07:30:00Z");
+    assert!(admission(&[old, new.clone()], &new, 1, 1).is_ok());
+}
+
+#[test]
 fn a_run_waits_for_the_previous_one_to_stop() {
     let named = |name: &str| ObjectMeta {
         name: Some(name.to_owned()),

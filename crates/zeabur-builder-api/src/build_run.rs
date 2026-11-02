@@ -99,7 +99,7 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = MAX_NAME))]
     pub job_ref: Option<String>,
-    /// The namespace's buildkitd Pod, such as `buildkitd-team-a-0`.
+    /// The namespace's buildkitd Pod, such as `buildkitd-team-a-0`, set once the run is admitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = MAX_NAME))]
     pub buildkitd_instance: Option<String>,

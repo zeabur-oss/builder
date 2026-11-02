@@ -920,7 +920,7 @@
                     "type": "array"
                   },
                   "buildkitdInstance": {
-                    "description": "The namespace's buildkitd Pod, such as `buildkitd-team-a-0`.",
+                    "description": "The namespace's buildkitd Pod, such as `buildkitd-team-a-0`, set once the run is admitted.",
                     "maxLength": 253,
                     "nullable": true,
                     "type": "string"
