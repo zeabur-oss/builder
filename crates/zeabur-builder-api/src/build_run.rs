@@ -99,7 +99,7 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = MAX_NAME))]
     pub job_ref: Option<String>,
-    /// The namespace's buildkitd Pod, such as `buildkitd-team-a-0`.
+    /// The namespace's buildkitd Pod, such as `buildkitd-team-a-0`, set once the run is admitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = MAX_NAME))]
     pub buildkitd_instance: Option<String>,
@@ -171,7 +171,8 @@ pub enum Phase {
 /// Why a `BuildRun` waits or failed.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
 pub enum Reason {
-    /// The namespace runs as many builds as it may.
+    /// The namespace or the cluster runs as many builds as it may, or the `Build`'s previous run
+    /// has not stopped yet.
     QuotaExceeded,
     /// The namespace's buildkitd is starting, from zero replicas or after a restart.
     BuildkitdStarting,
@@ -184,6 +185,8 @@ pub enum Reason {
     PlanFailed,
     /// `buildctl` failed, in the build or in the push.
     BuildFailed,
+    /// buildkitd was killed for using more memory than its limit.
+    OutOfMemory,
     /// The Job ran past its deadline.
     Timeout,
     /// Replaced, cancelled, or its Job was deleted.

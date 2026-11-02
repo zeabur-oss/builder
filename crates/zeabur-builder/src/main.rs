@@ -128,6 +128,9 @@ struct ControllerArgs {
     /// `builder.zeabur.com/max-concurrent-builds` overrides it.
     #[arg(long, default_value_t = decide::DEFAULT_MAX_CONCURRENT)]
     max_concurrent_builds: u32,
+    /// Builds all namespaces run at once. A run over the limit waits, oldest first.
+    #[arg(long, default_value_t = decide::DEFAULT_MAX_CLUSTER_BUILDS)]
+    max_cluster_builds: u32,
     /// Where the buildkitd of each namespace runs. Default: the controller's namespace.
     #[arg(long)]
     buildkitd_namespace: Option<String>,
@@ -153,15 +156,21 @@ struct ControllerArgs {
     /// Kubernetes older than 1.33.
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     buildkitd_host_users: bool,
-    /// buildkitd's CPU request.
+    /// buildkitd's CPU request per build. Its container asks for this times the namespace's
+    /// concurrent builds.
     #[arg(long, default_value = "100m")]
     buildkitd_cpu_request: String,
-    /// buildkitd's memory request.
+    /// buildkitd's memory request per build.
     #[arg(long, default_value = "256Mi")]
     buildkitd_memory_request: String,
-    /// buildkitd's memory limit. Default: none.
-    #[arg(long)]
-    buildkitd_memory_limit: Option<String>,
+    /// buildkitd's CPU limit per build; the Namespace annotation `builder.zeabur.com/build-cpu`
+    /// overrides it.
+    #[arg(long, default_value = "1")]
+    buildkitd_cpu_limit: String,
+    /// buildkitd's memory limit per build; the Namespace annotation
+    /// `builder.zeabur.com/build-memory` overrides it.
+    #[arg(long, default_value = "1Gi")]
+    buildkitd_memory_limit: String,
     /// Seconds a namespace goes without builds before its buildkitd scales to zero.
     #[arg(long, default_value_t = 600)]
     buildkitd_idle: u64,
@@ -216,7 +225,8 @@ impl ControllerArgs {
             resources: Resources {
                 cpu_request: Some(self.buildkitd_cpu_request),
                 memory_request: Some(self.buildkitd_memory_request),
-                memory_limit: self.buildkitd_memory_limit,
+                cpu_limit: Some(self.buildkitd_cpu_limit),
+                memory_limit: Some(self.buildkitd_memory_limit),
             },
             idle_after: Duration::from_secs(self.buildkitd_idle),
         };
@@ -224,6 +234,7 @@ impl ControllerArgs {
             namespace: self.namespace,
             daemon: Arc::new(daemon),
             max_concurrent: self.max_concurrent_builds,
+            max_cluster_builds: self.max_cluster_builds,
             default_registry: self.default_registry,
             registry_ca: self.registry_ca.filter(|ca| !ca.trim().is_empty()),
             registry_http: self.registry_http,

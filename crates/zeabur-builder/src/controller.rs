@@ -107,6 +107,8 @@ pub(crate) struct Settings {
     pub(crate) daemon: Arc<daemon::Settings>,
     /// Builds a namespace runs at once, unless its annotation says otherwise.
     pub(crate) max_concurrent: u32,
+    /// Builds all namespaces run at once.
+    pub(crate) max_cluster_builds: u32,
     /// The registry for `Build`s without `spec.output.image`.
     pub(crate) default_registry: String,
     /// The default registry's CA, PEM, for the `fetch` container of an archive source.
@@ -139,6 +141,8 @@ struct Context {
     recorder: Recorder,
     settings: Settings,
     github: Arc<GitHub>,
+    /// Held from a run's admission until its slot is recorded.
+    admitting: tokio::sync::Mutex<()>,
 }
 
 /// What the receiver reads: `Build`s from the reconciler's cache, Secrets from the API server.
@@ -266,6 +270,7 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
     let daemon_settings = Arc::clone(&settings.daemon);
     let context = Arc::new(Context {
         leader: leader.clone(),
+        admitting: tokio::sync::Mutex::new(()),
         github: Arc::clone(&github),
         recorder: Recorder::new(
             client.clone(),
@@ -826,15 +831,45 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
             Ok(Action::await_change())
         }
         Observed::Finished(result) => {
-            let finished = BuildRunStatus {
+            let mut finished = BuildRunStatus {
                 job_ref: status.job_ref,
                 buildkitd_instance: status.buildkitd_instance,
                 start_time: status.start_time,
                 ..*result
             };
+            if finished.phase == Some(Phase::Failed)
+                && matches!(
+                    finished.reason,
+                    Some(Reason::BuildFailed | Reason::InfraError)
+                )
+                && daemon_out_of_memory(&ctx, &finished).await?
+            {
+                finished.reason = Some(Reason::OutOfMemory);
+                finished.message = Some(
+                    "buildkitd was killed for using more memory than its limit; raise \
+                     builder.zeabur.com/build-memory on the namespace or the controller's \
+                     --buildkitd-memory-limit"
+                        .to_owned(),
+                );
+            }
             finish(&ctx, &run, finished).await
         }
     }
+}
+
+/// Whether the run's buildkitd was killed for its memory since the run started.
+async fn daemon_out_of_memory(ctx: &Context, status: &BuildRunStatus) -> Result<bool, Error> {
+    let Some(pod) = &status.buildkitd_instance else {
+        return Ok(false);
+    };
+    let since = status
+        .start_time
+        .as_deref()
+        .and_then(|t| t.parse::<Timestamp>().ok());
+    let pod = Api::<Pod>::namespaced(ctx.client.clone(), &ctx.settings.daemon.namespace)
+        .get_opt(pod)
+        .await?;
+    Ok(pod.is_some_and(|p| decide::oom_killed(&p, since)))
 }
 
 async fn finish(
@@ -1060,48 +1095,98 @@ where
     }
 }
 
-/// Whether the namespace may start another build: a free slot and push credentials, which it
-/// returns; otherwise why it waits.
+/// The namespace's limits: the controller's, as its annotations change them.
+async fn namespace_limits(ctx: &Context, namespace: &str) -> Result<decide::Limits, Error> {
+    let found = Api::<Namespace>::all(ctx.client.clone())
+        .get_opt(namespace)
+        .await?;
+    let annotations = found.map_or_default(|n| n.annotations().clone());
+    Ok(decide::limits(
+        &annotations,
+        ctx.settings.max_concurrent,
+        &ctx.settings.daemon.resources,
+    ))
+}
+
+/// Whether the run may start: a free slot in its namespace and the cluster, no Job or Pod of the
+/// `Build`'s previous run left, and push credentials, which it returns; otherwise why it waits.
 async fn admit(
     ctx: &Context,
+    run: &BuildRun,
     build: &Build,
     owned: &decide::Owned,
+    limits: &decide::Limits,
 ) -> Result<Result<ByteString, (Reason, String)>, Error> {
     let namespace = build.namespace().unwrap_or_default();
-    let namespace = namespace.as_str();
-    let settings = &ctx.settings;
-    let limit = decide::concurrency_limit(
-        Api::<Namespace>::all(ctx.client.clone())
-            .get_opt(namespace)
-            .await?
-            .as_ref()
-            .and_then(|n| n.annotations().get(annotations::MAX_CONCURRENT_BUILDS))
-            .map(String::as_str),
-        settings.max_concurrent,
-    );
-    let limit_slots = usize::try_from(limit).unwrap_or(usize::MAX);
-    let runs = Api::<BuildRun>::namespaced(ctx.client.clone(), namespace);
+    let runs = Api::<BuildRun>::all(ctx.client.clone());
     let mut params = ListParams::default().fields(UNFINISHED).limit(PAGE);
-    let mut taken = 0;
+    let mut unfinished = Vec::new();
     loop {
         let page = runs.list(&params).await?;
-        taken += decide::slots_taken(&page.items);
+        unfinished.extend(page.items);
         match page.metadata.continue_ {
-            Some(next) if !next.is_empty() && taken < limit_slots => {
-                params = params.continue_token(&next);
-            }
+            Some(next) if !next.is_empty() => params = params.continue_token(&next),
             _ => break,
         }
     }
-    if taken >= limit_slots {
+    if let Err(message) = decide::admission(
+        &unfinished,
+        run,
+        limits.concurrent,
+        ctx.settings.max_cluster_builds,
+    ) {
+        return Ok(Err((Reason::QuotaExceeded, message)));
+    }
+    let selector = ListParams::default().labels(&format!("{}={}", labels::BUILD, build.name_any()));
+    let jobs = Api::<Job>::namespaced(ctx.client.clone(), &namespace)
+        .list(&selector)
+        .await?;
+    let pods = Api::<Pod>::namespaced(ctx.client.clone(), &namespace)
+        .list(&selector)
+        .await?;
+    if let Some(previous) = decide::previous_running(&jobs.items, &pods.items, &run.name_any()) {
         return Ok(Err((
             Reason::QuotaExceeded,
-            format!("{taken} of the namespace's {limit} builds are running"),
+            format!("waiting for the previous run {previous} to stop"),
         )));
     }
     Ok(registry_auth(ctx, build, owned)
         .await?
         .map_err(|message| (Reason::RegistryCredentialsMissing, message)))
+}
+
+/// [`admit`], then the slot recorded in `status`, one run at a time: an admitted run holds its
+/// slot through its daemon's start and its Job's creation.
+async fn reserve(
+    ctx: &Context,
+    run: &BuildRun,
+    build: &Build,
+    owned: &decide::Owned,
+    limits: &decide::Limits,
+    status: &mut BuildRunStatus,
+) -> Result<Result<ByteString, (Reason, String)>, Error> {
+    let _admitting = ctx.admitting.lock().await;
+    let auth = match admit(ctx, run, build, owned, limits).await? {
+        Ok(auth) => auth,
+        Err(wait) => return Ok(Err(wait)),
+    };
+    let namespace = run.namespace().unwrap_or_default();
+    status.buildkitd_instance = Some(zeabur_builder_core::daemon::pod(&namespace));
+    if run
+        .status
+        .as_ref()
+        .is_none_or(|s| s.buildkitd_instance.is_none())
+    {
+        status.reason = None;
+        status.message = None;
+        apply_status(
+            &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
+            &run.name_any(),
+            status,
+        )
+        .await?;
+    }
+    Ok(Ok(auth))
 }
 
 /// Records the Job a run waits on.
@@ -1145,9 +1230,11 @@ fn static_checks(
     Ok((tags, decide::owned(build, &settings.default_registry)?))
 }
 
-async fn start(ctx: &Context, run: &BuildRun, status: BuildRunStatus) -> Result<Action, Error> {
+async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Result<Action, Error> {
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
+    // A run that waits before admission gives its slot back.
+    status.buildkitd_instance = None;
     let (build, builder) = match build_and_builder(ctx, run).await? {
         Ok(found) => found,
         Err(message) => return pending(ctx, run, status, Reason::InfraError, message).await,
@@ -1182,11 +1269,12 @@ async fn start(ctx: &Context, run: &BuildRun, status: BuildRunStatus) -> Result<
     };
 
     let settings = &ctx.settings;
-    let registry_auth = match admit(ctx, &build, &owned).await? {
+    let limits = namespace_limits(ctx, &namespace).await?;
+    let registry_auth = match reserve(ctx, run, &build, &owned, &limits, &mut status).await? {
         Ok(auth) => auth,
         Err((reason, message)) => return pending(ctx, run, status, reason, message).await,
     };
-    let woken = daemon::wake(&ctx.client, &settings.daemon, &namespace).await?;
+    let woken = daemon::wake(&ctx.client, &settings.daemon, &namespace, &limits).await?;
     if !woken.ready {
         return pending(
             ctx,

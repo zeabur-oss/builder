@@ -48,7 +48,7 @@ pub(crate) struct Settings {
     pub(crate) runtime_class: Option<String>,
     /// `hostUsers`.
     pub(crate) host_users: bool,
-    /// Container resources.
+    /// The resources of one build.
     pub(crate) resources: Resources,
     /// How long a namespace goes without builds before its daemon scales to zero.
     pub(crate) idle_after: Duration,
@@ -67,7 +67,11 @@ pub(crate) struct Woken {
     pub(crate) client: Pems,
 }
 
-fn inputs<'a>(settings: &'a Settings, namespace: &'a str) -> DaemonInputs<'a> {
+fn inputs<'a>(
+    settings: &'a Settings,
+    namespace: &'a str,
+    limits: &'a decide::Limits,
+) -> DaemonInputs<'a> {
     DaemonInputs {
         namespace,
         daemon_namespace: &settings.namespace,
@@ -78,7 +82,8 @@ fn inputs<'a>(settings: &'a Settings, namespace: &'a str) -> DaemonInputs<'a> {
         storage_class: settings.storage_class.as_deref(),
         runtime_class: settings.runtime_class.as_deref(),
         host_users: settings.host_users,
-        resources: &settings.resources,
+        resources: &limits.resources,
+        builds: limits.concurrent,
     }
 }
 
@@ -111,6 +116,7 @@ pub(crate) async fn wake(
     client: &Client,
     settings: &Settings,
     namespace: &str,
+    limits: &decide::Limits,
 ) -> Result<Woken, kube::Error> {
     let name = daemon::name(namespace);
     let client_pems = tls::ensure(
@@ -121,7 +127,7 @@ pub(crate) async fn wake(
         namespace,
     )
     .await?;
-    let objects = buildkitd::daemon(&inputs(settings, namespace));
+    let objects = buildkitd::daemon(&inputs(settings, namespace, limits));
     apply(client, &settings.namespace, &objects.network_policy).await?;
     apply(client, &settings.namespace, &objects.service).await?;
     apply(client, &settings.namespace, &objects.stateful_set).await?;

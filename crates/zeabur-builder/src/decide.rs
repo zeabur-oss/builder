@@ -1,6 +1,7 @@
 //! The reconcilers' decisions, as functions of what they observed: no I/O and no clock (the time
 //! is an argument), so every transition is tested without a cluster.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use jiff::Timestamp;
@@ -8,14 +9,15 @@ use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::Serialize;
-use zeabur_builder_api::annotations;
 use zeabur_builder_api::build::{Build, BuildStatus, Concurrency};
 use zeabur_builder_api::build_run::{
     BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, Trigger,
 };
 use zeabur_builder_api::common::{Condition, ConditionStatus};
+use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome};
 use zeabur_builder_core::tag::{self, TagError, TagInputs};
+use zeabur_builder_jobspec::buildkitd::Resources;
 
 /// Polling interval for plain Git when the `Build` sets none.
 pub(crate) const DEFAULT_POLL: Duration = Duration::from_mins(1);
@@ -395,7 +397,10 @@ pub(crate) fn prune(runs: &[BuildRun], limit: usize) -> Vec<String> {
 }
 
 /// Concurrent builds per namespace when the controller sets none.
-pub(crate) const DEFAULT_MAX_CONCURRENT: u32 = 3;
+pub(crate) const DEFAULT_MAX_CONCURRENT: u32 = 1;
+
+/// Concurrent builds across all namespaces when the controller sets none.
+pub(crate) const DEFAULT_MAX_CLUSTER_BUILDS: u32 = 1;
 
 /// A namespace's limit of concurrent builds: its annotation when it holds a positive number,
 /// else the controller's.
@@ -406,12 +411,155 @@ pub(crate) fn concurrency_limit(annotation: Option<&str>, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-/// Runs that hold a slot of their namespace's buildkitd: unfinished, with a Job.
-pub(crate) fn slots_taken(runs: &[BuildRun]) -> usize {
-    runs.iter()
-        .filter(|r| !is_finished(phase(r)))
-        .filter(|r| r.status.as_ref().is_some_and(|s| s.job_ref.is_some()))
-        .count()
+/// What one namespace's buildkitd may use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Limits {
+    /// Builds it runs at once.
+    pub(crate) concurrent: u32,
+    /// The resources of one build.
+    pub(crate) resources: Resources,
+}
+
+/// A namespace's [`Limits`]: the controller's, with each value its annotations set to a valid one
+/// replaced.
+pub(crate) fn limits(
+    annotations: &BTreeMap<String, String>,
+    concurrent: u32,
+    resources: &Resources,
+) -> Limits {
+    let quantity = |key: &str, default: &Option<String>| {
+        annotations
+            .get(key)
+            .map(|q| q.trim())
+            .filter(|q| zeabur_builder_jobspec::buildkitd::times(q, 1).is_some())
+            .map(str::to_owned)
+            .or_else(|| default.clone())
+    };
+    Limits {
+        concurrent: concurrency_limit(
+            annotations
+                .get(annotations::MAX_CONCURRENT_BUILDS)
+                .map(String::as_str),
+            concurrent,
+        ),
+        resources: Resources {
+            cpu_limit: quantity(annotations::BUILD_CPU, &resources.cpu_limit),
+            memory_limit: quantity(annotations::BUILD_MEMORY, &resources.memory_limit),
+            ..resources.clone()
+        },
+    }
+}
+
+/// Whether `status` holds a slot: the run was admitted, which records its buildkitd Pod, or has
+/// a Job.
+pub(crate) const fn admitted(status: &BuildRunStatus) -> bool {
+    status.job_ref.is_some() || status.buildkitd_instance.is_some()
+}
+
+fn holds_slot(run: &BuildRun) -> bool {
+    !is_finished(phase(run)) && run.status.as_ref().is_some_and(admitted)
+}
+
+/// Whether `run` waits for a slot, as opposed to waiting on something else, such as credentials.
+fn queued(run: &BuildRun) -> bool {
+    let status = run.status.as_ref();
+    !is_finished(phase(run))
+        && status.is_none_or(|s| !admitted(s))
+        && status.is_none_or(|s| s.reason.is_none_or(|r| r == Reason::QuotaExceeded))
+}
+
+fn age_key(run: &BuildRun) -> (Option<Timestamp>, Option<&str>) {
+    (
+        run.metadata.creation_timestamp.as_ref().map(|t| t.0),
+        run.metadata.name.as_deref(),
+    )
+}
+
+/// Whether `run` may start, given every unfinished run in the cluster, or why it waits.
+///
+/// A run holds a slot from the moment it is admitted until it finishes, through its daemon's
+/// start and its Job's creation. The cluster's slots go to the oldest runs first: a run starts
+/// only when the free slots outnumber the older runs waiting for one.
+pub(crate) fn admission(
+    runs: &[BuildRun],
+    run: &BuildRun,
+    namespace_limit: u32,
+    cluster_limit: u32,
+) -> Result<(), String> {
+    let me = (
+        run.metadata.namespace.as_deref(),
+        run.metadata.name.as_deref(),
+    );
+    let others = || {
+        runs.iter()
+            .filter(move |r| (r.metadata.namespace.as_deref(), r.metadata.name.as_deref()) != me)
+    };
+    let in_namespace = others()
+        .filter(|r| r.metadata.namespace == run.metadata.namespace)
+        .filter(|r| holds_slot(r))
+        .count();
+    if in_namespace >= usize::try_from(namespace_limit).unwrap_or(usize::MAX) {
+        return Err(format!(
+            "{in_namespace} of the namespace's {namespace_limit} builds are running"
+        ));
+    }
+    let running = others().filter(|r| holds_slot(r)).count();
+    let ahead = others()
+        .filter(|r| queued(r) && age_key(r) < age_key(run))
+        .count();
+    if running + ahead >= usize::try_from(cluster_limit).unwrap_or(usize::MAX) {
+        return Err(format!(
+            "{running} of the cluster's {cluster_limit} builds are running, {ahead} wait ahead"
+        ));
+    }
+    Ok(())
+}
+
+/// Whether another run of the `Build` still has a Job, or a Pod that has not stopped, which a
+/// run waits for: a replaced build never overlaps the one that replaced it.
+pub(crate) fn previous_running(jobs: &[Job], pods: &[Pod], run: &str) -> Option<String> {
+    let other = |name: &Option<String>| name.as_deref() != Some(run);
+    let unfinished = |job: &Job| {
+        job_condition(job, "Complete").is_none() && job_condition(job, "Failed").is_none()
+    };
+    let label = |meta: &ObjectMeta| {
+        meta.labels
+            .as_ref()
+            .and_then(|l| l.get(labels::BUILD_RUN))
+            .cloned()
+    };
+    let job = jobs
+        .iter()
+        .filter(|j| other(&j.metadata.name) && unfinished(j))
+        .find_map(|j| j.metadata.name.clone());
+    let pod = pods
+        .iter()
+        .filter(|p| other(&label(&p.metadata)))
+        .filter(|p| {
+            p.status
+                .as_ref()
+                .and_then(|s| s.phase.as_deref())
+                .is_none_or(|p| p != "Succeeded" && p != "Failed")
+        })
+        .find_map(|p| label(&p.metadata));
+    job.or(pod)
+}
+
+/// Whether the container of `pod` was killed for its memory after `since`.
+pub(crate) fn oom_killed(pod: &Pod, since: Option<Timestamp>) -> bool {
+    pod.status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+        .into_iter()
+        .flatten()
+        .flat_map(|c| [c.state.as_ref(), c.last_state.as_ref()])
+        .flatten()
+        .filter_map(|s| s.terminated.as_ref())
+        .filter(|t| t.reason.as_deref() == Some("OOMKilled"))
+        .any(|t| match (since, t.finished_at.as_ref()) {
+            (Some(since), Some(at)) => at.0 >= since,
+            _ => true,
+        })
 }
 
 fn last_activity(run: &BuildRun) -> Option<Timestamp> {

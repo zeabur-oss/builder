@@ -7,7 +7,7 @@ metadata=$(cargo metadata --format-version 1 --no-deps --locked)
 levels=$(jq -c '.metadata.levels' <<<"$metadata")
 pure=$(jq -c '.metadata.pure.crates' <<<"$metadata")
 # Third-party crates a pure crate may use: data types and hashing, no I/O.
-allowed='["k8s-openapi","kube","schemars","serde","serde_json","sha2","thiserror","pretty_assertions"]'
+allowed='["k8s-openapi","kube","kube_quantity","schemars","serde","serde_json","sha2","thiserror","pretty_assertions"]'
 
 failed=0
 while IFS=$'\t' read -r crate dep kind; do
