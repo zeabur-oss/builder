@@ -417,20 +417,158 @@ fn concurrency_follows_the_namespace() {
     for bad in ["0", "-1", "many", ""] {
         assert_eq!(concurrency_limit(Some(bad), 3), 3, "{bad}");
     }
-    let mut started = run("api-c", A, Some(Phase::Pending), "2026-10-22T07:59:00Z");
-    if let Some(status) = started.status.as_mut() {
-        status.job_ref = Some("api-c".to_owned());
+}
+
+fn started(namespace: &str, name: &str, at: &str) -> BuildRun {
+    let mut run = waiting(namespace, name, at);
+    if let Some(status) = run.status.as_mut() {
+        status.job_ref = Some(name.to_owned());
     }
-    let runs = [
-        run("api-a", A, Some(Phase::Succeeded), "2026-10-22T07:00:00Z"),
-        run("api-b", B, Some(Phase::Pending), "2026-10-22T07:59:00Z"),
-        started,
-    ];
-    assert_eq!(
-        slots_taken(&runs),
-        1,
-        "a run waiting for its Job holds no slot"
+    run
+}
+
+fn waiting(namespace: &str, name: &str, at: &str) -> BuildRun {
+    let mut run = run(name, A, Some(Phase::Pending), at);
+    run.metadata.namespace = Some(namespace.to_owned());
+    run
+}
+
+#[test]
+fn a_namespace_and_the_cluster_each_cap_running_builds() {
+    let mine = waiting("team-a", "api-b", "2026-10-22T07:59:00Z");
+    let running = [started("team-a", "api-a", "2026-10-22T07:58:00Z")];
+    assert!(admission(&[], &mine, 1, 1).is_ok());
+    assert!(admission(&running, &mine, 1, 5).is_err(), "namespace full");
+    assert!(admission(&running, &mine, 2, 5).is_ok());
+    let elsewhere = [started("team-b", "web-a", "2026-10-22T07:58:00Z")];
+    assert!(admission(&elsewhere, &mine, 1, 1).is_err(), "cluster full");
+    assert!(admission(&elsewhere, &mine, 1, 2).is_ok());
+}
+
+#[test]
+fn the_oldest_waiting_run_gets_a_free_slot() {
+    let old = waiting("team-b", "web-a", "2026-10-22T07:00:00Z");
+    let new = waiting("team-a", "api-a", "2026-10-22T07:30:00Z");
+    let runs = [new.clone(), old.clone()];
+    assert!(admission(&runs, &new, 1, 1).is_err());
+    assert!(admission(&runs, &old, 1, 1).is_ok());
+    let mut blocked = old;
+    if let Some(status) = blocked.status.as_mut() {
+        status.reason = Some(Reason::RegistryCredentialsMissing);
+    }
+    assert!(
+        admission(&[new.clone(), blocked], &new, 1, 1).is_ok(),
+        "a run stuck on something else holds no place in line"
     );
+}
+
+#[test]
+fn a_run_waits_for_the_previous_one_to_stop() {
+    let named = |name: &str| ObjectMeta {
+        name: Some(name.to_owned()),
+        labels: Some(BTreeMap::from([(
+            labels::BUILD_RUN.to_owned(),
+            name.to_owned(),
+        )])),
+        ..ObjectMeta::default()
+    };
+    let mut old_job = job(None);
+    old_job.metadata = named("api-a");
+    let mut finished_job = job(Some(("Complete", "True")));
+    finished_job.metadata = named("api-a");
+    let mut old_pod = pod(Vec::new(), Vec::new());
+    old_pod.metadata = named("api-a");
+    let mut done_pod = old_pod.clone();
+    done_pod.status = Some(PodStatus {
+        phase: Some("Succeeded".to_owned()),
+        ..PodStatus::default()
+    });
+    assert_eq!(
+        previous_running(&[old_job.clone()], &[], "api-b").as_deref(),
+        Some("api-a")
+    );
+    assert_eq!(
+        previous_running(&[], &[old_pod], "api-b").as_deref(),
+        Some("api-a"),
+        "the Job is gone but its Pod is not"
+    );
+    assert_eq!(previous_running(&[old_job], &[], "api-a"), None);
+    assert_eq!(
+        previous_running(&[finished_job], &[done_pod], "api-b"),
+        None
+    );
+}
+
+#[test]
+fn namespace_annotations_change_one_build_and_the_count() {
+    let defaults = Resources {
+        cpu_request: Some("100m".to_owned()),
+        memory_request: Some("256Mi".to_owned()),
+        cpu_limit: Some("1".to_owned()),
+        memory_limit: Some("1Gi".to_owned()),
+    };
+    let set = |pairs: &[(&str, &str)]| {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    assert_eq!(
+        limits(&BTreeMap::new(), 1, &defaults),
+        Limits {
+            concurrent: 1,
+            resources: defaults.clone()
+        }
+    );
+    let raised = limits(
+        &set(&[
+            (annotations::BUILD_CPU, "2"),
+            (annotations::BUILD_MEMORY, " 4Gi "),
+            (annotations::MAX_CONCURRENT_BUILDS, "2"),
+        ]),
+        1,
+        &defaults,
+    );
+    assert_eq!(raised.concurrent, 2);
+    assert_eq!(raised.resources.cpu_limit.as_deref(), Some("2"));
+    assert_eq!(raised.resources.memory_limit.as_deref(), Some("4Gi"));
+    assert_eq!(raised.resources.memory_request, defaults.memory_request);
+    let bad = limits(
+        &set(&[
+            (annotations::BUILD_CPU, "lots"),
+            (annotations::BUILD_MEMORY, "0"),
+        ]),
+        1,
+        &defaults,
+    );
+    assert_eq!(bad.resources, defaults);
+}
+
+#[test]
+fn a_memory_kill_since_the_run_started_is_out_of_memory() {
+    let killed = |at: &str| {
+        let mut pod = pod(Vec::new(), Vec::new());
+        pod.status = Some(PodStatus {
+            container_statuses: Some(vec![ContainerStatus {
+                name: "buildkitd".to_owned(),
+                last_state: Some(ContainerState {
+                    terminated: Some(ContainerStateTerminated {
+                        reason: Some("OOMKilled".to_owned()),
+                        finished_at: Some(Time(at.parse().unwrap())),
+                        ..ContainerStateTerminated::default()
+                    }),
+                    ..ContainerState::default()
+                }),
+                ..ContainerStatus::default()
+            }]),
+            ..PodStatus::default()
+        });
+        pod
+    };
+    let since = Some("2026-10-22T07:00:00Z".parse().unwrap());
+    assert!(oom_killed(&killed("2026-10-22T07:30:00Z"), since));
+    assert!(!oom_killed(&killed("2026-10-22T06:00:00Z"), since));
+    assert!(!oom_killed(&pod(Vec::new(), Vec::new()), since));
 }
 
 #[test]

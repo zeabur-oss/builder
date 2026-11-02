@@ -60,6 +60,10 @@ pub mod annotations {
     /// On a Namespace: overrides the controller's limit of concurrent builds, and with it how many
     /// builds its buildkitd runs at once.
     pub const MAX_CONCURRENT_BUILDS: &str = "builder.zeabur.com/max-concurrent-builds";
+    /// On a Namespace: overrides the controller's CPU limit of one build, such as `2`.
+    pub const BUILD_CPU: &str = "builder.zeabur.com/build-cpu";
+    /// On a Namespace: overrides the controller's memory limit of one build, such as `2Gi`.
+    pub const BUILD_MEMORY: &str = "builder.zeabur.com/build-memory";
     /// On a Job and Pod: the commit built.
     pub const REVISION: &str = "builder.zeabur.com/revision";
     /// On a `Build` with an archive source: a new value asks for an upload token

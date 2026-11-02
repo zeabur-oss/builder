@@ -48,7 +48,8 @@ require "$plain" "default install" 'name: dockerfile$' 'name: railpack$' 'name: 
   "image: \"ghcr.io/zeabur-oss/builder:$version\"\$" 'kind: ValidatingAdmissionPolicy$' \
   "request.userInfo.username == 'system:serviceaccount:default:zeabur-builder'" \
   "c.image in \\['ghcr.io/zeabur-oss/builder-job:$version', 'ghcr.io/zeabur-oss/builder-railpack:$version'\\]" \
-  '--buildkitd-image=docker.io/moby/buildkit:' "c.image == 'docker.io/moby/buildkit:" \
+  '--buildkitd-image=docker.io/moby/buildkit:' '--buildkitd-cpu-limit=1$' '--buildkitd-memory-limit=1Gi$' \
+  '--max-concurrent-builds=1$' '--max-cluster-builds=1$' "c.image == 'docker.io/moby/buildkit:" \
   "request.namespace in \['default', 'zot'\]"
 if grep -qE '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)' <<<"$plain"; then
   echo "default install: the chart sets registry http or a CA that nobody asked for" >&2

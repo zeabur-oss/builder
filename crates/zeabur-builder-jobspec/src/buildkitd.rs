@@ -102,19 +102,43 @@ pub struct DaemonInputs<'a> {
     pub runtime_class: Option<&'a str>,
     /// `false` runs it in a user namespace; `true` only for clusters older than 1.33.
     pub host_users: bool,
-    /// Requests and limits, as quantities such as `100m` and `512Mi`.
+    /// Requests and limits of one build, as quantities such as `100m` and `512Mi`.
     pub resources: &'a Resources,
+    /// Builds the daemon runs at once. The container's requests and limits are `resources` times
+    /// this, since BuildKit has no limit per build.
+    pub builds: u32,
 }
 
-/// The daemon's container resources.
+/// The resources of one build on the daemon.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Resources {
     /// `requests.cpu`.
     pub cpu_request: Option<String>,
     /// `requests.memory`.
     pub memory_request: Option<String>,
+    /// `limits.cpu`.
+    pub cpu_limit: Option<String>,
     /// `limits.memory`.
     pub memory_limit: Option<String>,
+}
+
+/// A Kubernetes quantity of decimal or binary SI form, such as `250m` or `1.5Gi`, times `n`;
+/// `None` for anything else, a zero or a negative number.
+#[must_use]
+pub fn times(quantity: &str, n: u32) -> Option<String> {
+    let split = quantity
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(quantity.len());
+    let (number, suffix) = quantity.split_at(split);
+    if !["", "m", "k", "K", "M", "G", "T", "Ki", "Mi", "Gi", "Ti"].contains(&suffix) {
+        return None;
+    }
+    let number: f64 = number
+        .parse()
+        .ok()
+        .filter(|v: &f64| v.is_finite() && *v > 0.0)?;
+    let total = (number * f64::from(n) * 1000.0).round() / 1000.0;
+    (n > 0 && total > 0.0).then(|| format!("{total}{suffix}"))
 }
 
 /// The objects of one namespace's buildkitd.
@@ -253,6 +277,34 @@ fn network_policy(
     }
 }
 
+/// The container's requests and limits: one build's, times the builds the daemon runs.
+fn requirements(inputs: &DaemonInputs<'_>) -> ResourceRequirements {
+    let resources = inputs.resources;
+    let quantities = |pairs: [(&str, &Option<String>); 2]| {
+        let map: BTreeMap<String, Quantity> = pairs
+            .iter()
+            .filter_map(|(key, quantity)| {
+                let quantity = quantity.as_deref()?;
+                let scaled =
+                    times(quantity, inputs.builds.max(1)).unwrap_or_else(|| quantity.to_owned());
+                Some(((*key).to_owned(), Quantity(scaled)))
+            })
+            .collect();
+        (!map.is_empty()).then_some(map)
+    };
+    ResourceRequirements {
+        requests: quantities([
+            ("cpu", &resources.cpu_request),
+            ("memory", &resources.memory_request),
+        ]),
+        limits: quantities([
+            ("cpu", &resources.cpu_limit),
+            ("memory", &resources.memory_limit),
+        ]),
+        ..ResourceRequirements::default()
+    }
+}
+
 fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
     let probe = |initial, period| Probe {
         exec: Some(ExecAction {
@@ -266,14 +318,6 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
         period_seconds: Some(period),
         ..Probe::default()
     };
-    let quantities = |pairs: &[(&str, &Option<String>)]| {
-        let map: BTreeMap<String, Quantity> = pairs
-            .iter()
-            .filter_map(|(k, v)| v.as_ref().map(|v| ((*k).to_owned(), Quantity(v.clone()))))
-            .collect();
-        (!map.is_empty()).then_some(map)
-    };
-    let resources = inputs.resources;
     PodSpec {
         host_users: Some(inputs.host_users),
         runtime_class_name: inputs.runtime_class.map(str::to_owned),
@@ -306,14 +350,7 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
                 privileged: Some(true),
                 ..SecurityContext::default()
             }),
-            resources: Some(ResourceRequirements {
-                requests: quantities(&[
-                    ("cpu", &resources.cpu_request),
-                    ("memory", &resources.memory_request),
-                ]),
-                limits: quantities(&[("memory", &resources.memory_limit)]),
-                ..ResourceRequirements::default()
-            }),
+            resources: Some(requirements(inputs)),
             volume_mounts: Some(vec![
                 mount("config", "/etc/buildkit", true),
                 mount("certs", "/certs", true),
@@ -380,6 +417,7 @@ mod tests {
             runtime_class: None,
             host_users: false,
             resources,
+            builds: 1,
         }
     }
 
@@ -388,7 +426,8 @@ mod tests {
         let resources = Resources {
             cpu_request: Some("100m".to_owned()),
             memory_request: Some("256Mi".to_owned()),
-            memory_limit: Some("4Gi".to_owned()),
+            cpu_limit: Some("1".to_owned()),
+            memory_limit: Some("1Gi".to_owned()),
         };
         let daemon = daemon(&inputs(&resources));
         let actual = serde_json::to_string_pretty(&serde_json::json!([
@@ -426,6 +465,42 @@ mod tests {
             Some(tls_secret("team-a").as_str())
         );
         assert_eq!(pod.containers[0].resources.as_ref().unwrap().requests, None);
+    }
+
+    #[test]
+    fn limits_grow_with_the_builds_it_runs() {
+        let resources = Resources {
+            cpu_request: Some("100m".to_owned()),
+            memory_request: Some("256Mi".to_owned()),
+            cpu_limit: Some("1".to_owned()),
+            memory_limit: Some("1Gi".to_owned()),
+        };
+        let mut inputs = inputs(&resources);
+        inputs.builds = 3;
+        let pod = daemon(&inputs)
+            .stateful_set
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap();
+        let container = pod.containers[0].resources.clone().unwrap();
+        let text = |m: Option<BTreeMap<String, Quantity>>, key: &str| m.unwrap()[key].0.clone();
+        assert_eq!(text(container.limits.clone(), "cpu"), "3");
+        assert_eq!(text(container.limits, "memory"), "3Gi");
+        assert_eq!(text(container.requests.clone(), "cpu"), "300m");
+        assert_eq!(text(container.requests, "memory"), "768Mi");
+    }
+
+    #[test]
+    fn quantities_multiply() {
+        assert_eq!(times("1", 2).as_deref(), Some("2"));
+        assert_eq!(times("1.5Gi", 2).as_deref(), Some("3Gi"));
+        assert_eq!(times("250m", 3).as_deref(), Some("750m"));
+        for bad in ["", "0", "-1", "abc", "1e3", "1Xi", "1Gi ", "m"] {
+            assert_eq!(times(bad, 2), None, "{bad:?}");
+        }
+        assert_eq!(times("1", 0), None);
     }
 
     #[test]

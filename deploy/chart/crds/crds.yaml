@@ -1032,6 +1032,7 @@
                       "SourceFailed",
                       "PlanFailed",
                       "BuildFailed",
+                      "OutOfMemory",
                       "Timeout",
                       "Cancelled",
                       "InfraError"

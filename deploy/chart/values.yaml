@@ -86,6 +86,19 @@ buildkitd:
     - 169.254.0.0/16
     - 172.16.0.0/12
     - 192.168.0.0/16
+  # What one build may use on its namespace's buildkitd.
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+# Builds that run at once. A run over either limit waits, oldest first. Each build gets
+# buildkitd.resources.limits, so a namespace's buildkitd gets those times its limit; a Namespace
+# annotation overrides them (builder.zeabur.com/max-concurrent-builds, build-cpu, build-memory).
+maxConcurrentBuilds:
+  # Per namespace.
+  namespace: 1
+  # Across all namespaces.
+  cluster: 1
 
 # Extra controller flags, such as --buildkitd-cache-size=10Gi or --buildkitd-host-users=true
 # (Kubernetes older than 1.33).
