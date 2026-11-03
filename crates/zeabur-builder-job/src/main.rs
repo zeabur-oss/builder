@@ -33,11 +33,12 @@ mod registry;
 mod unpack;
 
 use std::collections::BTreeMap;
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::process::{Command, ExitCode, Stdio};
+use std::io::{BufReader, Write as _};
+use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
+use tokio::io::AsyncBufReadExt as _;
 use zeabur_builder_core::archive::MAX_UNPACKED_BYTES;
 use zeabur_builder_core::progress::CacheCounter;
 use zeabur_builder_core::railpack;
@@ -201,13 +202,13 @@ fn pushed_repository(command: &[String]) -> Option<String> {
 const IMAGE_PORTS_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The ports the pushed image declares, read back from the registry the build pushed to.
-fn image_ports(repository: &str, plain_http: bool, digest: &str) -> Result<Vec<String>, String> {
+async fn image_ports(
+    repository: &str,
+    plain_http: bool,
+    digest: &str,
+) -> Result<Vec<String>, String> {
     let mut repository = open_repository(repository, plain_http)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    runtime.block_on(repository.exposed_ports(digest, IMAGE_PORTS_TIMEOUT))
+    repository.exposed_ports(digest, IMAGE_PORTS_TIMEOUT).await
 }
 
 /// A client for `repository` with the credentials in `$DOCKER_CONFIG/config.json`.
@@ -243,7 +244,7 @@ fn prepare_non_root(dir: &str) -> Result<(), String> {
 }
 
 /// Runs one `buildctl` command and returns the digest it reports.
-fn build(
+async fn build(
     command: &[String],
     renderer: &mut progress::Renderer,
     counter: &mut CacheCounter,
@@ -251,7 +252,7 @@ fn build(
     let Some((program, rest)) = command.split_first() else {
         return Err((FailureReason::BuildFailed, String::from("no command")));
     };
-    let child = Command::new(program)
+    let child = tokio::process::Command::new(program)
         .args(rest)
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
@@ -263,9 +264,9 @@ fn build(
         )
     })?;
     if let Some(stderr) = child.stderr.take() {
-        let mut out = std::io::stdout().lock();
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        let mut out = std::io::stdout();
+        while let Ok(Some(line)) = lines.next_line().await {
             counter.line(&line);
             for text in renderer.line(&line) {
                 if writeln!(out, "{text}").is_err() {
@@ -274,7 +275,7 @@ fn build(
             }
         }
     }
-    let status = child.wait();
+    let status = child.wait().await;
     if !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
         let message = renderer
             .last_error
@@ -290,7 +291,7 @@ fn build(
     })
 }
 
-fn run(args: &Args) -> BuildResult {
+async fn run(args: &Args) -> BuildResult {
     let mut commands = args.commands.clone();
     if !args.secrets_hash_env.is_empty()
         && let Some(first) = commands.first_mut()
@@ -326,7 +327,7 @@ fn run(args: &Args) -> BuildResult {
     let mut outcome = Ok(());
     for command in &commands {
         let command = with_digest(command, built.as_deref());
-        match build(&command, &mut renderer, &mut counter) {
+        match build(&command, &mut renderer, &mut counter).await {
             Ok(digest) => built = Some(digest),
             Err(failure) => {
                 outcome = Err(failure);
@@ -344,7 +345,7 @@ fn run(args: &Args) -> BuildResult {
             result.digest = Some(digest.clone());
             result.tags = commands.last().map_or_default(|c| tags(c));
             if let Some(repository) = commands.last().and_then(|c| pushed_repository(c)) {
-                match image_ports(&repository, args.plain_http, &digest) {
+                match image_ports(&repository, args.plain_http, &digest).await {
                     Ok(ports) => result.exposed_ports = ports,
                     Err(e) => drop(writeln!(
                         std::io::stderr().lock(),
@@ -404,21 +405,15 @@ fn parse_fetch(args: &[String]) -> Result<FetchArgs, String> {
 }
 
 /// Pulls the archive, checks it, and unpacks it into `args.dir`.
-fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
+async fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
     let start = Instant::now();
     for dir in [OUT, PLAN] {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {dir}: {e}"))?;
     }
     let mut repository = open_repository(&args.repository, args.plain_http)?;
     let file = std::path::Path::new(WORKSPACE).join("archive.tar.gz");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    runtime.block_on(async {
-        let layer = repository.layer(&args.digest).await?;
-        repository.download(&layer, &file).await
-    })?;
+    let layer = repository.layer(&args.digest).await?;
+    repository.download(&layer, &file).await?;
     let archive =
         std::fs::File::open(&file).map_err(|e| format!("cannot open {}: {e}", file.display()))?;
     unpack::unpack(
@@ -434,12 +429,17 @@ fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
     .map_err(|e| format!("cannot write {OUT}/fetch.json: {e}"))
 }
 
-fn main() -> ExitCode {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if let Some((first, rest)) = raw.split_first()
         && first == "fetch-archive"
     {
-        return match parse_fetch(rest).and_then(|args| fetch_archive(&args)) {
+        let fetched = match parse_fetch(rest) {
+            Ok(args) => fetch_archive(&args).await,
+            Err(message) => Err(message),
+        };
+        return match fetched {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 drop(writeln!(std::io::stderr().lock(), "{message}"));
@@ -448,7 +448,7 @@ fn main() -> ExitCode {
         };
     }
     let result = match parse_args(&raw) {
-        Ok(args) => run(&args),
+        Ok(args) => run(&args).await,
         Err(message) => BuildResult {
             reason: Some(FailureReason::BuildFailed),
             message: format!("zeabur-builder-job: {message}"),

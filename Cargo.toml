@@ -61,7 +61,7 @@ sha2 = { version = "0.11", default-features = false }
 # Reads the tar entries of archive sources; the Job writes the files itself.
 tar = { version = "0.4", default-features = false }
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "process", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std"] }
 
