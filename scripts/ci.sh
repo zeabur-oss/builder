@@ -180,6 +180,8 @@ case "$job" in
     if ! {
       TAG="$tag" K3D_CLUSTER=zeabur-builder ./scripts/deploy-example.sh k3d-zeabur-builder \
         team-a/whoami team-a/hello-python team-b/whoami &&
+        kubectl -n team-a wait build/whoami --timeout 60s \
+          --for 'jsonpath={.status.exposedPorts[0]}=80/tcp' &&
         kubectl -n team-a wait build/no-such-ref --timeout 120s \
           --for 'jsonpath={.status.conditions[?(@.type=="SourceReady")].reason}=RefNotFound' &&
         kubectl -n team-a wait buildrun -l builder.zeabur.com/build=no-such-dockerfile --timeout 600s \

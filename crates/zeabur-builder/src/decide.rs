@@ -751,6 +751,7 @@ pub(crate) fn summarise(
         if let (Some(tag), Some(digest)) = (run_status.tags.first(), run_status.image_digest) {
             status.latest_image = Some(format!("{image}:{tag}@{digest}"));
         }
+        status.exposed_ports = run_status.exposed_ports;
     }
     status.last_build_run_ref = runs
         .iter()
@@ -894,6 +895,7 @@ fn from_result(result: BuildResult) -> Observed {
             result::PlanSource::None => PlanSource::None,
         }),
         base_images: result.base_images,
+        exposed_ports: result.exposed_ports,
         phase_durations: result
             .phases
             .iter()

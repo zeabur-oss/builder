@@ -36,6 +36,7 @@ use rustls::pki_types::pem::PemObject as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use zeabur_builder_core::archive::{self, Layer, MANIFEST_MEDIA_TYPE, MAX_MANIFEST_BYTES};
+use zeabur_builder_core::result::{MAX_EXPOSED_PORTS, is_digest};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A network policy can admit a new Pod some seconds after it starts, and refuse it until then.
@@ -43,6 +44,8 @@ const CONNECT_RETRY: Duration = Duration::from_secs(1);
 const CONNECT_RETRIES: u32 = 30;
 const MAX_REDIRECTS: usize = 5;
 const MAX_TOKEN_BYTES: u64 = 1 << 20;
+const MAX_CONFIG_BYTES: u64 = 4 << 20;
+const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json";
 const USER_AGENT: &str = concat!("zeabur-builder-job/", env!("CARGO_PKG_VERSION"));
 
 type HttpClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
@@ -372,6 +375,59 @@ impl Repository {
         archive::layer(&body, digest).map_err(|e| e.to_string())
     }
 
+    /// A manifest or index with `digest`, checked against it.
+    async fn manifest_json(&mut self, digest: &str) -> Result<ImageManifest, String> {
+        let response = self
+            .get(&format!("manifests/{digest}"), Some(MANIFEST_ACCEPT))
+            .await?;
+        let body = read_limited(response, MAX_MANIFEST_BYTES).await?;
+        if archive::sha256(&body) != digest {
+            return Err(format!("the manifest does not match {digest}"));
+        }
+        serde_json::from_slice(&body).map_err(|e| format!("cannot read the manifest: {e}"))
+    }
+
+    /// The `ExposedPorts` of the image with `digest`, or an error once `within` passes: the client
+    /// only bounds connecting, and a registry that stalls mid-response must not hold the build.
+    pub(crate) async fn exposed_ports(
+        &mut self,
+        digest: &str,
+        within: Duration,
+    ) -> Result<Vec<String>, String> {
+        tokio::time::timeout(within, self.read_exposed_ports(digest))
+            .await
+            .map_err(|_elapsed| {
+                format!("the registry did not answer within {}s", within.as_secs())
+            })?
+    }
+
+    /// An index gives its first image that is not an attestation.
+    async fn read_exposed_ports(&mut self, digest: &str) -> Result<Vec<String>, String> {
+        let mut manifest = self.manifest_json(digest).await?;
+        if manifest.config.is_none() {
+            let entry = manifest
+                .manifests
+                .iter()
+                .find(|m| m.platform.as_ref().is_some_and(|p| p.os != "unknown"))
+                .ok_or("the index has no image")?;
+            if !is_digest(&entry.digest) {
+                return Err(format!("`{}` is not a digest", entry.digest));
+            }
+            let entry = entry.digest.clone();
+            manifest = self.manifest_json(&entry).await?;
+        }
+        let config = manifest.config.ok_or("the manifest has no config")?;
+        if !is_digest(&config.digest) {
+            return Err(format!("`{}` is not a digest", config.digest));
+        }
+        let response = self.get(&format!("blobs/{}", config.digest), None).await?;
+        let body = read_limited(response, MAX_CONFIG_BYTES).await?;
+        if archive::sha256(&body) != config.digest {
+            return Err(format!("the image config does not match {}", config.digest));
+        }
+        exposed_ports(&body)
+    }
+
     /// Downloads the layer to `to`, checks its size and digest, and removes the file if it fails.
     pub(crate) async fn download(&mut self, layer: &Layer, to: &Path) -> Result<(), String> {
         let written = self.download_unchecked(layer, to).await;
@@ -414,6 +470,74 @@ impl Repository {
         }
         Ok(())
     }
+}
+
+#[derive(Deserialize)]
+struct ImageManifest {
+    #[serde(default)]
+    config: Option<Descriptor>,
+    #[serde(default)]
+    manifests: Vec<IndexEntry>,
+}
+
+#[derive(Deserialize)]
+struct Descriptor {
+    digest: String,
+}
+
+#[derive(Deserialize)]
+struct IndexEntry {
+    digest: String,
+    #[serde(default)]
+    platform: Option<Platform>,
+}
+
+#[derive(Deserialize)]
+struct Platform {
+    #[serde(default)]
+    os: String,
+}
+
+#[derive(Deserialize)]
+struct ImageConfig {
+    #[serde(default)]
+    config: Option<ContainerConfig>,
+}
+
+#[derive(Deserialize)]
+struct ContainerConfig {
+    #[serde(rename = "ExposedPorts", default)]
+    exposed_ports: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+/// The `ExposedPorts` keys of an image config, sorted, without keys that are not `<port>/<proto>`
+/// or `<low>-<high>/<proto>`.
+fn exposed_ports(config: &[u8]) -> Result<Vec<String>, String> {
+    let config: ImageConfig =
+        serde_json::from_slice(config).map_err(|e| format!("cannot read the image config: {e}"))?;
+    let mut ports: Vec<String> = config
+        .config
+        .and_then(|c| c.exposed_ports)
+        .into_iter()
+        .flat_map(BTreeMap::into_keys)
+        .filter(|key| is_port_key(key))
+        .collect();
+    ports.truncate(MAX_EXPOSED_PORTS);
+    Ok(ports)
+}
+
+fn is_port_key(key: &str) -> bool {
+    let Some((ports, protocol)) = key.split_once('/') else {
+        return false;
+    };
+    let numbers = ports.split('-').count() <= 2
+        && ports
+            .split('-')
+            .all(|n| !n.is_empty() && n.len() <= 5 && n.bytes().all(|b| b.is_ascii_digit()));
+    numbers
+        && !protocol.is_empty()
+        && protocol.len() <= 8
+        && protocol.bytes().all(|b| b.is_ascii_lowercase())
 }
 
 /// The body, refused when it is longer than `limit`.
@@ -655,6 +779,151 @@ mod tests {
         let other = sha256(b"another manifest");
         assert!(pull(honest, &other, &to).await.is_err());
         assert!(!to.exists());
+    }
+
+    #[test]
+    fn exposed_ports_of_a_config() {
+        let config = br#"{"config":{"ExposedPorts":{"53/udp":{},"8000-8010/tcp":{},"3000/tcp":{},"../x":{},"80":{}}}}"#;
+        assert_eq!(
+            exposed_ports(config).unwrap(),
+            ["3000/tcp", "53/udp", "8000-8010/tcp"]
+        );
+        assert_eq!(
+            exposed_ports(br#"{"config":{}}"#).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            exposed_ports(br#"{"config":{"ExposedPorts":null}}"#).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(exposed_ports(b"{}").unwrap(), Vec::<String>::new());
+        assert!(exposed_ports(b"nope").is_err());
+    }
+
+    /// A registry that serves `blobs` and `manifests` by their digests under [`NAME`], with the
+    /// bearer dance skipped.
+    async fn serve_images(items: Vec<(String, Vec<u8>)>) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let items = Arc::new(items);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let items = Arc::clone(&items);
+                tokio::spawn(async move {
+                    let service = service_fn(move |request: Request<Incoming>| {
+                        let digest = request.uri().path().rsplit('/').next().unwrap_or_default();
+                        let body = items
+                            .iter()
+                            .find(|(d, _)| d == digest)
+                            .map(|(_, b)| b.clone());
+                        async move {
+                            Ok::<_, Infallible>(body.map_or_else(
+                                || reply(StatusCode::NOT_FOUND, &[], Vec::new()),
+                                |body| reply(StatusCode::OK, &[], body),
+                            ))
+                        }
+                    });
+                    drop(
+                        hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .await,
+                    );
+                });
+            }
+        });
+        addr
+    }
+
+    async fn ports(addr: SocketAddr, digest: &str) -> Result<Vec<String>, String> {
+        let mut repository = Repository::new(
+            client(None).unwrap(),
+            &format!("127.0.0.1:{}/{NAME}", addr.port()),
+            true,
+            None,
+        )
+        .unwrap();
+        repository
+            .exposed_ports(digest, Duration::from_secs(10))
+            .await
+    }
+
+    #[tokio::test]
+    async fn reads_the_ports_of_an_image_and_of_an_index_past_attestations() {
+        let config = br#"{"config":{"ExposedPorts":{"3000/tcp":{},"53/udp":{}}}}"#.to_vec();
+        let config_digest = sha256(&config);
+        let image = format!(
+            r#"{{"schemaVersion":2,"config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{}}},"layers":[]}}"#,
+            config.len()
+        )
+        .into_bytes();
+        let image_digest = sha256(&image);
+        let attestation = br#"{"schemaVersion":2,"config":{"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#.to_vec();
+        let attestation_digest = sha256(&attestation);
+        let index = format!(
+            r#"{{"schemaVersion":2,"manifests":[
+            {{"digest":"{attestation_digest}","platform":{{"os":"unknown","architecture":"unknown"}}}},
+            {{"digest":"{image_digest}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#
+        )
+        .into_bytes();
+        let index_digest = sha256(&index);
+        let addr = serve_images(vec![
+            (config_digest, config),
+            (image_digest.clone(), image),
+            (attestation_digest, attestation),
+            (index_digest.clone(), index),
+        ])
+        .await;
+        let expected = ["3000/tcp", "53/udp"];
+        assert_eq!(ports(addr, &image_digest).await.unwrap(), expected);
+        assert_eq!(ports(addr, &index_digest).await.unwrap(), expected);
+        assert!(ports(addr, &sha256(b"missing")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_config_that_does_not_match() {
+        let config = br#"{"config":{"ExposedPorts":{"3000/tcp":{}}}}"#.to_vec();
+        let config_digest = sha256(&config);
+        let image =
+            format!(r#"{{"schemaVersion":2,"config":{{"digest":"{config_digest}"}},"layers":[]}}"#)
+                .into_bytes();
+        let image_digest = sha256(&image);
+        let addr = serve_images(vec![
+            (
+                config_digest,
+                br#"{"config":{"ExposedPorts":{"22/tcp":{}}}}"#.to_vec(),
+            ),
+            (image_digest.clone(), image),
+        ])
+        .await;
+        assert!(ports(addr, &image_digest).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn gives_up_on_a_registry_that_stalls() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _stream = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        let mut repository = Repository::new(
+            client(None).unwrap(),
+            &format!("127.0.0.1:{}/{NAME}", addr.port()),
+            true,
+            None,
+        )
+        .unwrap();
+        let digest = sha256(b"stalled");
+        let error = repository
+            .exposed_ports(&digest, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(error.contains("did not answer"), "{error}");
     }
 
     #[tokio::test]

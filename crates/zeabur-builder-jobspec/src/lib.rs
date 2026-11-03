@@ -392,6 +392,9 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
     let context = context_path(inputs);
     let non_root = non_root(inputs.builder);
     let mut wrapper = vec!["zeabur-builder-job".to_owned()];
+    if inputs.registry_http {
+        wrapper.push("--plain-http".to_owned());
+    }
     let metadata = if non_root {
         format!("{OUT}/railpack-metadata.json")
     } else {
@@ -422,6 +425,9 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
     }
 
     let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
+    if let Some(ca) = inputs.registry_ca {
+        env_vars.push(env(REGISTRY_CA_ENV, &literal(ca)));
+    }
     env_vars.extend(inputs.build.spec.env.iter().map(secret_env));
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));

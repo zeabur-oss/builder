@@ -869,6 +869,35 @@ fn phases_follow_the_pod() {
 }
 
 #[test]
+fn exposed_ports_reach_the_build_status_from_the_newest_success() {
+    let message = format!(
+        r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"],"exposedPorts":["3000/tcp","53/udp"]}}"#
+    );
+    let done = pod(
+        vec![container("fetch", terminated(0, None))],
+        vec![container("build", terminated(0, Some(&message)))],
+    );
+    let Observed::Finished(run_status) = observe(&job(Some(("Complete", ""))), Some(&done)) else {
+        panic!("finished expected")
+    };
+    assert_eq!(run_status.exposed_ports, ["3000/tcp", "53/udp"]);
+
+    let mut ok = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+    ok.status = Some(*run_status);
+    let mut portless = run("api-2", B, Some(Phase::Succeeded), "2026-10-22T02:00:00Z");
+    if let Some(s) = portless.status.as_mut() {
+        s.tags = vec!["main-2-aaaaaaa".to_owned()];
+        s.image_digest = Some(DIGEST.to_owned());
+    }
+    let mut status = BuildStatus::default();
+    summarise(&mut status, &[ok.clone()], "r/team-a/api", now(), Some(1));
+    assert_eq!(status.exposed_ports, ["3000/tcp", "53/udp"]);
+
+    summarise(&mut status, &[ok, portless], "r/team-a/api", now(), Some(1));
+    assert_eq!(status.exposed_ports, Vec::<String>::new());
+}
+
+#[test]
 fn success_carries_the_digest() {
     let message = format!(
         r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"],"phases":{{"fetch":1.0,"build":12.34}},"cache":{{"total":5,"cached":3}}}}"#

@@ -22,6 +22,9 @@ pub const MAX_DETAIL_BYTES: usize = 1024;
 /// The most base images recorded.
 pub const MAX_BASE_IMAGES: usize = 10;
 
+/// The most exposed ports recorded.
+pub const MAX_EXPOSED_PORTS: usize = 32;
+
 /// What a build Job reports.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +52,9 @@ pub struct BuildResult {
     /// `name@sha256:…` of the base images, at most [`MAX_BASE_IMAGES`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub base_images: Vec<String>,
+    /// The image's `ExposedPorts` keys such as `3000/tcp`, sorted, at most [`MAX_EXPOSED_PORTS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exposed_ports: Vec<String>,
     /// Seconds spent per phase: `fetch`, `plan`, `build`, `push`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub phases: BTreeMap<String, f64>,
@@ -148,12 +154,16 @@ impl BuildResult {
         let mut result = self.clone();
         result.message = truncate(&result.message, MAX_DETAIL_BYTES);
         result.base_images.truncate(MAX_BASE_IMAGES);
+        result.exposed_ports.truncate(MAX_EXPOSED_PORTS);
         loop {
             let text = serde_json::to_string(&result).unwrap_or_default();
             if text.len() <= MAX_MESSAGE_BYTES {
                 return text;
             }
             if result.base_images.pop().is_some() {
+                continue;
+            }
+            if result.exposed_ports.pop().is_some() {
                 continue;
             }
             if result.tags.len() > 1 {
@@ -261,5 +271,30 @@ mod tests {
         let back = BuildResult::decode(&text).unwrap();
         assert_eq!(back.reason, Some(FailureReason::BuildFailed));
         assert!(back.message.len() <= MAX_DETAIL_BYTES);
+    }
+
+    #[test]
+    fn exposed_ports_travel_and_are_dropped_before_the_digest() {
+        let mut result = BuildResult {
+            result: Outcome::Succeeded,
+            digest: Some(DIGEST.to_owned()),
+            exposed_ports: vec!["3000/tcp".to_owned(), "53/udp".to_owned()],
+            ..BuildResult::default()
+        };
+        assert!(
+            result
+                .encode()
+                .contains(r#""exposedPorts":["3000/tcp","53/udp"]"#)
+        );
+        assert_eq!(BuildResult::decode(&result.encode()).unwrap(), result);
+
+        result.exposed_ports = (0..100).map(|i| format!("{}/tcp", 10_000 + i)).collect();
+        result.tags = vec!["t".repeat(3000)];
+        let back = BuildResult::decode(&result.encode()).unwrap();
+        assert_eq!(back.digest.as_deref(), Some(DIGEST));
+        assert!(back.exposed_ports.len() <= MAX_EXPOSED_PORTS);
+
+        result.exposed_ports.clear();
+        assert!(!result.encode().contains("exposedPorts"));
     }
 }

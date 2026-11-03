@@ -1,7 +1,7 @@
 //! `zeabur-builder-job`: the build container's entry point.
 //!
 //! ```text
-//! zeabur-builder-job [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …]
+//! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …]
 //! zeabur-builder-job fetch-archive [--plain-http] <repository> <digest> <dir>
 //! ```
 //!
@@ -16,6 +16,10 @@
 //! line on stdout. The result is the last command's digest and tags; `{digest}` in a command
 //! stands for the digest of the one before it.
 //!
+//! After a success it reads the pushed image's config from the registry (`--plain-http` if the
+//! registry speaks http) and reports its `ExposedPorts`; failing to read them does not fail the
+//! build.
+//!
 //! `--secrets-hash-env` names variables whose values are hashed into
 //! `--opt build-arg:secrets-hash=…` on the first command, so Railpack's frontend invalidates the
 //! steps that use a secret when its value changes, without the value entering the cache key.
@@ -29,11 +33,12 @@ mod registry;
 mod unpack;
 
 use std::collections::BTreeMap;
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::process::{Command, ExitCode, Stdio};
-use std::time::Instant;
+use std::io::{BufReader, Write as _};
+use std::process::{ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
+use tokio::io::AsyncBufReadExt as _;
 use zeabur_builder_core::archive::MAX_UNPACKED_BYTES;
 use zeabur_builder_core::progress::CacheCounter;
 use zeabur_builder_core::railpack;
@@ -50,6 +55,7 @@ const DIGEST: &str = "{digest}";
 
 #[derive(Debug, PartialEq, Eq)]
 struct Args {
+    plain_http: bool,
     secrets_hash_env: Vec<String>,
     non_root: Option<String>,
     commands: Vec<Vec<String>>,
@@ -58,6 +64,7 @@ struct Args {
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut secrets_hash_env = Vec::new();
     let mut non_root = None;
+    let mut plain_http = false;
     let mut rest = args.iter();
     loop {
         match rest.next().map(String::as_str) {
@@ -68,6 +75,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             Some("--non-root") => {
                 non_root = Some(rest.next().ok_or("--non-root needs a directory")?.clone());
             }
+            Some("--plain-http") => plain_http = true,
             Some("--") => break,
             Some(other) => return Err(format!("unexpected argument `{other}`")),
             None => return Err("missing `-- buildctl …`".to_owned()),
@@ -82,6 +90,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         return Err("missing a command after `--` or `--then`".to_owned());
     }
     Ok(Args {
+        plain_http,
         secrets_hash_env,
         non_root,
         commands,
@@ -173,6 +182,52 @@ fn tags(command: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The repository (`<host>/<name>`) of the first image name in `--output`.
+fn pushed_repository(command: &[String]) -> Option<String> {
+    let output = flag_value(command, "--output")?;
+    let name = csv_fields(output)
+        .iter()
+        .find_map(|field| field.strip_prefix("name=").map(str::to_owned))?
+        .split(',')
+        .next()?
+        .to_owned();
+    let repository = match name.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => &name,
+    };
+    Some(repository.to_owned())
+}
+
+/// How long reading the pushed image's ports may take; the ports are only a hint.
+const IMAGE_PORTS_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The ports the pushed image declares, read back from the registry the build pushed to.
+async fn image_ports(
+    repository: &str,
+    plain_http: bool,
+    digest: &str,
+) -> Result<Vec<String>, String> {
+    let mut repository = open_repository(repository, plain_http)?;
+    repository.exposed_ports(digest, IMAGE_PORTS_TIMEOUT).await
+}
+
+/// A client for `repository` with the credentials in `$DOCKER_CONFIG/config.json`.
+fn open_repository(repository: &str, plain_http: bool) -> Result<registry::Repository, String> {
+    let host = repository.split('/').next().unwrap_or_default();
+    let config_path = format!(
+        "{}/config.json",
+        std::env::var("DOCKER_CONFIG").unwrap_or_default()
+    );
+    let credentials = match std::fs::read(&config_path) {
+        Ok(config) => registry::credentials(&config, host)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("cannot read {config_path}: {e}")),
+    };
+    let ca = std::env::var(REGISTRY_CA_ENV).ok();
+    let client = registry::client(ca.as_deref())?;
+    registry::Repository::new(client, repository, plain_http, credentials)
+}
+
 /// Rewrites the Railpack plan in `dir` and writes the second build's Dockerfile.
 fn prepare_non_root(dir: &str) -> Result<(), String> {
     let path = format!("{dir}/railpack-plan.json");
@@ -189,7 +244,7 @@ fn prepare_non_root(dir: &str) -> Result<(), String> {
 }
 
 /// Runs one `buildctl` command and returns the digest it reports.
-fn build(
+async fn build(
     command: &[String],
     renderer: &mut progress::Renderer,
     counter: &mut CacheCounter,
@@ -197,7 +252,7 @@ fn build(
     let Some((program, rest)) = command.split_first() else {
         return Err((FailureReason::BuildFailed, String::from("no command")));
     };
-    let child = Command::new(program)
+    let child = tokio::process::Command::new(program)
         .args(rest)
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
@@ -209,9 +264,9 @@ fn build(
         )
     })?;
     if let Some(stderr) = child.stderr.take() {
-        let mut out = std::io::stdout().lock();
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        let mut out = std::io::stdout();
+        while let Ok(Some(line)) = lines.next_line().await {
             counter.line(&line);
             for text in renderer.line(&line) {
                 if writeln!(out, "{text}").is_err() {
@@ -220,7 +275,7 @@ fn build(
             }
         }
     }
-    let status = child.wait();
+    let status = child.wait().await;
     if !status.as_ref().is_ok_and(std::process::ExitStatus::success) {
         let message = renderer
             .last_error
@@ -236,7 +291,7 @@ fn build(
     })
 }
 
-fn run(args: &Args) -> BuildResult {
+async fn run(args: &Args) -> BuildResult {
     let mut commands = args.commands.clone();
     if !args.secrets_hash_env.is_empty()
         && let Some(first) = commands.first_mut()
@@ -272,7 +327,7 @@ fn run(args: &Args) -> BuildResult {
     let mut outcome = Ok(());
     for command in &commands {
         let command = with_digest(command, built.as_deref());
-        match build(&command, &mut renderer, &mut counter) {
+        match build(&command, &mut renderer, &mut counter).await {
             Ok(digest) => built = Some(digest),
             Err(failure) => {
                 outcome = Err(failure);
@@ -287,8 +342,17 @@ fn run(args: &Args) -> BuildResult {
     match (outcome, built) {
         (Ok(()), Some(digest)) => {
             result.result = Outcome::Succeeded;
-            result.digest = Some(digest);
+            result.digest = Some(digest.clone());
             result.tags = commands.last().map_or_default(|c| tags(c));
+            if let Some(repository) = commands.last().and_then(|c| pushed_repository(c)) {
+                match image_ports(&repository, args.plain_http, &digest).await {
+                    Ok(ports) => result.exposed_ports = ports,
+                    Err(e) => drop(writeln!(
+                        std::io::stderr().lock(),
+                        "cannot read the image's exposed ports: {e}"
+                    )),
+                }
+            }
         }
         (Ok(()), None) => {
             result.reason = Some(FailureReason::BuildFailed);
@@ -341,34 +405,15 @@ fn parse_fetch(args: &[String]) -> Result<FetchArgs, String> {
 }
 
 /// Pulls the archive, checks it, and unpacks it into `args.dir`.
-fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
+async fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
     let start = Instant::now();
     for dir in [OUT, PLAN] {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {dir}: {e}"))?;
     }
-    let host = args.repository.split('/').next().unwrap_or_default();
-    let config_path = format!(
-        "{}/config.json",
-        std::env::var("DOCKER_CONFIG").unwrap_or_default()
-    );
-    let credentials = match std::fs::read(&config_path) {
-        Ok(config) => registry::credentials(&config, host)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("cannot read {config_path}: {e}")),
-    };
-    let ca = std::env::var(REGISTRY_CA_ENV).ok();
-    let client = registry::client(ca.as_deref())?;
-    let mut repository =
-        registry::Repository::new(client, &args.repository, args.plain_http, credentials)?;
+    let mut repository = open_repository(&args.repository, args.plain_http)?;
     let file = std::path::Path::new(WORKSPACE).join("archive.tar.gz");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    runtime.block_on(async {
-        let layer = repository.layer(&args.digest).await?;
-        repository.download(&layer, &file).await
-    })?;
+    let layer = repository.layer(&args.digest).await?;
+    repository.download(&layer, &file).await?;
     let archive =
         std::fs::File::open(&file).map_err(|e| format!("cannot open {}: {e}", file.display()))?;
     unpack::unpack(
@@ -384,12 +429,17 @@ fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
     .map_err(|e| format!("cannot write {OUT}/fetch.json: {e}"))
 }
 
-fn main() -> ExitCode {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if let Some((first, rest)) = raw.split_first()
         && first == "fetch-archive"
     {
-        return match parse_fetch(rest).and_then(|args| fetch_archive(&args)) {
+        let fetched = match parse_fetch(rest) {
+            Ok(args) => fetch_archive(&args).await,
+            Err(message) => Err(message),
+        };
+        return match fetched {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 drop(writeln!(std::io::stderr().lock(), "{message}"));
@@ -398,7 +448,7 @@ fn main() -> ExitCode {
         };
     }
     let result = match parse_args(&raw) {
-        Ok(args) => run(&args),
+        Ok(args) => run(&args).await,
         Err(message) => BuildResult {
             reason: Some(FailureReason::BuildFailed),
             message: format!("zeabur-builder-job: {message}"),
@@ -435,6 +485,7 @@ mod tests {
                 "build"
             ])),
             Ok(Args {
+                plain_http: false,
                 secrets_hash_env: strings(&["ZB_SECRET_A"]),
                 non_root: None,
                 commands: vec![strings(&["buildctl", "build"])],
@@ -454,6 +505,7 @@ mod tests {
                 "context:app=docker-image://r/a@{digest}",
             ])),
             Ok(Args {
+                plain_http: false,
                 secrets_hash_env: Vec::new(),
                 non_root: Some("/workspace/plan".to_owned()),
                 commands: vec![
@@ -553,5 +605,29 @@ mod tests {
         ]);
         assert_eq!(tags(&single), ["v1"]);
         assert_eq!(tags(&strings(&["build"])), Vec::<String>::new());
+    }
+
+    #[test]
+    fn pushed_repository_from_the_output() {
+        let quoted = strings(&[
+            "--output",
+            "type=image,\"name=r.local:5000/a/api:main-1-abc,r.local:5000/a/api:latest\",push=true",
+        ]);
+        assert_eq!(
+            pushed_repository(&quoted).as_deref(),
+            Some("r.local:5000/a/api")
+        );
+        let untagged = strings(&["--output", "type=image,name=r.local:5000/a/api,push=true"]);
+        assert_eq!(
+            pushed_repository(&untagged).as_deref(),
+            Some("r.local:5000/a/api")
+        );
+        assert_eq!(pushed_repository(&strings(&["build"])), None);
+    }
+
+    #[test]
+    fn plain_http_flag() {
+        let args = parse_args(&strings(&["--plain-http", "--", "buildctl"])).unwrap();
+        assert!(args.plain_http);
     }
 }
