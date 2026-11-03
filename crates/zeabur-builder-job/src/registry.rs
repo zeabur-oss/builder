@@ -387,9 +387,22 @@ impl Repository {
         serde_json::from_slice(&body).map_err(|e| format!("cannot read the manifest: {e}"))
     }
 
-    /// The `ExposedPorts` of the image with `digest`. An index gives its first image that is not
-    /// an attestation.
-    pub(crate) async fn exposed_ports(&mut self, digest: &str) -> Result<Vec<String>, String> {
+    /// The `ExposedPorts` of the image with `digest`, or an error once `within` passes: the client
+    /// only bounds connecting, and a registry that stalls mid-response must not hold the build.
+    pub(crate) async fn exposed_ports(
+        &mut self,
+        digest: &str,
+        within: Duration,
+    ) -> Result<Vec<String>, String> {
+        tokio::time::timeout(within, self.read_exposed_ports(digest))
+            .await
+            .map_err(|_elapsed| {
+                format!("the registry did not answer within {}s", within.as_secs())
+            })?
+    }
+
+    /// An index gives its first image that is not an attestation.
+    async fn read_exposed_ports(&mut self, digest: &str) -> Result<Vec<String>, String> {
         let mut manifest = self.manifest_json(digest).await?;
         if manifest.config.is_none() {
             let entry = manifest
@@ -830,7 +843,9 @@ mod tests {
             None,
         )
         .unwrap();
-        repository.exposed_ports(digest).await
+        repository
+            .exposed_ports(digest, Duration::from_secs(10))
+            .await
     }
 
     #[tokio::test]
@@ -882,6 +897,33 @@ mod tests {
         ])
         .await;
         assert!(ports(addr, &image_digest).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn gives_up_on_a_registry_that_stalls() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _stream = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        let mut repository = Repository::new(
+            client(None).unwrap(),
+            &format!("127.0.0.1:{}/{NAME}", addr.port()),
+            true,
+            None,
+        )
+        .unwrap();
+        let digest = sha256(b"stalled");
+        let error = repository
+            .exposed_ports(&digest, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(error.contains("did not answer"), "{error}");
     }
 
     #[tokio::test]

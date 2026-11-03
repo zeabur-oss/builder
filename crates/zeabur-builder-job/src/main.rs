@@ -35,7 +35,7 @@ mod unpack;
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
 use zeabur_builder_core::archive::MAX_UNPACKED_BYTES;
@@ -197,6 +197,9 @@ fn pushed_repository(command: &[String]) -> Option<String> {
     Some(repository.to_owned())
 }
 
+/// How long reading the pushed image's ports may take; the ports are only a hint.
+const IMAGE_PORTS_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// The ports the pushed image declares, read back from the registry the build pushed to.
 fn image_ports(repository: &str, plain_http: bool, digest: &str) -> Result<Vec<String>, String> {
     let mut repository = open_repository(repository, plain_http)?;
@@ -204,7 +207,7 @@ fn image_ports(repository: &str, plain_http: bool, digest: &str) -> Result<Vec<S
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    runtime.block_on(repository.exposed_ports(digest))
+    runtime.block_on(repository.exposed_ports(digest, IMAGE_PORTS_TIMEOUT))
 }
 
 /// A client for `repository` with the credentials in `$DOCKER_CONFIG/config.json`.
