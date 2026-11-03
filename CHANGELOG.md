@@ -2,6 +2,25 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.1.2-beta.1 (2026-11-03)
+
+### Fixes
+
+- Builds are limited by default to 1 CPU and 1 GiB each, one at a time across the cluster, and one active run per Build
+- Images are pushed by digest with no `candidate-*` tags left in GHCR
+
+#### The controller deletes only repositories it pushed to for a `Build`
+
+Before it signs a token that pushes to a repository, it records the repository in a ConfigMap in its own Namespace, and cleanup reads those records instead of the registry catalog. Images pushed by hand to a `<namespace>/<name>` path are no longer deleted. The chart's Role in the controller's Namespace now allows ConfigMaps ([registry tokens](docs/operations/registry-tokens.mdx#clean-up-images-and-sources)).
+
+#### A Build records the ports its image exposes
+
+After a successful build, Builder reads the pushed image's config back from the registry and records its `ExposedPorts` in `status.exposedPorts` of the BuildRun and the Build, such as `["3000/tcp"]`. Zeabur suggests these ports on the service page. An image that declares none, such as a Railpack build, records none, and a failed read leaves the list empty without failing the build.
+
+#### Release notes are the changelog section and a link to the documentation
+
+The digests of every image, index and the chart are in the signed `digests.txt` asset ([releases](docs/operations/releases.mdx)).
+
 ## 0.1.2-beta.0 (2026-11-01)
 
 ### Fixes
