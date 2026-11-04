@@ -19,7 +19,10 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-check_jobs=(format clippy docs test cargo-deny levels chart)
+# CI runs the short checks one after another in the lint job: each needs about a minute to set up a
+# runner and its dev shell but much less to run. Each one can still run alone.
+lint_jobs=(format clippy docs cargo-deny levels chart)
+check_jobs=(lint test)
 cluster_jobs=(kubernetes)
 
 if [[ "${1:-}" == --list ]]; then
@@ -27,7 +30,7 @@ if [[ "${1:-}" == --list ]]; then
   exit 0
 fi
 job="${1:?usage: scripts/ci.sh <job> | --list}"
-printf '%s\n' "${check_jobs[@]}" "${cluster_jobs[@]}" | grep -qx -- "$job" ||
+printf '%s\n' "${lint_jobs[@]}" "${check_jobs[@]}" "${cluster_jobs[@]}" | grep -qx -- "$job" ||
   { echo "error: no job named $job (scripts/ci.sh --list)" >&2; exit 1; }
 
 # The marker tells a re-run inside the dev shell apart from a call outside it.
@@ -154,6 +157,16 @@ cluster_failure_context() {
 }
 
 case "$job" in
+  # Every short check runs, also after one fails, and the job fails if any did.
+  lint)
+    failed=()
+    for check in "${lint_jobs[@]}"; do
+      echo "::group::$check"
+      "$0" "$check" || failed+=("$check")
+      echo "::endgroup::"
+    done
+    [[ ${#failed[@]} -eq 0 ]] || { echo "::error::failed: ${failed[*]}"; exit 1; }
+    ;;
   format)
     cargo fmt --all --check
     nixfmt --check flake.nix
