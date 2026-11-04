@@ -1,9 +1,8 @@
 name: CI
 
-# The jobs of scripts/ci/jobs, each as `scripts/ci.sh <job>` through the shared workflow of
-# zeabur-oss/.github; the script enters the Nix dev shell itself, so a job runs the same locally.
-# Pull requests and pushes run the fast tier. The merge queue runs every job on the commit about to
-# land, and the nightly run keeps main's caches for the merge queue's jobs.
+# Each job runs scripts/ci/<job>.sh in the Nix dev shell, the same as locally. Pull requests and
+# pushes run lint and test. The merge queue runs every job on the commit about to land, and the
+# nightly run keeps main's caches for the merge queue's jobs.
 on:
   push:
     branches: [main]
@@ -20,8 +19,65 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  ci:
-    uses: zeabur-oss/.github/.github/workflows/ci.yml@07053982f99078683ff95ebb5003d5223420aa2e # main
+  lint:
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@fc4d36e33c9bdd662320242cf83e80b7938f818c # main
+        with:
+          rust-cache: true
+      - run: nix develop -c scripts/ci/lint.sh
+
+  test:
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@fc4d36e33c9bdd662320242cf83e80b7938f818c # main
+        with:
+          rust-cache: true
+      - run: nix develop -c scripts/ci/test.sh
+
+  kubernetes:
+    if: github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref_type == 'branch')
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@fc4d36e33c9bdd662320242cf83e80b7938f818c # main
+        with:
+          rust-cache: true
+      - run: nix develop -c scripts/ci/kubernetes.sh
+        env:
+          CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kubernetes
+          path: ${{ runner.temp }}/ci-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  zizmor:
+    uses: zeabur-oss/.github/.github/workflows/zizmor.yml@fc4d36e33c9bdd662320242cf83e80b7938f818c # main
+
+  # The check rulesets require.
+  ok:
+    name: ci / ok
+    if: always()
+    needs: [lint, test, kubernetes, zizmor]
+    runs-on: ubuntu-slim
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+
   dco:
     uses: zeabur-oss/.github/.github/workflows/dco.yml@07053982f99078683ff95ebb5003d5223420aa2e # main

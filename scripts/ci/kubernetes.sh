@@ -9,18 +9,18 @@
 #
 # It leaves what is worth keeping in CI_ARTIFACTS (default target/ci/artifacts): the log of every
 # Pod, and when it fails the Builds, BuildRuns, events and the network context.
-# shellcheck source-path=SCRIPTDIR
-source "$(dirname "$0")/lib.sh"
+set -euo pipefail
+cd "$(dirname "$0")/../.."
 
 k3s_image="${K3S_IMAGE:-rancher/k3s:v1.36.5-k3s1}"
 
-artifacts="${CI_ARTIFACTS:-$root/target/ci/artifacts}"
+artifacts="${CI_ARTIFACTS:-$PWD/target/ci/artifacts}"
 mkdir -p "$artifacts"
 artifacts="$(cd "$artifacts" && pwd)"
 
 # The disposable cluster, in a kubeconfig of its own so that the machine's context never changes.
 start_cluster() {
-  export KUBECONFIG="$root/target/ci/kubeconfig"
+  export KUBECONFIG="$PWD/target/ci/kubeconfig"
   mkdir -p "$(dirname "$KUBECONFIG")"
   k3d cluster delete zeabur-builder >/dev/null 2>&1 || true
   if [[ -z "${ZEABUR_CI_KEEP:-}" ]]; then
