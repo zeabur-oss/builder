@@ -2,6 +2,23 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.1.2 (2026-11-04)
+
+### Changed
+
+- Builds have limits by default. Each build gets 1 CPU and 1 GiB of memory, and one build runs at a time in each namespace and across the cluster. A run over a limit waits with the reason `QuotaExceeded`, and the oldest run starts first. In 0.1.1 a namespace ran up to 3 builds at once, with no CPU or memory limit. To allow more, set the chart values `buildkitd.resources.limits` and `maxConcurrentBuilds`, or set the Namespace annotations `builder.zeabur.com/build-cpu`, `builder.zeabur.com/build-memory` and `builder.zeabur.com/max-concurrent-builds` for one namespace ([values.yaml](https://github.com/zeabur-oss/builder/blob/main/deploy/chart/values.yaml)).
+- A namespace's buildkitd gets one build's limits times the builds the namespace may run at once. Changing a limit restarts that buildkitd and stops the builds running on it, so change limits when no builds are running.
+- A new run of a Build waits until the Job and Pod of its previous run have stopped. With `concurrency: Replace`, the cancelled build no longer overlaps the one that replaced it.
+- The controller deletes only the repositories it pushed to for a Build. Images you push by hand to a `<namespace>/<name>` path stay when a Build of that name is deleted. Before it issues a push token, the controller records the repository in a ConfigMap in its own Namespace, and the chart's Role there now allows ConfigMaps ([registry tokens](https://oss.zeabur.com/docs/builder/operations/registry-tokens/#clean-up-images-and-sources)).
+- Repositories pushed by 0.1.1 have no record. If you delete a Build that hasn't run since the upgrade, its images stay in the registry. Delete them by hand.
+- The release page now shows this changelog section and a link to the documentation. Each image, index and chart digest is in the signed `digests.txt` asset, and the install and verify commands are on [Release artifacts and verification](https://oss.zeabur.com/docs/builder/operations/releases/).
+- Images are pushed to GHCR by digest, so GHCR no longer gets `candidate-*` tags.
+
+### Added
+
+- A Build records the ports its image exposes. After a successful build, Builder reads the pushed image's config from the registry and writes its `ExposedPorts`, such as `["3000/tcp"]`, to `status.exposedPorts` of the BuildRun and the Build. Zeabur suggests these ports on the service page. Railpack images declare no ports and record none. If the read fails, the list stays empty and the build still succeeds.
+- A build fails with the reason `OutOfMemory` when buildkitd is killed for using more memory than its limit. The message names the annotation and the controller flag to raise.
+
 ## 0.1.2-beta.1 (2026-11-03)
 
 ### Fixes
