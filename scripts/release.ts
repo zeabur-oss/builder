@@ -124,7 +124,7 @@ async function build(os: string, arch: string, dist: string) {
   // The images as built, with the chart of this commit, on k3s.
   await $`${join(scripts, "ci.sh")} kubernetes`.env({
     ...process.env,
-    ZEABUR_CI_SHELL: "1",
+    CI_SHELL: "default",
     ZEABUR_CI_IMAGE_TAG: `release-${arch}`,
   });
 }

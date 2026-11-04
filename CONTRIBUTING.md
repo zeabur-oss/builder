@@ -15,9 +15,10 @@ messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 ## Before you open a pull request
 
 CI is the shared workflow of [zeabur-oss/.github](https://github.com/zeabur-oss/.github): it runs
-every job of `scripts/ci.sh --list` as `scripts/ci.sh <job>`, which enters the Nix dev shell
-itself, so `scripts/ci.sh clippy` runs a job exactly as CI does. Or run what CI runs, inside
-`nix develop`:
+the jobs of `scripts/ci/jobs` (`scripts/ci.sh --list`) as `scripts/ci.sh <job>`, which enters the
+Nix dev shell itself, so `scripts/ci.sh clippy` runs a job exactly as CI does. Each job is
+`scripts/ci/<job>.sh`. A pull request runs every job but `kubernetes`; the merge queue runs all of
+them on the commit that is about to land. Or run what CI runs, inside `nix develop`:
 
 ```sh
 cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && actionlint
@@ -84,8 +85,8 @@ scripts compile (aws-lc-sys) goes through kache too, with no further setup.
 
 ## Tests against a cluster
 
-`scripts/ci.sh kubernetes` is the cluster job of CI. It creates the k3d cluster `zeabur-builder`
-with its own kubeconfig (`target/ci/kubeconfig`), builds the images, installs the chart from
+`scripts/ci.sh kubernetes` (`scripts/ci/kubernetes.sh`) is the cluster job of CI, which runs in the merge queue. It creates
+the k3d cluster `zeabur-builder` with its own kubeconfig (`target/ci/kubeconfig`), builds the images, installs the chart from
 `deploy/chart`, builds the sample Builds from Git (a Dockerfile in `team-a` and `team-b`, Railpack
 in `team-a`), waits for the two samples that fail on purpose, runs `scripts/example-isolation.sh`,
 `scripts/example-admission.sh` and `scripts/example-archive.sh`, and deletes the cluster. Run it on a Linux machine with Docker; `ZEABUR_CI_KEEP=1` keeps the
