@@ -19,13 +19,12 @@ import {
   pinDigest,
   pushChart,
   pushImage,
+  scratch,
   verifyChart,
   verifyImage,
 } from "@zeabur-oss/release";
 import { $ } from "bun";
-import { rmSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -41,25 +40,6 @@ const images = [
 function fail(message: string): never {
   console.error(message);
   process.exit(1);
-}
-
-// A directory of this run's own, removed when it ends, with an empty registry login. Helm reads
-// the same file as crane.
-async function scratch(): Promise<{
-  dir: string;
-  env: Record<string, string>;
-}> {
-  const dir = await mkdtemp(join(tmpdir(), "release-"));
-  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
-  const docker = join(dir, "docker");
-  await mkdir(docker);
-  return {
-    dir,
-    env: {
-      DOCKER_CONFIG: docker,
-      HELM_REGISTRY_CONFIG: join(docker, "config.json"),
-    },
-  };
 }
 
 // knope (knope.toml) has set [workspace.package] in Cargo.toml; the workspace's crates in
