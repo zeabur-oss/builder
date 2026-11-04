@@ -14,11 +14,9 @@ messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## Before you open a pull request
 
-CI is the shared workflow of [zeabur-oss/.github](https://github.com/zeabur-oss/.github): it runs
-the jobs of `scripts/ci/jobs` (`scripts/ci.sh --list`) as `scripts/ci.sh <job>`, which enters the
-Nix dev shell itself, so `scripts/ci.sh clippy` runs a job exactly as CI does. Each job is
-`scripts/ci/<job>.sh`. A pull request runs every job but `kubernetes`; the merge queue runs all of
-them on the commit that is about to land. Or run what CI runs, inside `nix develop`:
+Each job in `.github/workflows/ci.yml` runs `nix develop -c scripts/ci/<job>.sh`, so
+`nix develop -c scripts/ci/lint.sh` runs a job exactly as CI does. A pull request runs `lint` and
+`test`; the merge queue also runs `kubernetes` on the commit that is about to land. Or run what CI runs, inside `nix develop`:
 
 ```sh
 cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && actionlint
@@ -85,13 +83,13 @@ scripts compile (aws-lc-sys) goes through kache too, with no further setup.
 
 ## Tests against a cluster
 
-`scripts/ci.sh kubernetes` (`scripts/ci/kubernetes.sh`) is the cluster job of CI, which runs in the merge queue. It creates
+`scripts/ci/kubernetes.sh` is the cluster job of CI, which runs in the merge queue. It creates
 the k3d cluster `zeabur-builder` with its own kubeconfig (`target/ci/kubeconfig`), builds the images, installs the chart from
 `deploy/chart`, builds the sample Builds from Git (a Dockerfile in `team-a` and `team-b`, Railpack
 in `team-a`), waits for the two samples that fail on purpose, runs `scripts/example-isolation.sh`,
 `scripts/example-admission.sh` and `scripts/example-archive.sh`, and deletes the cluster. Run it on a Linux machine with Docker; `ZEABUR_CI_KEEP=1` keeps the
 cluster. It keeps the log of every Pod, the build Pods included, in `$CI_ARTIFACTS/pods`
-(`target/ci/artifacts` by default; the artifact `ci-kubernetes` in CI). When it fails, it also
+(`target/ci/artifacts` by default; the artifact `kubernetes` in CI). When it fails, it also
 keeps the Builds, BuildRuns and events there, and prints each buildkitd's network and the result of
 a one-step build that fetches from a `RUN` step.
 
