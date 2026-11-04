@@ -112,6 +112,13 @@ save_pod_logs() {
 cluster_failure_context() {
   stop_collecting
   kubectl get build,buildrun,job,pod -A -o wide || true
+  kubectl describe build,buildrun -A || true
+  # The Pods that are not Ready, which a timed out wait was waiting for.
+  local ns pod ready status
+  kubectl get pod -A --no-headers 2>/dev/null | while read -r ns pod ready status _; do
+    [[ $status != Completed && ${ready%/*} != "${ready#*/}" ]] || continue
+    kubectl -n "$ns" describe pod "$pod" || true
+  done
   kubectl -n builder-system logs deployment/zeabur-builder --tail=100 || true
   save_pod_logs --print
   local log
