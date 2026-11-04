@@ -46,8 +46,6 @@ pub(crate) struct Settings {
     pub(crate) storage_class: Option<String>,
     /// A sandboxed runtime class.
     pub(crate) runtime_class: Option<String>,
-    /// `hostUsers`.
-    pub(crate) host_users: bool,
     /// The resources of one build.
     pub(crate) resources: Resources,
     /// How long a namespace goes without builds before its daemon scales to zero.
@@ -81,7 +79,6 @@ fn inputs<'a>(
         cache_size: &settings.cache_size,
         storage_class: settings.storage_class.as_deref(),
         runtime_class: settings.runtime_class.as_deref(),
-        host_users: settings.host_users,
         resources: &limits.resources,
         builds: limits.concurrent,
     }

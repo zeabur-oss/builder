@@ -5,7 +5,6 @@
 # Environment:
 #   IMAGE_PREFIX, TAG     the images from scripts/build-images.sh (zeabur-builder, dev)
 #   K3D_CLUSTER           when set, imports the images into this k3d cluster first
-#   HOST_USERS            buildkitd's hostUsers (false: a user namespace per buildkitd)
 #   IDLE                  seconds before an idle buildkitd scales to zero (600)
 #   NAMESPACES            build namespaces to create (team-a team-b)
 #   TIMEOUT               seconds to wait for the Builds (900); the first failed BuildRun stops
@@ -18,7 +17,6 @@ builds=("$@")
 [[ ${#builds[@]} -gt 0 ]] || builds=(whoami)
 prefix="${IMAGE_PREFIX:-zeabur-builder}"
 tag="${TAG:-dev}"
-host_users="${HOST_USERS:-false}"
 idle="${IDLE:-600}"
 read -r -a namespaces <<<"${NAMESPACES:-team-a team-b}"
 timeout="${TIMEOUT:-900}"
@@ -63,7 +61,7 @@ helm --kube-context "$context" upgrade --install builder "$root/deploy/chart" -n
   --set registry.inCluster.namespace=builder-registry \
   --set registry.inCluster.podLabels.app\\.kubernetes\\.io/name=registry \
   --set registry.tokenKey.namespace=builder-registry --set registry.tokenKey.secret=zot-token-signer \
-  --set-json "extraArgs=[\"--buildkitd-cache-size=10Gi\",\"--buildkitd-host-users=$host_users\",\"--buildkitd-idle=$idle\"]"
+  --set-json "extraArgs=[\"--buildkitd-cache-size=10Gi\",\"--buildkitd-idle=$idle\"]"
 # The controller restarts so that a new image with the same tag is picked up.
 k -n builder-system rollout restart deployment/zeabur-builder
 k -n builder-system rollout status deployment/zeabur-builder --timeout 120s
