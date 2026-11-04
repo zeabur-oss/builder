@@ -22,6 +22,6 @@ concurrency:
 
 jobs:
   ci:
-    uses: zeabur-oss/.github/.github/workflows/ci.yml@38db3b831202938021111168e1a6f77f607707fe # main
+    uses: zeabur-oss/.github/.github/workflows/ci.yml@5efa62e01e1b103d1431d780658eaa74bb417438 # main
   dco:
     uses: zeabur-oss/.github/.github/workflows/dco.yml@6ab106525ce16169ab0ecfebe4b0248e096797fa # main
