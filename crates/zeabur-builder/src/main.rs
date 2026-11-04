@@ -152,10 +152,6 @@ struct ControllerArgs {
     /// A `RuntimeClass` to run buildkitd in, such as a Kata or gVisor sandbox. Default: none.
     #[arg(long)]
     buildkitd_runtime_class: Option<String>,
-    /// `true` shares the node's user namespace instead of a Pod user namespace; only for
-    /// Kubernetes older than 1.33.
-    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
-    buildkitd_host_users: bool,
     /// buildkitd's CPU request per build. Its container asks for this times the namespace's
     /// concurrent builds.
     #[arg(long, default_value = "100m")]
@@ -221,7 +217,6 @@ impl ControllerArgs {
             cache_size: self.buildkitd_cache_size,
             storage_class: self.buildkitd_storage_class,
             runtime_class: self.buildkitd_runtime_class,
-            host_users: self.buildkitd_host_users,
             resources: Resources {
                 cpu_request: Some(self.buildkitd_cpu_request),
                 memory_request: Some(self.buildkitd_memory_request),

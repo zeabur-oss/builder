@@ -100,8 +100,7 @@ maxConcurrentBuilds:
   # Across all namespaces.
   cluster: 1
 
-# Extra controller flags, such as --buildkitd-cache-size=10Gi or --buildkitd-host-users=true
-# (Kubernetes older than 1.33).
+# Extra controller flags, such as --buildkitd-cache-size=10Gi.
 extraArgs: []
 
 resources:

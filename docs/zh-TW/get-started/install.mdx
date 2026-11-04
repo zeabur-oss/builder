@@ -8,7 +8,7 @@ source: "9681589b6947"
 
 ## 開始前
 
-- 準備 Kubernetes 1.33 或更新版本的叢集，讓 buildkitd 使用 user namespace。較舊的叢集需要在 `extraArgs` 加上 `--buildkitd-host-users=true`。
+- 準備 Kubernetes 1.33 或更新版本的叢集，讓 buildkitd 使用 user namespace。
 - 使用會執行 NetworkPolicy 的 CNI。
 - 準備 registry。
 - 在節點上為各 Namespace 預留建置快取的磁碟空間，預設為 20 GiB。

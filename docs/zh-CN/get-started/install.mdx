@@ -8,7 +8,7 @@ source: "9681589b6947"
 
 ## 开始前
 
-- 准备 Kubernetes 1.33 或更新版本的集群，供 buildkitd 使用 user namespace。较旧的集群需要在 `extraArgs` 中加上 `--buildkitd-host-users=true`。
+- 准备 Kubernetes 1.33 或更新版本的集群，供 buildkitd 使用 user namespace。
 - 使用支持执行 NetworkPolicy 的 CNI。
 - 准备镜像仓库（registry）。
 - 在节点上为各 Namespace 的构建缓存预留磁盘空间，默认为 20 GiB。

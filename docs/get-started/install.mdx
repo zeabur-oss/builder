@@ -7,7 +7,7 @@ Use the Helm chart to install the controller, CRDs, `dockerfile` and `railpack` 
 
 ## Before you begin
 
-- Prepare a cluster running Kubernetes 1.33 or later so buildkitd can use user namespaces. For older clusters, add `--buildkitd-host-users=true` to `extraArgs`.
+- Prepare a cluster running Kubernetes 1.33 or later so buildkitd can use user namespaces.
 - Use a CNI that enforces NetworkPolicy.
 - Prepare a container registry.
 - Reserve disk space on the nodes for each Namespace's build cache. The default is 20 GiB.

@@ -101,8 +101,6 @@ pub struct DaemonInputs<'a> {
     pub storage_class: Option<&'a str>,
     /// A sandboxed runtime, such as `kata` or `gvisor`; runc when unset.
     pub runtime_class: Option<&'a str>,
-    /// `false` runs it in a user namespace; `true` only for clusters older than 1.33.
-    pub host_users: bool,
     /// Requests and limits of one build, as quantities such as `100m` and `512Mi`.
     pub resources: &'a Resources,
     /// Builds the daemon runs at once. The container's requests and limits are `resources` times
@@ -334,7 +332,7 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
         ..Probe::default()
     };
     PodSpec {
-        host_users: Some(inputs.host_users),
+        host_users: Some(false),
         runtime_class_name: inputs.runtime_class.map(str::to_owned),
         automount_service_account_token: Some(false),
         enable_service_links: Some(false),
@@ -430,7 +428,6 @@ mod tests {
             cache_size: "20Gi",
             storage_class: None,
             runtime_class: None,
-            host_users: false,
             resources,
             builds: 1,
         }
