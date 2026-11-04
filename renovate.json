@@ -9,18 +9,5 @@
     "cargo",
     "github-actions",
     "nix"
-  ],
-  "packageRules": [
-    {
-      "description": "One pull request for compatible crate updates; majors stay separate.",
-      "matchManagers": [
-        "cargo"
-      ],
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
-      "groupName": "cargo (non-major)"
-    }
   ]
 }
