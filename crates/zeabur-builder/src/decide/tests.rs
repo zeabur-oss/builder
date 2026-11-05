@@ -594,9 +594,10 @@ fn a_ceiling_holds_a_namespace_to_the_cluster_limit_and_says_so() {
     let held = limits(&annotations, 1, &defaults, &ceiling);
     assert_eq!(held.resources.cpu_limit.as_deref(), Some("4"));
     assert_eq!(held.resources.memory_limit.as_deref(), Some("2Gi"));
-    assert_eq!(held.clamped.len(), 1);
-    assert!(held.clamped[0].contains("CPU is 8"));
-    assert!(held.clamped[0].contains("gets 4"));
+    assert_eq!(
+        held.clamped,
+        ["This build asked for 8 CPU; the cluster allows at most 4 per build, so it gets 4."]
+    );
 
     let open = limits(&annotations, 1, &defaults, &Ceiling::default());
     assert_eq!(open.resources.cpu_limit.as_deref(), Some("8"));

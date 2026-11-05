@@ -269,7 +269,27 @@ impl ControllerArgs {
     }
 }
 
+/// Refuses a ceiling below the request it must hold: the limit would be under the request.
+fn check_ceiling(what: &str, request: &str, max: Option<&str>) -> Result<(), String> {
+    match max {
+        Some(max) if zeabur_builder_jobspec::buildkitd::exceeds(request, max) => Err(format!(
+            "--buildkitd-{what}-max={max} is below --buildkitd-{what}-request={request}"
+        )),
+        _ => Ok(()),
+    }
+}
+
 async fn run_controller(args: ControllerArgs) -> Result<(), String> {
+    check_ceiling(
+        "cpu",
+        &args.buildkitd_cpu_request,
+        args.buildkitd_cpu_max.as_deref(),
+    )?;
+    check_ceiling(
+        "memory",
+        &args.buildkitd_memory_request,
+        args.buildkitd_memory_max.as_deref(),
+    )?;
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_provider| "a TLS provider is already installed".to_owned())?;
@@ -322,5 +342,22 @@ fn main() -> ExitCode {
             output::stderr_line(&format!("error: {message}"));
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_ceiling;
+
+    #[test]
+    fn a_ceiling_below_the_request_is_refused() {
+        assert_eq!(
+            check_ceiling("memory", "256Mi", Some("128Mi")),
+            Err(
+                "--buildkitd-memory-max=128Mi is below --buildkitd-memory-request=256Mi".to_owned()
+            )
+        );
+        assert_eq!(check_ceiling("memory", "256Mi", Some("1Gi")), Ok(()));
+        assert_eq!(check_ceiling("cpu", "100m", None), Ok(()));
     }
 }
