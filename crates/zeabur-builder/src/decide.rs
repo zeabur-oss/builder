@@ -452,7 +452,7 @@ pub(crate) fn limits(
         };
         if zeabur_builder_jobspec::buildkitd::exceeds(value, max) {
             clamped.push(format!(
-                "the build's {what} is {value}, above the cluster's limit of {max}; buildkitd gets {max}"
+                "This build asked for {value} {what}; the cluster allows at most {max} per build, so it gets {max}."
             ));
             return Some(max.clone());
         }
