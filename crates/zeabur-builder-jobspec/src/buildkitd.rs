@@ -130,6 +130,15 @@ pub fn times(quantity: &str, n: u32) -> Option<String> {
     (n > 0 && parsed > zero).then(|| (parsed * n).to_string_with_precision(28))
 }
 
+/// Whether the quantity `a` is larger than `b`; `false` when either is not a quantity.
+#[must_use]
+pub fn exceeds(a: &str, b: &str) -> bool {
+    match (ParsedQuantity::try_from(a), ParsedQuantity::try_from(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => false,
+    }
+}
+
 /// The objects of one namespace's buildkitd.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Daemon {
