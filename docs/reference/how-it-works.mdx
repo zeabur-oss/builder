@@ -83,4 +83,4 @@ View the phase, reason, start time, and end time of each build:
 kubectl get buildruns
 ```
 
-Build logs are the logs from the Job's Pod.
+Build logs are the logs from the Job's Pod. The build step writes one JSON event per line; `jq -r '.text // .message // .name'` reads them as text.
