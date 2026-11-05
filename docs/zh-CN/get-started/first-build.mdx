@@ -55,7 +55,7 @@ kubectl get builds -o wide
 
 `kubectl get buildruns` 显示每次构建的阶段、原因、开始时间和结束时间。
 
-构建日志位于该次构建 Job 的 Pod 日志中。查看该 Pod 的日志，即可读取构建输出。
+构建日志位于该次构建 Job 的 Pod 日志中。构建步骤每行输出一个 JSON 事件，包含步骤名称、耗时秒数，以及该行来自 stdout 还是 stderr。要当作文本读，运行 `kubectl logs <pod> | jq -r '.text // .message // .name'`。
 
 </Step>
 

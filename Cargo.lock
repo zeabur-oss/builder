@@ -4040,6 +4040,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "jiff",
  "rustls",
  "rustls-native-certs",
  "serde",

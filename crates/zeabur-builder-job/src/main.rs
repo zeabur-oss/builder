@@ -257,6 +257,7 @@ async fn build(
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
         .spawn();
+    renderer.next_run();
     let mut child = child.map_err(|e| {
         (
             FailureReason::BuildFailed,
