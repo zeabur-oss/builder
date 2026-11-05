@@ -67,6 +67,13 @@ require "$pinned" "pinned install" "image: \"ghcr.io/zeabur-oss/builder@$digest\
   'name: ZEABUR_BUILDER_REGISTRY_CA$' 'value: "CA"$' \
   "c.image in \['ghcr.io/zeabur-oss/builder-job@$digest', 'ghcr.io/zeabur-oss/builder-railpack@$digest', 'example.com/planner:1'\]" \
   "request.namespace in \['default', 'zot'\]"
+if grep -q -- '--buildkitd-.*-max' <<<"$plain"; then
+  echo "default install: the chart sets a build ceiling that nobody asked for" >&2
+  exit 1
+fi
+ceiling=$(helm template builder "$chart" "${base[@]}" --set buildkitd.resources.max.cpu=4 \
+  --set buildkitd.resources.max.memory=8Gi)
+require "$ceiling" "build ceiling" '--buildkitd-cpu-max=4$' '--buildkitd-memory-max=8Gi$'
 http=$(helm template builder "$chart" "${base[@]}" --set registry.http=true)
 require "$http" "plain HTTP registry" 'http = true$' 'name: ZEABUR_BUILDER_REGISTRY_HTTP, value: "true"'
 tokens=$plain
