@@ -64,6 +64,9 @@ pub mod annotations {
     pub const BUILD_CPU: &str = "builder.zeabur.com/build-cpu";
     /// On a Namespace: overrides the controller's memory limit of one build, such as `2Gi`.
     pub const BUILD_MEMORY: &str = "builder.zeabur.com/build-memory";
+    /// On a buildkitd `StatefulSet`: a hash of its spec without `replicas`. The controller
+    /// replaces an idle daemon whose hash differs from the one it would create.
+    pub const SPEC_HASH: &str = "builder.zeabur.com/spec-hash";
     /// On a Job and Pod: the commit built.
     pub const REVISION: &str = "builder.zeabur.com/revision";
     /// On a `Build` with an archive source: a new value asks for an upload token

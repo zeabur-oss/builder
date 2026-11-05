@@ -29,6 +29,9 @@
     "apiVersion": "apps/v1",
     "kind": "StatefulSet",
     "metadata": {
+      "annotations": {
+        "builder.zeabur.com/spec-hash": "86e9ccd54c6d7c20"
+      },
       "labels": {
         "app.kubernetes.io/managed-by": "zeabur-builder",
         "app.kubernetes.io/name": "buildkitd",

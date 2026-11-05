@@ -1,0 +1,59 @@
+---
+title: Run builds on a build node
+description: Set a node aside for builds with a label and a taint, so builds stay off the nodes that run your apps.
+---
+
+A build takes up to 1 CPU and 1 GiB of memory by default (`buildkitd.resources.limits`). On a cluster of small nodes, that comes out of what your apps have. If you have a spare machine, you can make it a build node: every namespace's buildkitd and every build Job run there, and nothing else does. Your apps keep their CPU and memory, and each namespace's build cache stays on that node's disk.
+
+A build node must have the same CPU architecture as the nodes that run your apps. buildkitd builds images for the architecture of the node it runs on.
+
+<Steps>
+
+<Step>
+
+### Label and taint the node
+
+The taint keeps other workloads off the node. The label keeps builds on it. Builds need both: with the toleration alone, a build can still land on any node, and with the node selector alone, a build can't start on the tainted node.
+
+```sh
+kubectl label node build-1 builder.zeabur.com/builds=true
+kubectl taint node build-1 builder.zeabur.com/builds=true:NoSchedule
+```
+
+</Step>
+
+<Step>
+
+### Set the chart values
+
+Add the following to your values file and run `helm upgrade`:
+
+```yaml
+builds:
+  nodeSelector: {builder.zeabur.com/builds: "true"}
+  tolerations:
+    - {key: builder.zeabur.com/builds, operator: Equal, value: "true", effect: NoSchedule}
+```
+
+With both values empty, builds run wherever the scheduler puts them. The controller itself stays where it is.
+
+</Step>
+
+</Steps>
+
+## The first build after a change
+
+The controller doesn't move a namespace's buildkitd while it's building. Once a buildkitd has been idle long enough to scale to zero, the controller deletes it with its cache, and the namespace's next build creates it on the build node.
+
+So each namespace's first build after the change starts with an empty cache. The same happens when you change the cache size (`--buildkitd-cache-size`), a namespace's build limits, or upgrade to a builder version that changes buildkitd.
+
+## Check where builds run
+
+Start a build, then list the namespace's buildkitd and build Pods with their nodes:
+
+```sh
+kubectl -n builder-system get pod -o wide -l builder.zeabur.com/namespace=team-a
+kubectl -n team-a get pod -o wide
+```
+
+The `NODE` column should show the build node.
