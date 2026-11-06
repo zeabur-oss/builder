@@ -4,7 +4,7 @@ description: 用標籤和 taint 留一個節點專門建置，讓建置不佔用
 source: "8020f5686ed0"
 ---
 
-預設每次建置最多使用 1 個 CPU 和 1 GiB 記憶體（`buildkitd.resources.limits`）。在節點都不大的叢集上，這些資源會從應用程式那邊分走。如果有一台空出來的機器，可以把它設成建置節點：每個 Namespace 的 buildkitd 和每個建置 Job 都在這台機器上執行，其他工作負載不會排到這裡。建置不再佔用應用程式的 CPU 和記憶體，每個 Namespace 的建置快取也都留在這台機器的磁碟上。
+預設每次建置最多使用 1 個 CPU 和 1 GiB 記憶體（`buildkitd.resources.limits`）。在節點都不大的叢集上，這些 CPU 和記憶體會分走應用程式能用的部分。如果有一台空出來的機器，可以把它設成建置節點：每個 Namespace 的 buildkitd 和每個建置 Job 都在這台機器上執行，其他工作負載不會排到這裡。建置不再佔用應用程式的 CPU 和記憶體，每個 Namespace 的建置快取也都留在這台機器的磁碟上。
 
 buildkitd 只會建置所在節點架構的映像檔，所以建置節點的 CPU 架構必須和執行應用程式的節點相同。
 
@@ -14,7 +14,7 @@ buildkitd 只會建置所在節點架構的映像檔，所以建置節點的 CPU
 
 ### 幫節點加上標籤和 taint
 
-taint 讓其他工作負載不會排到這個節點，標籤讓建置只排到這個節點，兩者都要設定。只設 toleration，建置還是可能排到任何節點；只設 node selector，建置會因為 taint 而無法在這個節點啟動。
+taint 讓其他工作負載排不進這個節點，標籤讓建置只排到這個節點，兩者都要設定。只設 toleration，建置還是可能排到任何節點；只設 node selector，建置會因為 taint 而無法在這個節點啟動。
 
 ```sh
 kubectl label node build-1 builder.zeabur.com/builds=true
@@ -36,7 +36,7 @@ builds:
     - {key: builder.zeabur.com/builds, operator: Equal, value: "true", effect: NoSchedule}
 ```
 
-兩個值都留空時，建置會排到排程器挑選的任何節點。控制器本身會留在原本的節點。
+兩個值都留空時，建置排到哪個節點，由排程器決定。控制器本身會留在原本的節點。
 
 </Step>
 
@@ -44,9 +44,9 @@ builds:
 
 ## 變更後的第一次建置
 
-Namespace 的 buildkitd 正在建置時，控制器不會移動它。等 buildkitd 閒置夠久、縮減到零，控制器會把它連同快取一起刪除，這個 Namespace 下一次建置時，會在建置節點上重新建立。
+Namespace 的 buildkitd 正在建置時，控制器不會移動它。等 buildkitd 閒置夠久、縮減到零，控制器會把它連同快取一起刪除，這個 Namespace 下一次建置時，控制器會在建置節點上重新建立它。
 
-所以變更後，每個 Namespace 的第一次建置都從空的快取開始。變更快取大小（`--buildkitd-cache-size`）、Namespace 的建置資源上限，或升級到會變更 buildkitd 的 Zeabur Builder 版本時，也是一樣。
+所以變更後，每個 Namespace 的第一次建置都從空的快取開始。變更快取大小（`--buildkitd-cache-size`）、Namespace 的建置資源上限，或升級的 Zeabur Builder 版本改動了 buildkitd 時，也是一樣。
 
 ## 確認建置在哪裡執行
 

@@ -4,7 +4,7 @@ description: 用标签和 taint 留出一个节点专门构建，让构建不占
 source: "8020f5686ed0"
 ---
 
-默认每次构建最多使用 1 个 CPU 和 1 GiB 内存（`buildkitd.resources.limits`）。在节点都不大的集群上，这些资源会从应用那边分走。如果有一台空闲的机器，可以把它设为构建节点：每个 Namespace 的 buildkitd 和每个构建 Job 都在这台机器上运行，其他工作负载不会调度到这里。构建不再占用应用的 CPU 和内存，每个 Namespace 的构建缓存也都留在这台机器的磁盘上。
+默认每次构建最多使用 1 个 CPU 和 1 GiB 内存（`buildkitd.resources.limits`）。在节点都不大的集群上，这些 CPU 和内存会分走应用能用的部分。如果有一台空闲的机器，可以把它设为构建节点：每个 Namespace 的 buildkitd 和每个构建 Job 都在这台机器上运行，其他工作负载不会调度到这里。构建不再占用应用的 CPU 和内存，每个 Namespace 的构建缓存也都留在这台机器的磁盘上。
 
 buildkitd 只会构建所在节点架构的镜像，所以构建节点的 CPU 架构必须和运行应用的节点相同。
 
@@ -14,7 +14,7 @@ buildkitd 只会构建所在节点架构的镜像，所以构建节点的 CPU �
 
 ### 给节点添加标签和 taint
 
-taint 让其他工作负载不会调度到这个节点，标签让构建只调度到这个节点，两者都要设置。只设 toleration，构建仍可能调度到任何节点；只设 node selector，构建会因为 taint 而无法在这个节点启动。
+taint 让其他工作负载排不进这个节点，标签让构建只调度到这个节点，两者都要设置。只设 toleration，构建仍可能调度到任何节点；只设 node selector，构建会因为 taint 而无法在这个节点启动。
 
 ```sh
 kubectl label node build-1 builder.zeabur.com/builds=true
@@ -36,7 +36,7 @@ builds:
     - {key: builder.zeabur.com/builds, operator: Equal, value: "true", effect: NoSchedule}
 ```
 
-两个值都留空时，构建会调度到调度器选择的任何节点。控制器本身会留在原来的节点。
+两个值都留空时，构建调度到哪个节点，由调度器决定。控制器本身会留在原来的节点。
 
 </Step>
 
@@ -44,9 +44,9 @@ builds:
 
 ## 变更后的第一次构建
 
-Namespace 的 buildkitd 正在构建时，控制器不会移动它。等 buildkitd 空闲够久、缩减到零，控制器会把它连同缓存一起删除，这个 Namespace 下一次构建时，会在构建节点上重新创建。
+Namespace 的 buildkitd 正在构建时，控制器不会移动它。等 buildkitd 空闲够久、缩减到零，控制器会把它连同缓存一起删除，这个 Namespace 下一次构建时，控制器会在构建节点上重新创建它。
 
-所以变更后，每个 Namespace 的第一次构建都从空的缓存开始。修改缓存大小（`--buildkitd-cache-size`）、Namespace 的构建资源上限，或升级到会变更 buildkitd 的 Zeabur Builder 版本时，也一样。
+所以变更后，每个 Namespace 的第一次构建都从空的缓存开始。修改缓存大小（`--buildkitd-cache-size`）、Namespace 的构建资源上限，或升级的 Zeabur Builder 版本改动了 buildkitd 时，也是这样。
 
 ## 确认构建在哪里运行
 

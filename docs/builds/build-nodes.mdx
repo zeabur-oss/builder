@@ -3,7 +3,7 @@ title: Run builds on a build node
 description: Set a node aside for builds with a label and a taint, so builds stay off the nodes that run your apps.
 ---
 
-A build takes up to 1 CPU and 1 GiB of memory by default (`buildkitd.resources.limits`). On a cluster of small nodes, that comes out of what your apps have. If you have a spare machine, you can make it a build node: every namespace's buildkitd and every build Job run there, and nothing else does. Your apps keep their CPU and memory, and each namespace's build cache stays on that node's disk.
+A build takes up to 1 CPU and 1 GiB of memory by default (`buildkitd.resources.limits`). On a cluster of small nodes, that CPU and memory come out of what your apps can use. If you have a spare machine, you can make it a build node: every namespace's buildkitd and every build Job run there, and nothing else does. Your apps keep their CPU and memory, and each namespace's build cache stays on that node's disk.
 
 A build node must have the same CPU architecture as the nodes that run your apps. buildkitd builds images for the architecture of the node it runs on.
 
