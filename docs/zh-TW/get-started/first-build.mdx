@@ -55,7 +55,7 @@ kubectl get builds -o wide
 
 `kubectl get buildruns` 會顯示每次建置的階段、原因、開始時間與結束時間。
 
-每次建置的日誌都在該次建置 Job 的 Pod 日誌中。建置步驟每行輸出一個 JSON 事件，內含步驟名稱、花費秒數，以及該行來自 stdout 還是 stderr。要當成文字讀，執行 `kubectl logs <pod> | jq -r '.text // .message // .name'`。
+每次建置的日誌都在該次建置 Job 的 Pod 日誌中。建置步驟每行輸出一個 JSON 事件，內含步驟名稱、花費秒數，以及該行來自 stdout 還是 stderr。想當成文字讀，執行 `kubectl logs <pod> | jq -r '.text // .message // .name'`。
 
 </Step>
 
