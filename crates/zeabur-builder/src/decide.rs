@@ -576,8 +576,15 @@ pub(crate) fn release_slot(
 }
 
 /// The namespace whose daemon is up, not `mine`, and has no admitted run, that has gone longest
-/// without activity, so the daemon to scale to zero when another one cannot be scheduled.
-pub(crate) fn idlest<'a>(up: &'a [String], runs: &[&BuildRun], mine: &str) -> Option<&'a str> {
+/// without activity and none within `quiet`, so the daemon to scale to zero when another one cannot
+/// be scheduled.
+pub(crate) fn idlest<'a>(
+    up: &'a [String],
+    runs: &[&BuildRun],
+    mine: &str,
+    now: Timestamp,
+    quiet: Duration,
+) -> Option<&'a str> {
     let mut found: Option<(&str, Option<Timestamp>)> = None;
     for namespace in up {
         if namespace == mine {
@@ -592,7 +599,8 @@ pub(crate) fn idlest<'a>(up: &'a [String], runs: &[&BuildRun], mine: &str) -> Op
             busy |= holds_slot(run);
             last = last.max(last_activity(run));
         }
-        if !busy && found.is_none_or(|(_, oldest)| last < oldest) {
+        let fresh = last.is_some_and(|l| now.duration_since(l).unsigned_abs() < quiet);
+        if !busy && !fresh && found.is_none_or(|(_, oldest)| last < oldest) {
             found = Some((namespace, last));
         }
     }

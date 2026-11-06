@@ -1149,6 +1149,8 @@ fn tokens_count_as_expired_once_the_registry_clock_has_passed_them_too() {
     assert!(tokens_expired(until, at("2026-11-01T10:21:01Z")));
 }
 
+const QUIET: Duration = Duration::from_mins(1);
+
 fn holding(namespace: &str, name: &str, at: &str) -> BuildRun {
     let mut run = waiting(namespace, name, at);
     if let Some(status) = run.status.as_mut() {
@@ -1194,13 +1196,19 @@ fn the_longest_idle_daemon_goes_first() {
     a.metadata.namespace = Some("team-a".to_owned());
     let mut b = b;
     b.metadata.namespace = Some("team-b".to_owned());
-    assert_eq!(idlest(&up, &[&a, &b], "team-c"), Some("team-b"));
     assert_eq!(
-        idlest(&up, &[&a, &b], "team-b"),
+        idlest(&up, &[&a, &b], "team-c", now(), QUIET),
+        Some("team-b")
+    );
+    assert_eq!(
+        idlest(&up, &[&a, &b], "team-b", now(), QUIET),
         Some("team-c"),
         "no runs at all"
     );
-    assert_eq!(idlest(&up[..2], &[&a, &b], "team-b"), Some("team-a"));
+    assert_eq!(
+        idlest(&up[..2], &[&a, &b], "team-b", now(), QUIET),
+        Some("team-a")
+    );
 }
 
 #[test]
@@ -1208,12 +1216,18 @@ fn a_daemon_with_an_admitted_run_is_not_freed() {
     let up = ["team-a", "team-b"].map(str::to_owned);
     let busy = holding("team-a", "a", "2026-10-22T07:00:00Z");
     let queued = waiting("team-b", "b", "2026-10-22T07:30:00Z");
-    assert_eq!(idlest(&up, &[&busy, &queued], "team-c"), Some("team-b"));
+    assert_eq!(
+        idlest(&up, &[&busy, &queued], "team-c", now(), QUIET),
+        Some("team-b")
+    );
     let mut done = run("c", A, Some(Phase::Succeeded), "2026-10-22T07:00:00Z");
     done.metadata.namespace = Some("team-b".to_owned());
     let hold = holding("team-b", "d", "2026-10-22T07:40:00Z");
-    assert_eq!(idlest(&up, &[&busy, &done, &hold], "team-c"), None);
-    assert_eq!(idlest(&[], &[], "team-c"), None);
+    assert_eq!(
+        idlest(&up, &[&busy, &done, &hold], "team-c", now(), QUIET),
+        None
+    );
+    assert_eq!(idlest(&[], &[], "team-c", now(), QUIET), None);
 }
 
 #[test]
@@ -1257,4 +1271,21 @@ fn a_released_run_does_not_block_the_run_that_took_its_slot() {
     assert!(admission(&[plain], &newer, 1, 1).is_err());
     let taken = [started("team-a", "a", "2026-10-22T07:55:00Z")];
     assert!(admission(&taken, &released, 1, 1).is_err());
+}
+
+#[test]
+fn a_daemon_active_a_moment_ago_is_not_freed() {
+    let up = ["team-a", "team-b"].map(str::to_owned);
+    let mut recent = run("a", A, Some(Phase::Succeeded), "2026-10-22T07:59:30Z");
+    recent.metadata.namespace = Some("team-a".to_owned());
+    let mut quiet = run("b", A, Some(Phase::Succeeded), "2026-10-22T07:58:00Z");
+    quiet.metadata.namespace = Some("team-b".to_owned());
+    assert_eq!(
+        idlest(&up, &[&recent, &quiet], "team-c", now(), QUIET),
+        Some("team-b")
+    );
+    assert_eq!(idlest(&up[..1], &[&recent], "team-c", now(), QUIET), None);
+    let mut new = waiting("team-a", "n", "2026-10-22T07:59:50Z");
+    new.status = None;
+    assert_eq!(idlest(&up[..1], &[&new], "team-c", now(), QUIET), None);
 }

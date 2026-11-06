@@ -185,6 +185,7 @@ pub(crate) async fn free_one(
     settings: &Settings,
     runs: &[&BuildRun],
     mine: &str,
+    quiet: Duration,
 ) -> Result<Option<String>, kube::Error> {
     let sets: Api<StatefulSet> = Api::namespaced(client.clone(), &settings.namespace);
     let sets = sets
@@ -197,7 +198,7 @@ pub(crate) async fn free_one(
             up.push(namespace.clone());
         }
     }
-    let Some(namespace) = decide::idlest(&up, runs, mine) else {
+    let Some(namespace) = decide::idlest(&up, runs, mine, Timestamp::now(), quiet) else {
         return Ok(None);
     };
     for set in &sets.items {

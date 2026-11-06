@@ -1267,7 +1267,8 @@ async fn short_of_resources(
     for other in &state {
         runs.push(other.as_ref());
     }
-    daemon::free_one(&ctx.client, &ctx.settings.daemon, &runs, &namespace).await?;
+    let quiet = ctx.settings.pending_grace;
+    daemon::free_one(&ctx.client, &ctx.settings.daemon, &runs, &namespace, quiet).await?;
     let ready = daemon::ready_namespaces(&ctx.client, &ctx.settings.daemon).await?;
     if decide::release_slot(&runs, run, &ready, since, now(), ctx.settings.pending_grace) {
         status.buildkitd_instance = None;
