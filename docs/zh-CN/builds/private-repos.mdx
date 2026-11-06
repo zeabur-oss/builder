@@ -1,7 +1,6 @@
 ---
 title: 构建私有仓库
 description: 使用 credentialsRef 或 GitHub App，让 Build 获取私有仓库的代码并触发构建。
-source: "c7c63e18646d"
 ---
 
 你可以用 `spec.source.credentialsRef` 指定 Secret，通过 basic-auth 令牌或 ssh-auth deploy key 访问私有仓库；deploy key 需要搭配 `known_hosts`，Secret 需要添加指定标签。私有 GitHub 仓库也可以使用 GitHub App，让 Build 获取短期 installation 令牌。

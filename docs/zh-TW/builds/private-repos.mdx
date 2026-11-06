@@ -1,7 +1,6 @@
 ---
 title: 建置私有儲存庫
 description: 使用 credentialsRef 或 GitHub App，讓 Build 取得私有儲存庫的程式碼並觸發建置。
-source: "c7c63e18646d"
 ---
 
 你可以用 `spec.source.credentialsRef` 指定 Secret，搭配 basic-auth 權杖或 ssh-auth deploy key 存取私有儲存庫。使用 deploy key 時，必須搭配 `known_hosts`，Secret 也必須加上指定標籤。私有 GitHub 儲存庫也可以使用 GitHub App，讓 Build 取得短效 installation 權杖。
