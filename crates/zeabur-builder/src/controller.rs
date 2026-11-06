@@ -1268,8 +1268,19 @@ async fn short_of_resources(
         runs.push(other.as_ref());
     }
     let quiet = ctx.settings.pending_grace;
-    daemon::free_one(&ctx.client, &ctx.settings.daemon, &runs, &namespace, quiet).await?;
-    let ready = daemon::ready_namespaces(&ctx.client, &ctx.settings.daemon).await?;
+    {
+        // Eviction and admission take turns, so no run is admitted to a daemon being scaled down.
+        let _admitting = ctx.admitting.lock().await;
+        daemon::free_one(&ctx.client, &ctx.settings.daemon, &runs, &namespace, quiet).await?;
+    }
+    if now().duration_since(since).unsigned_abs() < quiet {
+        return pending(ctx, run, status, Reason::InsufficientResources, message).await;
+    }
+    let mut ready = BTreeMap::new();
+    for ready_namespace in daemon::ready_namespaces(&ctx.client, &ctx.settings.daemon).await? {
+        let limit = namespace_limits(ctx, &ready_namespace).await?.concurrent;
+        ready.insert(ready_namespace, limit);
+    }
     if decide::release_slot(&runs, run, &ready, since, now(), ctx.settings.pending_grace) {
         status.buildkitd_instance = None;
         let message = format!("{message}. Its slot went to a run that can start now");

@@ -1236,9 +1236,9 @@ fn a_run_gives_its_slot_only_to_a_run_that_can_start() {
     let since: Timestamp = "2026-10-22T07:58:30Z".parse().unwrap();
     let mine = holding("team-c", "c", "2026-10-22T07:50:00Z");
     let other = waiting("team-a", "a", "2026-10-22T07:55:00Z");
-    let ready = BTreeSet::from(["team-a".to_owned()]);
-    let cold = BTreeSet::new();
-    let release = |runs: &[&BuildRun], ready: &BTreeSet<String>, since: Timestamp| {
+    let ready = BTreeMap::from([("team-a".to_owned(), 1)]);
+    let cold = BTreeMap::new();
+    let release = |runs: &[&BuildRun], ready: &BTreeMap<String, u32>, since: Timestamp| {
         release_slot(runs, &mine, ready, since, now(), grace)
     };
     assert!(release(&[&mine, &other], &ready, since));
@@ -1257,6 +1257,13 @@ fn a_run_gives_its_slot_only_to_a_run_that_can_start() {
         status.reason = Some(Reason::RegistryCredentialsMissing);
     }
     assert!(!release(&[&mine, &credentials], &ready, since));
+    let running = holding("team-a", "r", "2026-10-22T07:40:00Z");
+    assert!(
+        !release(&[&mine, &other, &running], &ready, since),
+        "its namespace is at its limit"
+    );
+    let roomy = BTreeMap::from([("team-a".to_owned(), 2)]);
+    assert!(release(&[&mine, &other, &running], &roomy, since));
 }
 
 #[test]

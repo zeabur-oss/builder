@@ -1,7 +1,7 @@
 //! The reconcilers' decisions, as functions of what they observed: no I/O and no clock (the time
 //! is an argument), so every transition is tested without a cluster.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use jiff::Timestamp;
@@ -546,12 +546,13 @@ pub(crate) fn short_of_resources(pod: &Pod) -> Option<Timestamp> {
 }
 
 /// Whether a run whose daemon has been short of resources since `since` gives its slot back:
-/// it has waited `grace`, and another queued run's namespace has a ready daemon, so it can
-/// start now. `ready` holds the namespaces whose daemon is ready.
+/// it has waited `grace`, and another queued run's namespace has a ready daemon and room under its
+/// limit, so it can start now. `ready` maps the namespaces whose daemon is ready to their limit of
+/// concurrent builds.
 pub(crate) fn release_slot(
     runs: &[&BuildRun],
     run: &BuildRun,
-    ready: &BTreeSet<String>,
+    ready: &BTreeMap<String, u32>,
     since: Timestamp,
     now: Timestamp,
     grace: Duration,
@@ -568,7 +569,16 @@ pub(crate) fn release_slot(
         if (namespace, other.metadata.name.as_deref()) == me || !queued(other) {
             continue;
         }
-        if namespace.is_some_and(|n| ready.contains(n)) {
+        let Some(limit) = namespace.and_then(|n| ready.get(n)) else {
+            continue;
+        };
+        let mut holding = 0;
+        for held in runs {
+            if held.metadata.namespace.as_deref() == namespace && holds_slot(held) {
+                holding += 1;
+            }
+        }
+        if holding < u64::from(*limit) {
             return true;
         }
     }
