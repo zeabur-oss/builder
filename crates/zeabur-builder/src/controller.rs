@@ -109,6 +109,8 @@ pub(crate) struct Settings {
     pub(crate) max_concurrent: u32,
     /// Builds all namespaces run at once.
     pub(crate) max_cluster_builds: u32,
+    /// How long a run waits for memory or CPU for its daemon before it may give its slot back.
+    pub(crate) pending_grace: Duration,
     /// The registry for `Build`s without `spec.output.image`.
     pub(crate) default_registry: String,
     /// The default registry's CA, PEM, for the `fetch` container of an archive source.
@@ -143,6 +145,8 @@ struct Context {
     github: Arc<GitHub>,
     /// Held from a run's admission until its slot is recorded.
     admitting: tokio::sync::Mutex<()>,
+    /// The `BuildRun`s the reconciler watches.
+    runs: Store<BuildRun>,
 }
 
 /// What the receiver reads: `Build`s from the reconciler's cache, Secrets from the API server.
@@ -268,7 +272,17 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
     ));
     let receiver_settings = settings.webhook.clone();
     let daemon_settings = Arc::clone(&settings.daemon);
+    let runs = Controller::new(
+        Api::<BuildRun>::all(client.clone()),
+        watcher::Config::default(),
+    )
+    .owns(
+        Api::<Job>::all(client.clone()),
+        watcher::Config::default().labels(&format!("{}={}", labels::MANAGED_BY, labels::MANAGER)),
+    )
+    .reconcile_all_on(leader.taken());
     let context = Arc::new(Context {
+        runs: runs.store(),
         leader: leader.clone(),
         admitting: tokio::sync::Mutex::new(()),
         github: Arc::clone(&github),
@@ -310,15 +324,6 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
                 tracing::warn!(error = %e, "build reconcile");
             }
         });
-    let runs = Controller::new(
-        Api::<BuildRun>::all(client.clone()),
-        watcher::Config::default(),
-    )
-    .owns(
-        Api::<Job>::all(client.clone()),
-        watcher::Config::default().labels(&format!("{}={}", labels::MANAGED_BY, labels::MANAGER)),
-    )
-    .reconcile_all_on(leader.taken());
     let janitor = janitor(Arc::clone(&context));
     let sweep = daemon::sweep_forever(client.clone(), daemon_settings, runs.store(), leader);
     let runs = runs
@@ -1230,6 +1235,59 @@ fn static_checks(
     Ok((tags, decide::owned(build, &settings.default_registry)?))
 }
 
+async fn waiting_for_daemon(
+    ctx: &Context,
+    run: &BuildRun,
+    status: BuildRunStatus,
+    woken: &daemon::Woken,
+) -> Result<Action, Error> {
+    if let Some(since) = woken.short_since {
+        return short_of_resources(ctx, run, status, &woken.pod, since).await;
+    }
+    let message = format!("waiting for {} to be ready", woken.pod);
+    pending(ctx, run, status, Reason::BuildkitdStarting, message).await
+}
+
+/// The run's daemon cannot be scheduled. Frees an idle daemon of another namespace, and after the
+/// grace period gives the slot back if another queued run can start now.
+async fn short_of_resources(
+    ctx: &Context,
+    run: &BuildRun,
+    mut status: BuildRunStatus,
+    pod: &str,
+    since: Timestamp,
+) -> Result<Action, Error> {
+    let namespace = run.namespace().unwrap_or_default();
+    let message = format!("not enough memory or CPU in the cluster to start {pod}");
+    if ctx.runs.wait_until_ready().await.is_err() {
+        return pending(ctx, run, status, Reason::InsufficientResources, message).await;
+    }
+    let state = ctx.runs.state();
+    let mut runs = Vec::new();
+    for other in &state {
+        runs.push(other.as_ref());
+    }
+    daemon::free_one(&ctx.client, &ctx.settings.daemon, &runs, &namespace).await?;
+    let ready = daemon::ready_namespaces(&ctx.client, &ctx.settings.daemon).await?;
+    if decide::release_slot(&runs, run, &ready, since, now(), ctx.settings.pending_grace) {
+        status.buildkitd_instance = None;
+        let message = format!("{message}. Its slot went to a run that can start now");
+        return pending(ctx, run, status, Reason::InsufficientResources, message).await;
+    }
+    pending(ctx, run, status, Reason::InsufficientResources, message).await
+}
+
+/// A run that gave its slot back stays marked while it waits for one.
+fn still_released(run: &BuildRun, reason: Reason) -> Reason {
+    let released =
+        run.status.as_ref().and_then(|s| s.reason) == Some(Reason::InsufficientResources);
+    if released && reason == Reason::QuotaExceeded {
+        Reason::InsufficientResources
+    } else {
+        reason
+    }
+}
+
 async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Result<Action, Error> {
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
@@ -1272,18 +1330,14 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
     let limits = namespace_limits(ctx, &namespace).await?;
     let registry_auth = match reserve(ctx, run, &build, &owned, &limits, &mut status).await? {
         Ok(auth) => auth,
-        Err((reason, message)) => return pending(ctx, run, status, reason, message).await,
+        Err((reason, message)) => {
+            let reason = still_released(run, reason);
+            return pending(ctx, run, status, reason, message).await;
+        }
     };
     let woken = daemon::wake(&ctx.client, &settings.daemon, &namespace, &limits).await?;
     if !woken.ready {
-        return pending(
-            ctx,
-            run,
-            status,
-            Reason::BuildkitdStarting,
-            format!("waiting for {} to be ready", woken.pod),
-        )
-        .await;
+        return waiting_for_daemon(ctx, run, status, &woken).await;
     }
     if build.spec.source.github_app.is_some() {
         // Minted only now, so a run waiting for a slot does not mint a token every retry.

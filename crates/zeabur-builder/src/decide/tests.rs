@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use k8s_openapi::api::batch::v1::{JobCondition, JobStatus};
 use k8s_openapi::api::core::v1::{
-    ContainerState, ContainerStateRunning, ContainerStateTerminated, PodStatus,
+    ContainerState, ContainerStateRunning, ContainerStateTerminated, PodCondition, PodStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use zeabur_builder_api::build::{
@@ -1147,4 +1147,114 @@ fn tokens_count_as_expired_once_the_registry_clock_has_passed_them_too() {
     assert!(!tokens_expired(until, at("2026-11-01T10:20:30Z")));
     assert!(!tokens_expired(until, at("2026-11-01T10:21:00Z")));
     assert!(tokens_expired(until, at("2026-11-01T10:21:01Z")));
+}
+
+fn holding(namespace: &str, name: &str, at: &str) -> BuildRun {
+    let mut run = waiting(namespace, name, at);
+    if let Some(status) = run.status.as_mut() {
+        status.buildkitd_instance = Some(format!("buildkitd-{namespace}-0"));
+    }
+    run
+}
+
+fn unschedulable(message: &str) -> Pod {
+    Pod {
+        status: Some(PodStatus {
+            conditions: Some(vec![PodCondition {
+                type_: "PodScheduled".to_owned(),
+                status: "False".to_owned(),
+                reason: Some("Unschedulable".to_owned()),
+                message: Some(message.to_owned()),
+                last_transition_time: Some(Time(now())),
+                ..PodCondition::default()
+            }]),
+            ..PodStatus::default()
+        }),
+        ..Pod::default()
+    }
+}
+
+#[test]
+fn a_pod_is_short_of_resources_only_when_the_scheduler_says_so() {
+    let memory = "0/1 nodes are available: 1 Insufficient memory.";
+    assert_eq!(short_of_resources(&unschedulable(memory)), Some(now()));
+    let cpu = "0/1 nodes are available: 1 Insufficient cpu.";
+    assert_eq!(short_of_resources(&unschedulable(cpu)), Some(now()));
+    let taint = "0/1 nodes are available: 1 node(s) had untolerated taint.";
+    assert_eq!(short_of_resources(&unschedulable(taint)), None);
+    assert_eq!(short_of_resources(&Pod::default()), None);
+}
+
+#[test]
+fn the_longest_idle_daemon_goes_first() {
+    let up = ["team-a", "team-b", "team-c"].map(str::to_owned);
+    let a = run("a", A, Some(Phase::Succeeded), "2026-10-22T07:00:00Z");
+    let b = run("b", A, Some(Phase::Succeeded), "2026-10-22T06:00:00Z");
+    let mut a = a;
+    a.metadata.namespace = Some("team-a".to_owned());
+    let mut b = b;
+    b.metadata.namespace = Some("team-b".to_owned());
+    assert_eq!(idlest(&up, &[&a, &b], "team-c"), Some("team-b"));
+    assert_eq!(
+        idlest(&up, &[&a, &b], "team-b"),
+        Some("team-c"),
+        "no runs at all"
+    );
+    assert_eq!(idlest(&up[..2], &[&a, &b], "team-b"), Some("team-a"));
+}
+
+#[test]
+fn a_daemon_with_an_admitted_run_is_not_freed() {
+    let up = ["team-a", "team-b"].map(str::to_owned);
+    let busy = holding("team-a", "a", "2026-10-22T07:00:00Z");
+    let queued = waiting("team-b", "b", "2026-10-22T07:30:00Z");
+    assert_eq!(idlest(&up, &[&busy, &queued], "team-c"), Some("team-b"));
+    let mut done = run("c", A, Some(Phase::Succeeded), "2026-10-22T07:00:00Z");
+    done.metadata.namespace = Some("team-b".to_owned());
+    let hold = holding("team-b", "d", "2026-10-22T07:40:00Z");
+    assert_eq!(idlest(&up, &[&busy, &done, &hold], "team-c"), None);
+    assert_eq!(idlest(&[], &[], "team-c"), None);
+}
+
+#[test]
+fn a_run_gives_its_slot_only_to_a_run_that_can_start() {
+    let grace = Duration::from_mins(1);
+    let since: Timestamp = "2026-10-22T07:58:30Z".parse().unwrap();
+    let mine = holding("team-c", "c", "2026-10-22T07:50:00Z");
+    let other = waiting("team-a", "a", "2026-10-22T07:55:00Z");
+    let ready = BTreeSet::from(["team-a".to_owned()]);
+    let cold = BTreeSet::new();
+    let release = |runs: &[&BuildRun], ready: &BTreeSet<String>, since: Timestamp| {
+        release_slot(runs, &mine, ready, since, now(), grace)
+    };
+    assert!(release(&[&mine, &other], &ready, since));
+    assert!(
+        !release(&[&mine, &other], &cold, since),
+        "its daemon is down"
+    );
+    assert!(!release(&[&mine], &ready, since), "nobody waits");
+    let recent: Timestamp = "2026-10-22T07:59:30Z".parse().unwrap();
+    assert!(
+        !release(&[&mine, &other], &ready, recent),
+        "within the grace"
+    );
+    let mut credentials = waiting("team-a", "a", "2026-10-22T07:55:00Z");
+    if let Some(status) = credentials.status.as_mut() {
+        status.reason = Some(Reason::RegistryCredentialsMissing);
+    }
+    assert!(!release(&[&mine, &credentials], &ready, since));
+}
+
+#[test]
+fn a_released_run_does_not_block_the_run_that_took_its_slot() {
+    let mut released = waiting("team-c", "c", "2026-10-22T07:50:00Z");
+    if let Some(status) = released.status.as_mut() {
+        status.reason = Some(Reason::InsufficientResources);
+    }
+    let newer = waiting("team-a", "a", "2026-10-22T07:55:00Z");
+    assert!(admission(&[released.clone()], &newer, 1, 1).is_ok());
+    let plain = waiting("team-c", "c", "2026-10-22T07:50:00Z");
+    assert!(admission(&[plain], &newer, 1, 1).is_err());
+    let taken = [started("team-a", "a", "2026-10-22T07:55:00Z")];
+    assert!(admission(&taken, &released, 1, 1).is_err());
 }

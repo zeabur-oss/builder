@@ -1,7 +1,7 @@
 //! The reconcilers' decisions, as functions of what they observed: no I/O and no clock (the time
 //! is an argument), so every transition is tested without a cluster.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use jiff::Timestamp;
@@ -465,7 +465,18 @@ fn queued(run: &BuildRun) -> bool {
     let status = run.status.as_ref();
     !is_finished(phase(run))
         && status.is_none_or(|s| !admitted(s))
-        && status.is_none_or(|s| s.reason.is_none_or(|r| r == Reason::QuotaExceeded))
+        && status.is_none_or(|s| {
+            s.reason
+                .is_none_or(|r| matches!(r, Reason::QuotaExceeded | Reason::InsufficientResources))
+        })
+}
+
+/// Whether `run` gave its slot back because its daemon could not be scheduled. It no longer
+/// counts as waiting ahead, so the run that took its slot is not made to wait for it.
+fn released(run: &BuildRun) -> bool {
+    run.status
+        .as_ref()
+        .is_some_and(|s| s.reason == Some(Reason::InsufficientResources))
 }
 
 fn age_key(run: &BuildRun) -> (Option<Timestamp>, Option<&str>) {
@@ -505,7 +516,7 @@ pub(crate) fn admission(
     }
     let running = others().filter(|r| holds_slot(r)).count();
     let ahead = others()
-        .filter(|r| queued(r) && age_key(r) < age_key(run))
+        .filter(|r| queued(r) && !released(r) && age_key(r) < age_key(run))
         .count();
     if running + ahead >= usize::try_from(cluster_limit).unwrap_or(usize::MAX) {
         return Err(format!(
@@ -513,6 +524,79 @@ pub(crate) fn admission(
         ));
     }
     Ok(())
+}
+
+/// Since when the daemon's Pod has been Pending for want of memory or CPU, if it has.
+pub(crate) fn short_of_resources(pod: &Pod) -> Option<Timestamp> {
+    let conditions = pod.status.as_ref()?.conditions.as_ref()?;
+    for condition in conditions {
+        let short = condition
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("Insufficient memory") || m.contains("Insufficient cpu"));
+        if condition.type_ == "PodScheduled"
+            && condition.status == "False"
+            && condition.reason.as_deref() == Some("Unschedulable")
+            && short
+        {
+            return condition.last_transition_time.as_ref().map(|t| t.0);
+        }
+    }
+    None
+}
+
+/// Whether a run whose daemon has been short of resources since `since` gives its slot back:
+/// it has waited `grace`, and another queued run's namespace has a ready daemon, so it can
+/// start now. `ready` holds the namespaces whose daemon is ready.
+pub(crate) fn release_slot(
+    runs: &[&BuildRun],
+    run: &BuildRun,
+    ready: &BTreeSet<String>,
+    since: Timestamp,
+    now: Timestamp,
+    grace: Duration,
+) -> bool {
+    if now.duration_since(since).unsigned_abs() < grace {
+        return false;
+    }
+    let me = (
+        run.metadata.namespace.as_deref(),
+        run.metadata.name.as_deref(),
+    );
+    for other in runs {
+        let namespace = other.metadata.namespace.as_deref();
+        if (namespace, other.metadata.name.as_deref()) == me || !queued(other) {
+            continue;
+        }
+        if namespace.is_some_and(|n| ready.contains(n)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The namespace whose daemon is up, not `mine`, and has no admitted run, that has gone longest
+/// without activity, so the daemon to scale to zero when another one cannot be scheduled.
+pub(crate) fn idlest<'a>(up: &'a [String], runs: &[&BuildRun], mine: &str) -> Option<&'a str> {
+    let mut found: Option<(&str, Option<Timestamp>)> = None;
+    for namespace in up {
+        if namespace == mine {
+            continue;
+        }
+        let mut busy = false;
+        let mut last = None;
+        for run in runs {
+            if run.metadata.namespace.as_deref() != Some(namespace.as_str()) {
+                continue;
+            }
+            busy |= holds_slot(run);
+            last = last.max(last_activity(run));
+        }
+        if !busy && found.is_none_or(|(_, oldest)| last < oldest) {
+            found = Some((namespace, last));
+        }
+    }
+    found.map(|(namespace, _)| namespace)
 }
 
 /// Whether another run of the `Build` still has a Job, or a Pod that has not stopped, which a
