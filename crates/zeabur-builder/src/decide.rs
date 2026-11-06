@@ -456,7 +456,7 @@ pub(crate) const fn admitted(status: &BuildRunStatus) -> bool {
     status.job_ref.is_some() || status.buildkitd_instance.is_some()
 }
 
-fn holds_slot(run: &BuildRun) -> bool {
+pub(crate) fn holds_slot(run: &BuildRun) -> bool {
     !is_finished(phase(run)) && run.status.as_ref().is_some_and(admitted)
 }
 

@@ -179,7 +179,8 @@ async fn scale_to_zero(
 }
 
 /// Scales to zero the daemon of the namespace that has been idle longest, other than `mine`, and
-/// returns the namespace. Called while `mine` waits for memory or CPU.
+/// returns the namespace, unless a live list shows it has an admitted run. Called while `mine`
+/// waits for memory or CPU.
 pub(crate) async fn free_one(
     client: &Client,
     settings: &Settings,
@@ -201,6 +202,12 @@ pub(crate) async fn free_one(
     let Some(namespace) = decide::idlest(&up, runs, mine, Timestamp::now(), quiet) else {
         return Ok(None);
     };
+    let live = Api::<BuildRun>::namespaced(client.clone(), namespace)
+        .list(&ListParams::default())
+        .await?;
+    if live.items.iter().any(decide::holds_slot) {
+        return Ok(None);
+    }
     for set in &sets.items {
         if set.labels().get(labels::NAMESPACE).map(String::as_str) == Some(namespace) {
             scale_to_zero(client, settings, set).await?;
