@@ -69,6 +69,15 @@ require "$pinned" "pinned install" "image: \"ghcr.io/zeabur-oss/builder@$digest\
   "request.namespace in \['default', 'zot'\]"
 http=$(helm template builder "$chart" "${base[@]}" --set registry.http=true)
 require "$http" "plain HTTP registry" 'http = true$' 'name: ZEABUR_BUILDER_REGISTRY_HTTP, value: "true"'
+if grep -qE -- '--build-(node-selector|toleration)' <<<"$plain"; then
+  echo "default install: the chart places builds although builds is empty" >&2
+  exit 1
+fi
+placed=$(helm template builder "$chart" "${base[@]}" \
+  --set-json 'builds.nodeSelector={"builder.zeabur.com/builds":"true"}' \
+  --set-json 'builds.tolerations=[{"key":"builder.zeabur.com/builds","operator":"Equal","value":"true","effect":"NoSchedule"}]')
+require "$placed" "build node" '- "--build-node-selector=builder.zeabur.com/builds=true"$' \
+  '- "--build-toleration=\{\\"effect\\":\\"NoSchedule\\",\\"key\\":\\"builder.zeabur.com/builds\\",\\"operator\\":\\"Equal\\",\\"value\\":\\"true\\"\}"$'
 tokens=$plain
 require "$tokens" "registry tokens" 'value: "zot/zot-token-signer"$' 'namespace: zot$' \
   'resourceNames: \[zot-token-signer\]$' "request.namespace in \['default', 'zot'\]"

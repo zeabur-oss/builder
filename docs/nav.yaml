@@ -4,7 +4,7 @@
   pages: [install, first-build]
 - group: builds
   label: Builds
-  pages: [triggers, private-repos, archive-source, rollout, external-registries]
+  pages: [triggers, private-repos, archive-source, rollout, external-registries, build-nodes]
 - group: operations
   label: Operate
   pages: [registry-tokens, controller-permissions, releases]

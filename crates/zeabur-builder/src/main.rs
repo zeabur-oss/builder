@@ -22,6 +22,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
+use k8s_openapi::api::core::v1::Toleration;
+use zeabur_builder_jobspec::Placement;
 use zeabur_builder_jobspec::buildkitd::Resources;
 
 /// Zeabur Builder: turns Git commits into container images with `BuildKit`.
@@ -77,6 +79,19 @@ fn secret_ref(value: &str) -> Result<(String, String), String> {
         }
         _ => Err(format!("`{value}` is not <namespace>/<name>")),
     }
+}
+
+/// Parses `key=value`.
+fn node_label(value: &str) -> Result<(String, String), String> {
+    match value.split_once('=') {
+        Some((key, label)) if !key.is_empty() => Ok((key.to_owned(), label.to_owned())),
+        _ => Err(format!("`{value}` is not <key>=<value>")),
+    }
+}
+
+/// Parses a toleration from JSON.
+fn toleration(value: &str) -> Result<Toleration, String> {
+    serde_json::from_str(value).map_err(|e| format!("`{value}` is not a toleration: {e}"))
 }
 
 async fn registry_token(args: RegistryTokenArgs) -> Result<String, String> {
@@ -167,6 +182,14 @@ struct ControllerArgs {
     /// `builder.zeabur.com/build-memory` overrides it.
     #[arg(long, default_value = "1Gi")]
     buildkitd_memory_limit: String,
+    /// A node label, `key=value`, that build Jobs and buildkitd Pods require. Repeat for more.
+    #[arg(long = "build-node-selector", value_parser = node_label)]
+    build_node_selector: Vec<(String, String)>,
+    /// A toleration of build Jobs and buildkitd Pods, as JSON, such as
+    /// `{"key":"builder.zeabur.com/builds","operator":"Equal","value":"true","effect":"NoSchedule"
+    /// }`. Repeat for more.
+    #[arg(long = "build-toleration", value_parser = toleration)]
+    build_tolerations: Vec<Toleration>,
     /// Seconds a namespace goes without builds before its buildkitd scales to zero.
     #[arg(long, default_value_t = 600)]
     buildkitd_idle: u64,
@@ -224,6 +247,10 @@ impl ControllerArgs {
                 memory_limit: Some(self.buildkitd_memory_limit),
             },
             idle_after: Duration::from_secs(self.buildkitd_idle),
+            placement: Placement {
+                node_selector: self.build_node_selector.into_iter().collect(),
+                tolerations: self.build_tolerations,
+            },
         };
         controller::Settings {
             namespace: self.namespace,
@@ -303,5 +330,47 @@ fn main() -> ExitCode {
             output::stderr_line(&format!("error: {message}"));
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn the_charts_build_node_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "zeabur-builder",
+            "controller",
+            "--namespace=builder-system",
+            "--default-registry=registry.internal:5000",
+            "--registry-token-key=zot/zot-token-signer",
+            "--job-image=ghcr.io/zeabur-oss/builder-job:dev",
+            "--build-node-selector=builder.zeabur.com/builds=true",
+            r#"--build-toleration={"effect":"NoSchedule","key":"builder.zeabur.com/builds","operator":"Equal","value":"true"}"#,
+        ])
+        .unwrap();
+        let Command::Controller(args) = cli.command else {
+            panic!("not the controller");
+        };
+        let placement = args.settings().daemon.placement.clone();
+        assert_eq!(
+            placement.node_selector,
+            BTreeMap::from([("builder.zeabur.com/builds".to_owned(), "true".to_owned())])
+        );
+        assert_eq!(
+            placement.tolerations,
+            vec![Toleration {
+                key: Some("builder.zeabur.com/builds".to_owned()),
+                operator: Some("Equal".to_owned()),
+                value: Some("true".to_owned()),
+                effect: Some("NoSchedule".to_owned()),
+                toleration_seconds: None,
+            }]
+        );
+        assert!(node_label("=true").is_err());
+        assert!(toleration("key=x").is_err());
     }
 }

@@ -58,6 +58,10 @@ rules:
   - apiGroups: [apps]
     resources: [statefulsets/scale]
     verbs: [patch]
+  # Whether a deleted buildkitd's cache volume is gone before it is created again.
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get]
   - apiGroups: [""]
     resources: [services]
     verbs: [get, create, patch, delete]

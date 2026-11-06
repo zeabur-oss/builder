@@ -11,6 +11,7 @@
     archive-source: 從上傳的資料夾建置
     rollout: 部署建置好的映像檔
     external-registries: 推送到外部映像檔倉庫
+    build-nodes: 在建置節點上建置
 - group: operations
   label: 維運
   pages:

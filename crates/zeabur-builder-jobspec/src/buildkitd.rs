@@ -14,6 +14,9 @@
 //! - **Cache.** One volume per namespace, kept when the daemon scales to zero (`whenScaled:
 //!   Retain`) and deleted with the `StatefulSet` (`whenDeleted: Delete`), which the controller
 //!   removes when the namespace is gone.
+//! - **Changes.** The `StatefulSet` carries a hash of its spec ([`annotations::SPEC_HASH`]). A
+//!   daemon whose spec changed is deleted and created again rather than patched: a cache volume may
+//!   be bound to the node its Pod first ran on, and `volumeClaimTemplates` cannot change.
 //! - **Isolation.** `hostUsers: false` runs the privileged daemon in a user namespace (Kubernetes
 //!   1.33 or later); `runtimeClassName` can move it into a sandbox such as Kata or gVisor where the
 //!   cluster has one. Neither is a substitute for the other.
@@ -44,8 +47,11 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube_quantity::ParsedQuantity;
-use zeabur_builder_api::labels;
+use sha2::{Digest as _, Sha256};
+use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::daemon;
+
+use crate::Placement;
 
 /// The port build Jobs dial.
 pub const PORT: i32 = 1234;
@@ -106,6 +112,8 @@ pub struct DaemonInputs<'a> {
     /// Builds the daemon runs at once. The container's requests and limits are `resources` times
     /// this, since BuildKit has no limit per build.
     pub builds: u32,
+    /// The nodes the daemon runs on.
+    pub placement: &'a Placement,
 }
 
 /// The resources of one build on the daemon.
@@ -175,50 +183,56 @@ pub fn daemon(inputs: &DaemonInputs<'_>) -> Daemon {
 
     let network_policy = network_policy(inputs.namespace, meta.clone(), selector.clone());
 
+    let spec = StatefulSetSpec {
+        service_name: Some(name),
+        replicas: Some(inputs.replicas),
+        pod_management_policy: Some("Parallel".to_owned()),
+        persistent_volume_claim_retention_policy: Some(
+            StatefulSetPersistentVolumeClaimRetentionPolicy {
+                when_scaled: Some("Retain".to_owned()),
+                when_deleted: Some("Delete".to_owned()),
+            },
+        ),
+        selector: LabelSelector {
+            match_labels: Some(selector),
+            ..LabelSelector::default()
+        },
+        template: PodTemplateSpec {
+            metadata: Some(ObjectMeta {
+                labels: Some(object_labels),
+                ..ObjectMeta::default()
+            }),
+            spec: Some(pod(inputs)),
+        },
+        volume_claim_templates: Some(vec![PersistentVolumeClaim {
+            metadata: ObjectMeta {
+                name: Some("cache".to_owned()),
+                ..ObjectMeta::default()
+            },
+            spec: Some(PersistentVolumeClaimSpec {
+                access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+                storage_class_name: inputs.storage_class.map(str::to_owned),
+                resources: Some(VolumeResourceRequirements {
+                    requests: Some(BTreeMap::from([(
+                        "storage".to_owned(),
+                        Quantity(inputs.cache_size.to_owned()),
+                    )])),
+                    ..VolumeResourceRequirements::default()
+                }),
+                ..PersistentVolumeClaimSpec::default()
+            }),
+            status: None,
+        }]),
+        ..StatefulSetSpec::default()
+    };
+    let mut set_meta = meta;
+    set_meta.annotations = Some(BTreeMap::from([(
+        annotations::SPEC_HASH.to_owned(),
+        hash_spec(&spec),
+    )]));
     let stateful_set = StatefulSet {
-        metadata: meta,
-        spec: Some(StatefulSetSpec {
-            service_name: Some(name),
-            replicas: Some(inputs.replicas),
-            pod_management_policy: Some("Parallel".to_owned()),
-            persistent_volume_claim_retention_policy: Some(
-                StatefulSetPersistentVolumeClaimRetentionPolicy {
-                    when_scaled: Some("Retain".to_owned()),
-                    when_deleted: Some("Delete".to_owned()),
-                },
-            ),
-            selector: LabelSelector {
-                match_labels: Some(selector),
-                ..LabelSelector::default()
-            },
-            template: PodTemplateSpec {
-                metadata: Some(ObjectMeta {
-                    labels: Some(object_labels),
-                    ..ObjectMeta::default()
-                }),
-                spec: Some(pod(inputs)),
-            },
-            volume_claim_templates: Some(vec![PersistentVolumeClaim {
-                metadata: ObjectMeta {
-                    name: Some("cache".to_owned()),
-                    ..ObjectMeta::default()
-                },
-                spec: Some(PersistentVolumeClaimSpec {
-                    access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-                    storage_class_name: inputs.storage_class.map(str::to_owned),
-                    resources: Some(VolumeResourceRequirements {
-                        requests: Some(BTreeMap::from([(
-                            "storage".to_owned(),
-                            Quantity(inputs.cache_size.to_owned()),
-                        )])),
-                        ..VolumeResourceRequirements::default()
-                    }),
-                    ..PersistentVolumeClaimSpec::default()
-                }),
-                status: None,
-            }]),
-            ..StatefulSetSpec::default()
-        }),
+        metadata: set_meta,
+        spec: Some(spec),
         status: None,
     };
 
@@ -227,6 +241,29 @@ pub fn daemon(inputs: &DaemonInputs<'_>) -> Daemon {
         stateful_set,
         network_policy,
     }
+}
+
+/// The first 16 hex digits of the SHA-256 of `spec` as JSON, `replicas` left out.
+fn hash_spec(spec: &StatefulSetSpec) -> String {
+    let mut spec = spec.clone();
+    spec.replicas = None;
+    let json = serde_json::to_vec(&spec).unwrap_or_default();
+    let digest = Sha256::digest(&json);
+    let mut bytes = [0_u8; 8];
+    for (to, from) in bytes.iter_mut().zip(digest.iter()) {
+        *to = *from;
+    }
+    format!("{:016x}", u64::from_be_bytes(bytes))
+}
+
+/// The [`annotations::SPEC_HASH`] of a `StatefulSet`.
+#[must_use]
+pub fn spec_hash(set: &StatefulSet) -> Option<&str> {
+    set.metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(annotations::SPEC_HASH))
+        .map(String::as_str)
 }
 
 /// Admits Pods of `namespace` on [`PORT`]; every other ingress is dropped once a policy selects
@@ -334,6 +371,8 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
     PodSpec {
         host_users: Some(false),
         runtime_class_name: inputs.runtime_class.map(str::to_owned),
+        node_selector: inputs.placement.node_selector(),
+        tolerations: inputs.placement.tolerations(),
         automount_service_account_token: Some(false),
         enable_service_links: Some(false),
         containers: vec![Container {
@@ -430,8 +469,14 @@ mod tests {
             runtime_class: None,
             resources,
             builds: 1,
+            placement: &NOWHERE,
         }
     }
+
+    static NOWHERE: Placement = Placement {
+        node_selector: BTreeMap::new(),
+        tolerations: Vec::new(),
+    };
 
     #[test]
     fn golden() {
@@ -547,5 +592,42 @@ mod tests {
         let pod = set.template.spec.unwrap();
         assert_eq!(pod.runtime_class_name.as_deref(), Some("kata"));
         assert_eq!(pod.host_users, Some(false));
+    }
+
+    #[test]
+    fn daemons_run_on_the_build_node() {
+        let resources = Resources::default();
+        let placement = crate::tests::build_node();
+        let mut inputs = inputs(&resources);
+        inputs.placement = &placement;
+        let pod = daemon(&inputs)
+            .stateful_set
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap();
+        assert_eq!(pod.node_selector, Some(placement.node_selector));
+        assert_eq!(pod.tolerations, Some(placement.tolerations));
+    }
+
+    #[test]
+    fn the_hash_follows_the_spec_but_not_replicas() {
+        let resources = Resources::default();
+        let hash =
+            |inputs: &DaemonInputs<'_>| spec_hash(&daemon(inputs).stateful_set).unwrap().to_owned();
+        let base = inputs(&resources);
+        let mut idle = base;
+        idle.replicas = 0;
+        assert_eq!(hash(&base), hash(&idle));
+
+        let placement = crate::tests::build_node();
+        let mut moved = base;
+        moved.placement = &placement;
+        assert_ne!(hash(&base), hash(&moved));
+
+        let mut bigger = base;
+        bigger.cache_size = "40Gi";
+        assert_ne!(hash(&base), hash(&bigger));
     }
 }

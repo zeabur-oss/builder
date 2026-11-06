@@ -40,7 +40,7 @@ use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, KeyToPath,
     PodSecurityContext, PodSpec, PodTemplateSpec, SeccompProfile, SecretKeySelector,
-    SecretVolumeSource, SecurityContext, Volume, VolumeMount,
+    SecretVolumeSource, SecurityContext, Toleration, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar};
@@ -66,6 +66,25 @@ pub const REGISTRY_CA_ENV: &str = "ZB_REGISTRY_CA";
 /// Prefix of the build container's variables that carry `Build.spec.env`, so a variable named
 /// `PATH` or `BUILDKIT_HOST` cannot change how `buildctl` runs.
 const SECRET_ENV_PREFIX: &str = "ZB_SECRET_";
+
+/// The nodes build Jobs and buildkitd Pods run on. Empty: wherever the scheduler puts them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Placement {
+    /// Labels the node must have, such as `builder.zeabur.com/builds: "true"`.
+    pub node_selector: BTreeMap<String, String>,
+    /// Taints the Pods tolerate, such as the build node's.
+    pub tolerations: Vec<Toleration>,
+}
+
+impl Placement {
+    fn node_selector(&self) -> Option<BTreeMap<String, String>> {
+        (!self.node_selector.is_empty()).then(|| self.node_selector.clone())
+    }
+
+    fn tolerations(&self) -> Option<Vec<Toleration>> {
+        (!self.tolerations.is_empty()).then(|| self.tolerations.clone())
+    }
+}
 
 /// How `fetch` authenticates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +139,8 @@ pub struct JobInputs<'a> {
     pub deadline_seconds: i64,
     /// `ttlSecondsAfterFinished`, long enough for log collectors to read the last lines.
     pub ttl_seconds: i32,
+    /// The nodes the Job runs on.
+    pub placement: &'a Placement,
 }
 
 /// Why a Job cannot be built.
@@ -217,6 +238,8 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
         init_containers: Some(init_containers),
         containers: vec![build_container(inputs, repo.as_ref())?],
         volumes: Some(volumes(inputs)),
+        node_selector: inputs.placement.node_selector(),
+        tolerations: inputs.placement.tolerations(),
         ..PodSpec::default()
     };
 

@@ -320,7 +320,13 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
     )
     .reconcile_all_on(leader.taken());
     let janitor = janitor(Arc::clone(&context));
-    let sweep = daemon::sweep_forever(client.clone(), daemon_settings, runs.store(), leader);
+    let sweep = daemon::sweep_forever(
+        client.clone(),
+        daemon_settings,
+        context.settings.max_concurrent,
+        runs.store(),
+        leader,
+    );
     let runs = runs
         .shutdown_on_signal()
         .run(reconcile_run, retry, context)
@@ -1320,6 +1326,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         registry_auth_secret: &registry_secret,
         deadline_seconds: settings.job_deadline_seconds,
         ttl_seconds: settings.job_ttl_seconds,
+        placement: &settings.daemon.placement,
     });
     let job = match job {
         Ok(job) => job,
