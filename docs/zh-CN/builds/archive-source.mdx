@@ -1,7 +1,6 @@
 ---
 title: 从上传的文件夹构建
 description: 将文件夹上传为 OCI artifact，并在 Build 中指定 manifest digest，从上传的内容构建镜像。
-source: "6eb8e95802b9"
 ---
 
 将文件夹打包并推送到镜像仓库（registry），再把 OCI artifact 的 manifest digest 写入 `Build`，就能从上传的文件夹构建镜像，无需使用 Git ref。

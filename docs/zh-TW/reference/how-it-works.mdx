@@ -1,7 +1,6 @@
 ---
 title: 運作方式
 description: 了解 Zeabur Builder 如何從 Git commit 建置映像檔，以及建置資源、快取與隔離方式。
-source: "0b042950f738"
 ---
 
 建立 `Build`，指定 Git 儲存庫與建置器。控制器會為新的 commit 建置映像檔，推送到 registry，再將映像檔資訊寫入 `BuildRun` 與 `Build`。
