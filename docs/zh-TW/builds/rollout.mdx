@@ -1,7 +1,6 @@
 ---
 title: 部署建置好的映像檔
 description: 使用可排序的 tag 搭配部署工具，並設定 Build 在建置成功後通知 Keel。
-source: "3c9b39e2f3fb"
 ---
 
 使用可排序的 tag，讓 Flux image automation、Argo CD Image Updater 與 Keel 在輪詢 registry 時找到新映像檔。設定 `spec.notify` 後，`Build` 會在每次建置成功後通知 Keel，不必等待下一次輪詢。

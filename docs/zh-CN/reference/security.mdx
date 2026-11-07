@@ -1,7 +1,6 @@
 ---
 title: 安全性与信任模型
 description: 了解 Zeabur Builder 的信任边界、运行不可信代码的配置，以及私下报告漏洞的方式。
-source: "dd215c11b4bd"
 ---
 
 用 Namespace 隔离各团队的构建来源、Secret、缓存与镜像推送权限。同一个 Namespace 内的构建彼此信任；运行不可信代码时，使用 `--buildkitd-runtime-class` 指定沙箱运行环境。

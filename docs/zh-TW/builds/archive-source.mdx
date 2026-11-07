@@ -1,7 +1,6 @@
 ---
 title: 從上傳的資料夾建置
 description: 將資料夾上傳為 OCI artifact，再將 manifest digest 填入 Build，就能用上傳的內容建置映像檔。
-source: "6eb8e95802b9"
 ---
 
 將資料夾打包並推送到 registry，再把 OCI artifact 的 manifest digest 寫入 `Build`，就能用上傳的資料夾建置映像檔，不必使用 Git ref。

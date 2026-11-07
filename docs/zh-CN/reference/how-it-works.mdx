@@ -1,7 +1,6 @@
 ---
 title: 工作原理
 description: 了解 Zeabur Builder 如何从 Git commit 构建镜像，以及构建资源、缓存与隔离方式。
-source: "0b042950f738"
 ---
 
 创建 `Build`，指定 Git 仓库与构建器。控制器会为新的 commit 构建镜像、推送到镜像仓库（registry），并将镜像信息写入 `BuildRun` 与 `Build`。

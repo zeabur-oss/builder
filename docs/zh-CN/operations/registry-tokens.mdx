@@ -1,7 +1,6 @@
 ---
 title: Registry 令牌与清理
 description: 了解 Registry 令牌的有效期与权限，使用 kubectl 和 ORAS 上传源代码或镜像，并管理清理与密钥轮换。
-source: "0d29f5828f63"
 ---
 
 镜像仓库（registry）只信任一把 Ed25519 密钥，只有控制器能读取这把密钥。控制器为每次使用签发限定仓库、有有效期的令牌（token）。你可以用令牌上传源代码归档，管理员也能推送不属于任何 Build 的镜像。

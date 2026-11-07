@@ -1,7 +1,6 @@
 ---
 title: 安全性與信任模型
 description: 了解 Zeabur Builder 的信任邊界、執行不信任程式碼的設定，以及如何私下回報漏洞。
-source: "dd215c11b4bd"
 ---
 
 Zeabur Builder 使用 Namespace 隔開各團隊的建置來源、Secret、快取與映像檔推送權限。同一個 Namespace 內的建置彼此信任。執行不信任的程式碼時，請使用 `--buildkitd-runtime-class` 指定沙盒執行環境。

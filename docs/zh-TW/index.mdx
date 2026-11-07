@@ -1,7 +1,6 @@
 ---
 title: 開始使用 Zeabur Builder
 description: 在 Kubernetes 上用 BuildKit 從 Git 建置映像檔，再把結果交給你的部署工具。
-source: "961ca0a0911f"
 ---
 
 Zeabur Builder 是一個 Kubernetes operator。你只要建立一個 `Build`，指定 Git 儲存庫，Zeabur Builder 就會為每個新 commit 建置映像檔，再推送到 registry。完成後會把 `<repository>:<tag>@<digest>` 寫進 `status.latestImage`。
