@@ -102,9 +102,8 @@ async function build(os: string, arch: string, dist: string) {
   for (const { name } of images)
     await $`docker image save --output ${join(dist, `${name}.tar`)} zeabur-builder/${name}:release-${arch}`;
   // The images as built, with the chart of this commit, on k3s.
-  await $`${join(scripts, "ci.sh")} kubernetes`.env({
+  await $`${join(scripts, "ci", "kubernetes.sh")}`.env({
     ...process.env,
-    CI_SHELL: "default",
     ZEABUR_CI_IMAGE_TAG: `release-${arch}`,
   });
 }
