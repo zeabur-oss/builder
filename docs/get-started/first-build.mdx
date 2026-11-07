@@ -54,7 +54,7 @@ kubectl get builds -o wide
 
 `kubectl get buildruns` shows each build's phase, reason, start time, and end time.
 
-Build logs are in the Pod logs for that build's Job. View that Pod's logs to read the build output.
+Build logs are in the Pod logs for that build's Job. The build step writes one JSON event per line, with each step's name, how many seconds it took and whether a line is stdout or stderr. To read it as text, run `kubectl logs <pod> | jq -r '.text // .message // .name'`.
 
 </Step>
 
