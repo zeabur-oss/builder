@@ -2,6 +2,20 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.2.0 (2026-11-07)
+
+### Breaking Changes
+
+#### The controller always runs buildkitd in a user namespace, and `--buildkitd-host-users` is removed
+
+buildkitd's Pod always sets `hostUsers: false`, which needs Kubernetes 1.33 or later. The controller refuses to start when it is given `--buildkitd-host-users`, so delete it from the chart's `extraArgs`, whether it was `true` or `false`. A cluster older than 1.33 can no longer run Builder; upgrade the cluster first.
+
+### Fixes
+
+#### Builds start again after the buildkitd cache size or storage class changes
+
+Kubernetes refuses to change a StatefulSet's volume, so after `--buildkitd-cache-size` or `--buildkitd-storage-class` changed, builds in a namespace that already had a buildkitd never started. The controller now deletes that buildkitd and its cache and creates it again, so the next build starts with an empty cache of the new size.
+
 ## 0.1.2 (2026-11-04)
 
 ### Changed
