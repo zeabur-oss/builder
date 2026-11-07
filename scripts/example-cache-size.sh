@@ -4,12 +4,12 @@
 #   scripts/example-cache-size.sh <context>
 # Kubernetes refuses to change a StatefulSet's volume claim templates, so the controller recreates
 # the daemon with an empty cache of the new size (zeabur-oss/builder#66).
-# Environment: NAMESPACE (team-a), SIZE (11Gi), TIMEOUT (600).
+# Environment: NAMESPACE (team-a), CACHE_SIZE (11Gi), TIMEOUT (600).
 set -euo pipefail
 
 context="${1:?usage: example-cache-size.sh <context>}"
 ns="${NAMESPACE:-team-a}"
-size="${SIZE:-11Gi}"
+size="${CACHE_SIZE:-11Gi}"
 timeout="${TIMEOUT:-600}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 pvc="cache-buildkitd-$ns-0"
