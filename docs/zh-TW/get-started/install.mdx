@@ -41,7 +41,7 @@ Zeabur Builder 還沒有發行版，指令裡的 `<version>` 要等第一個版�
 
 ### 設定 registry
 
-[deploy/chart/values.yaml](https://github.com/zeabur-oss/builder/blob/main/deploy/chart/values.yaml) 列出所有設定值。請依你的 registry 填入下列設定：
+[deploy/chart/values.yaml](../../../deploy/chart/values.yaml) 列出所有設定值。請依你的 registry 填入下列設定：
 
 | 設定值 | 用途 |
 | --- | --- |
@@ -81,4 +81,4 @@ Helm 不會升級 CRD。執行 `helm upgrade` 前，先 apply 新版 chart 的 `
 
 ## 在測試叢集安裝
 
-在測試叢集上，`scripts/deploy-example.sh` 會從目前的原始程式碼安裝 chart，並部署測試用的 registry 與範例 Build。用法請參考 [CONTRIBUTING.md](https://github.com/zeabur-oss/builder/blob/main/CONTRIBUTING.md#tests-against-a-cluster)。
+在測試叢集上，`scripts/deploy-example.sh` 會從目前的原始程式碼安裝 chart，並部署測試用的 registry 與範例 Build。用法請參考 [CONTRIBUTING.md](../../../CONTRIBUTING.md#tests-against-a-cluster)。

@@ -40,7 +40,7 @@ The release chart pins its three images by digest. See [Releases and verificatio
 
 ### Configure the registry
 
-[deploy/chart/values.yaml](https://github.com/zeabur-oss/builder/blob/main/deploy/chart/values.yaml) lists all configuration values. Set the following values for your registry:
+[deploy/chart/values.yaml](../../deploy/chart/values.yaml) lists all configuration values. Set the following values for your registry:
 
 | Value | Purpose |
 | --- | --- |
@@ -80,4 +80,4 @@ Helm doesn't upgrade CRDs. Before running `helm upgrade`, apply `crds/crds.yaml`
 
 ## Install in a test cluster
 
-In a test cluster, `scripts/deploy-example.sh` installs the chart from the current source tree and deploys a test registry and an example Build. See [CONTRIBUTING.md](https://github.com/zeabur-oss/builder/blob/main/CONTRIBUTING.md#tests-against-a-cluster) for usage instructions.
+In a test cluster, `scripts/deploy-example.sh` installs the chart from the current source tree and deploys a test registry and an example Build. See [CONTRIBUTING.md](../../CONTRIBUTING.md#tests-against-a-cluster) for usage instructions.
