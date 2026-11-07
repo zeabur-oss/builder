@@ -9,7 +9,7 @@ Use Namespaces to separate teams' build sources, Secrets, caches, and image push
 
 Use **Report a vulnerability** in the GitHub repository to report vulnerabilities privately through private vulnerability reporting. Don't open public issues for security problems.
 
-See [SECURITY.md](https://github.com/zeabur-oss/builder/blob/main/SECURITY.md) for the security policy.
+See [SECURITY.md](../../SECURITY.md) for the security policy.
 
 ## Trust model
 
@@ -52,7 +52,7 @@ Even with these restrictions, an attacker who obtains the controller token can s
 
 Each `RUN` step has its own network namespace and can reach the internet and the registry.
 
-The egress policy in [deploy/chart/templates/buildkitd.yaml](https://github.com/zeabur-oss/builder/blob/main/deploy/chart/templates/buildkitd.yaml) blocks its access to Pods, Services, nodes, and cloud metadata endpoints (IPv4).
+The egress policy in [deploy/chart/templates/buildkitd.yaml](../../deploy/chart/templates/buildkitd.yaml) blocks its access to Pods, Services, nodes, and cloud metadata endpoints (IPv4).
 
 ### buildkitd host isolation
 

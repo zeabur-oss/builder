@@ -1,7 +1,7 @@
 ---
 title: 安全性与信任模型
 description: 了解 Zeabur Builder 的信任边界、运行不可信代码的配置，以及私下报告漏洞的方式。
-source: "dd215c11b4bd"
+source: "d5d55d5cf5da"
 ---
 
 用 Namespace 隔离各团队的构建来源、Secret、缓存与镜像推送权限。同一个 Namespace 内的构建彼此信任；运行不可信代码时，使用 `--buildkitd-runtime-class` 指定沙箱运行环境。
@@ -10,7 +10,7 @@ source: "dd215c11b4bd"
 
 在 GitHub 仓库中使用 **Report a vulnerability**，通过 private vulnerability reporting 私下报告漏洞。不要为安全问题创建公开 issue。
 
-安全政策见 [SECURITY.md](https://github.com/zeabur-oss/builder/blob/main/SECURITY.md)。
+安全政策见 [SECURITY.md](../../../SECURITY.md)。
 
 ## 信任模型
 
@@ -53,7 +53,7 @@ Helm chart 的 ValidatingAdmissionPolicies 将控制器 ServiceAccount 创建的
 
 每个 `RUN` 步骤都有自己的 network namespace，可以连接到互联网与 registry。
 
-[deploy/chart/templates/buildkitd.yaml](https://github.com/zeabur-oss/builder/blob/main/deploy/chart/templates/buildkitd.yaml) 中的出站流量策略会阻止它访问 Pod、Service、节点与云元数据端点（IPv4）。
+[deploy/chart/templates/buildkitd.yaml](../../../deploy/chart/templates/buildkitd.yaml) 中的出站流量策略会阻止它访问 Pod、Service、节点与云元数据端点（IPv4）。
 
 ### buildkitd 的主机隔离
 

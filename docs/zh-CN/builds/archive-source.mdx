@@ -1,7 +1,7 @@
 ---
 title: 从上传的文件夹构建
 description: 将文件夹上传为 OCI artifact，并在 Build 中指定 manifest digest，从上传的内容构建镜像。
-source: "6eb8e95802b9"
+source: "3cff6c62a8a0"
 ---
 
 将文件夹打包并推送到镜像仓库（registry），再把 OCI artifact 的 manifest digest 写入 `Build`，就能从上传的文件夹构建镜像，无需使用 Git ref。
@@ -57,7 +57,7 @@ cd /tmp && oras push --registry-config auth.json \
   source.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip
 ```
 
-`oras push` 会输出 digest。[`scripts/example-archive.sh`](https://github.com/zeabur-oss/builder/blob/main/scripts/example-archive.sh) 使用 `curl` 完成相同操作。
+`oras push` 会输出 digest。[`scripts/example-archive.sh`](../../../scripts/example-archive.sh) 使用 `curl` 完成相同操作。
 
 <Callout type="warn">
 

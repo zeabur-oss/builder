@@ -41,7 +41,7 @@ Zeabur Builder 还没有发布版本，命令中的 `<version>` 要等首个版�
 
 ### 配置镜像仓库
 
-[deploy/chart/values.yaml](https://github.com/zeabur-oss/builder/blob/main/deploy/chart/values.yaml) 列出了所有配置项。根据你的 registry 填写以下配置：
+[deploy/chart/values.yaml](../../../deploy/chart/values.yaml) 列出了所有配置项。根据你的 registry 填写以下配置：
 
 | 配置项 | 用途 |
 | --- | --- |
@@ -81,4 +81,4 @@ Helm 不会升级 CRD。执行 `helm upgrade` 前，先 apply 新版 chart 的 `
 
 ## 在测试集群安装
 
-在测试集群上，`scripts/deploy-example.sh` 会从当前源码安装 chart，并部署测试用 registry 和示例 Build。用法见 [CONTRIBUTING.md](https://github.com/zeabur-oss/builder/blob/main/CONTRIBUTING.md#tests-against-a-cluster)。
+在测试集群上，`scripts/deploy-example.sh` 会从当前源码安装 chart，并部署测试用 registry 和示例 Build。用法见 [CONTRIBUTING.md](../../../CONTRIBUTING.md#tests-against-a-cluster)。
