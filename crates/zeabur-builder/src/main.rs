@@ -79,6 +79,13 @@ fn secret_ref(value: &str) -> Result<(String, String), String> {
     }
 }
 
+/// Checks a positive Kubernetes quantity, such as `500m` or `4Gi`.
+fn quantity(value: &str) -> Result<String, String> {
+    zeabur_builder_jobspec::buildkitd::times(value, 1)
+        .map(|_| value.to_owned())
+        .ok_or_else(|| format!("`{value}` is not a positive quantity, such as 500m or 4Gi"))
+}
+
 async fn registry_token(args: RegistryTokenArgs) -> Result<String, String> {
     let client = kube::Client::try_default()
         .await
@@ -167,6 +174,14 @@ struct ControllerArgs {
     /// `builder.zeabur.com/build-memory` overrides it.
     #[arg(long, default_value = "1Gi")]
     buildkitd_memory_limit: String,
+    /// The most CPU one build may get, whatever `builder.zeabur.com/build-cpu` asks. Default: no
+    /// ceiling.
+    #[arg(long, value_parser = quantity)]
+    buildkitd_cpu_max: Option<String>,
+    /// The most memory one build may get, whatever `builder.zeabur.com/build-memory` asks.
+    /// Default: no ceiling.
+    #[arg(long, value_parser = quantity)]
+    buildkitd_memory_max: Option<String>,
     /// Seconds a namespace goes without builds before its buildkitd scales to zero.
     #[arg(long, default_value_t = 600)]
     buildkitd_idle: u64,
@@ -230,6 +245,10 @@ impl ControllerArgs {
             daemon: Arc::new(daemon),
             max_concurrent: self.max_concurrent_builds,
             max_cluster_builds: self.max_cluster_builds,
+            ceiling: decide::Ceiling {
+                cpu: self.buildkitd_cpu_max,
+                memory: self.buildkitd_memory_max,
+            },
             default_registry: self.default_registry,
             registry_ca: self.registry_ca.filter(|ca| !ca.trim().is_empty()),
             registry_http: self.registry_http,
@@ -250,7 +269,27 @@ impl ControllerArgs {
     }
 }
 
+/// Refuses a ceiling below the request it must hold: the limit would be under the request.
+fn check_ceiling(what: &str, request: &str, max: Option<&str>) -> Result<(), String> {
+    match max {
+        Some(max) if zeabur_builder_jobspec::buildkitd::exceeds(request, max) => Err(format!(
+            "--buildkitd-{what}-max={max} is below --buildkitd-{what}-request={request}"
+        )),
+        _ => Ok(()),
+    }
+}
+
 async fn run_controller(args: ControllerArgs) -> Result<(), String> {
+    check_ceiling(
+        "cpu",
+        &args.buildkitd_cpu_request,
+        args.buildkitd_cpu_max.as_deref(),
+    )?;
+    check_ceiling(
+        "memory",
+        &args.buildkitd_memory_request,
+        args.buildkitd_memory_max.as_deref(),
+    )?;
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_provider| "a TLS provider is already installed".to_owned())?;
@@ -303,5 +342,22 @@ fn main() -> ExitCode {
             output::stderr_line(&format!("error: {message}"));
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_ceiling;
+
+    #[test]
+    fn a_ceiling_below_the_request_is_refused() {
+        assert_eq!(
+            check_ceiling("memory", "256Mi", Some("128Mi")),
+            Err(
+                "--buildkitd-memory-max=128Mi is below --buildkitd-memory-request=256Mi".to_owned()
+            )
+        );
+        assert_eq!(check_ceiling("memory", "256Mi", Some("1Gi")), Ok(()));
+        assert_eq!(check_ceiling("cpu", "100m", None), Ok(()));
     }
 }

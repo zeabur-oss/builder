@@ -90,6 +90,9 @@ buildkitd:
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 1Gi}
+    # The most one build may get, whatever a Namespace annotation asks. Unset: no ceiling. A
+    # build over it runs with the ceiling, and its BuildRun gets a BuildLimited Event.
+    max: {cpu: "", memory: ""}
 
 # Builds that run at once. A run over either limit waits, oldest first. Each build gets
 # buildkitd.resources.limits, so a namespace's buildkitd gets those times its limit; a Namespace

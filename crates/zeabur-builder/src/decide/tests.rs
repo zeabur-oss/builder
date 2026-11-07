@@ -543,10 +543,11 @@ fn namespace_annotations_change_one_build_and_the_count() {
             .collect::<BTreeMap<_, _>>()
     };
     assert_eq!(
-        limits(&BTreeMap::new(), 1, &defaults),
+        limits(&BTreeMap::new(), 1, &defaults, &Ceiling::default()),
         Limits {
             concurrent: 1,
-            resources: defaults.clone()
+            resources: defaults.clone(),
+            clamped: Vec::new()
         }
     );
     let raised = limits(
@@ -557,6 +558,7 @@ fn namespace_annotations_change_one_build_and_the_count() {
         ]),
         1,
         &defaults,
+        &Ceiling::default(),
     );
     assert_eq!(raised.concurrent, 2);
     assert_eq!(raised.resources.cpu_limit.as_deref(), Some("2"));
@@ -569,8 +571,37 @@ fn namespace_annotations_change_one_build_and_the_count() {
         ]),
         1,
         &defaults,
+        &Ceiling::default(),
     );
     assert_eq!(bad.resources, defaults);
+}
+
+#[test]
+fn a_ceiling_holds_a_namespace_to_the_cluster_limit_and_says_so() {
+    let defaults = Resources {
+        cpu_limit: Some("1".to_owned()),
+        memory_limit: Some("1Gi".to_owned()),
+        ..Resources::default()
+    };
+    let annotations = BTreeMap::from([
+        (annotations::BUILD_CPU.to_owned(), "8".to_owned()),
+        (annotations::BUILD_MEMORY.to_owned(), "2Gi".to_owned()),
+    ]);
+    let ceiling = Ceiling {
+        cpu: Some("4".to_owned()),
+        memory: Some("4096Mi".to_owned()),
+    };
+    let held = limits(&annotations, 1, &defaults, &ceiling);
+    assert_eq!(held.resources.cpu_limit.as_deref(), Some("4"));
+    assert_eq!(held.resources.memory_limit.as_deref(), Some("2Gi"));
+    assert_eq!(
+        held.clamped,
+        ["This build asked for 8 CPU; the cluster allows at most 4 per build, so it gets 4."]
+    );
+
+    let open = limits(&annotations, 1, &defaults, &Ceiling::default());
+    assert_eq!(open.resources.cpu_limit.as_deref(), Some("8"));
+    assert_eq!(open.clamped, Vec::<String>::new());
 }
 
 #[test]

@@ -109,6 +109,8 @@ pub(crate) struct Settings {
     pub(crate) max_concurrent: u32,
     /// Builds all namespaces run at once.
     pub(crate) max_cluster_builds: u32,
+    /// The most CPU and memory one build may get, whatever a Namespace annotation asks.
+    pub(crate) ceiling: decide::Ceiling,
     /// The registry for `Build`s without `spec.output.image`.
     pub(crate) default_registry: String,
     /// The default registry's CA, PEM, for the `fetch` container of an archive source.
@@ -1105,6 +1107,7 @@ async fn namespace_limits(ctx: &Context, namespace: &str) -> Result<decide::Limi
         &annotations,
         ctx.settings.max_concurrent,
         &ctx.settings.daemon.resources,
+        &ctx.settings.ceiling,
     ))
 }
 
@@ -1230,6 +1233,21 @@ fn static_checks(
     Ok((tags, decide::owned(build, &settings.default_registry)?))
 }
 
+/// Tells the run what the cluster's ceiling took away from its build.
+async fn record_clamps(ctx: &Context, run: &BuildRun, limits: &decide::Limits) {
+    for note in &limits.clamped {
+        record(
+            ctx,
+            &run.object_ref(&()),
+            EventType::Normal,
+            "BuildLimited",
+            "Build",
+            note,
+        )
+        .await;
+    }
+}
+
 async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Result<Action, Error> {
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
@@ -1327,6 +1345,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
     };
     create_if_missing(&Api::namespaced(ctx.client.clone(), &namespace), &job).await?;
     job_created(ctx, run, status, &woken.pod, tags).await?;
+    record_clamps(ctx, run, &limits).await;
     tracing::info!(buildrun = %name, namespace = %namespace, buildkitd = %woken.pod, image = %image, "job created");
     report(ctx, &build, &run.spec.revision, State::Pending, "building").await;
     Ok(Action::await_change())
