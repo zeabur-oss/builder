@@ -3,7 +3,9 @@
 //!
 //! The objects are [`zeabur_builder_jobspec::buildkitd`]'s, applied with server-side apply, so a
 //! changed setting reaches each daemon the next time it is woken. Scaling down goes through the
-//! `scale` subresource; the next apply takes `replicas` back.
+//! `scale` subresource; the next apply takes `replicas` back. A change apply cannot make, such as
+//! the cache volume's size, deletes the `StatefulSet` and its cache, and the next wake creates it
+//! again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -127,8 +129,25 @@ pub(crate) async fn wake(
     let objects = buildkitd::daemon(&inputs(settings, namespace, limits));
     apply(client, &settings.namespace, &objects.network_policy).await?;
     apply(client, &settings.namespace, &objects.service).await?;
-    apply(client, &settings.namespace, &objects.stateful_set).await?;
     let pod_name = daemon::pod(namespace);
+    match apply(client, &settings.namespace, &objects.stateful_set).await {
+        // Kubernetes refuses a change to the cache volume (its size or storage class). The volume
+        // only holds cache, so the daemon starts over: the StatefulSet goes, its volume with it
+        // (`whenDeleted: Delete`), and a later wake creates both again.
+        Err(kube::Error::Api(status)) if status.code == 422 => {
+            Api::<StatefulSet>::namespaced(client.clone(), &settings.namespace)
+                .delete(&name, &DeleteParams::foreground())
+                .await?;
+            tracing::info!(%namespace, statefulset = %name, "cache volume changed; buildkitd recreated");
+            return Ok(Woken {
+                pod: pod_name,
+                address: daemon::address(namespace, &settings.namespace),
+                ready: false,
+                client: client_pems,
+            });
+        }
+        applied => applied?,
+    }
     let pod = Api::<Pod>::namespaced(client.clone(), &settings.namespace)
         .get_opt(&pod_name)
         .await?;

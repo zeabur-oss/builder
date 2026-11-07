@@ -150,7 +150,8 @@ if ! {
       --for 'jsonpath={.status.phase}=Failed' &&
     TAG="$tag" ./scripts/example-isolation.sh k3d-zeabur-builder &&
     TAG="$tag" ./scripts/example-admission.sh k3d-zeabur-builder &&
-    ./scripts/example-archive.sh k3d-zeabur-builder
+    ./scripts/example-archive.sh k3d-zeabur-builder &&
+    ./scripts/example-cache-size.sh k3d-zeabur-builder
 }; then
   cluster_failure_context
   exit 1
