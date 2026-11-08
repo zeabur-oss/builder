@@ -83,4 +83,4 @@ kubectl get builds
 kubectl get buildruns
 ```
 
-建置日誌就是 Job 的 Pod 日誌。
+建置日誌就是 Job 的 Pod 日誌。建置步驟每行輸出一個 JSON 事件，用 `jq -r '.text // .message // .name'` 可以讀成文字。
