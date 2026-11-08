@@ -8,8 +8,9 @@ use jiff::Timestamp;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::ResourceExt as _;
 use serde::Serialize;
-use zeabur_builder_api::build::{Build, BuildStatus, Concurrency};
+use zeabur_builder_api::build::{Build, BuildStatus, Concurrency, MAX_UPLOAD_REQUEST};
 use zeabur_builder_api::build_run::{
     BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, Trigger,
 };
@@ -674,6 +675,61 @@ pub(crate) fn owned(build: &Build, default_registry: &str) -> Result<Owned, Stri
         image,
         source,
     })
+}
+
+/// The value of `builder.zeabur.com/pull-token-request` on a succeeded run when
+/// `status.pullToken` has not answered it.
+pub(crate) fn pull_request(run: &BuildRun) -> Option<&str> {
+    let status = run.status.as_ref()?;
+    if status.phase != Some(Phase::Succeeded) {
+        return None;
+    }
+    let request = run.annotations().get(annotations::PULL_TOKEN_REQUEST)?;
+    if request.is_empty() || request.len() > MAX_UPLOAD_REQUEST {
+        return None;
+    }
+    let answered = status.pull_token.as_ref().map(|t| t.request.as_str());
+    (answered != Some(request.as_str())).then_some(request.as_str())
+}
+
+/// The image repository a pull token covers: the `Build`'s own in the default registry, and
+/// `None` for an image elsewhere.
+pub(crate) fn pull_repository(build: &Build, default_registry: &str) -> Option<String> {
+    owned(build, default_registry).ok()?.image
+}
+
+/// Whether a remote `Build` is past `retention`: its newest `BuildRun` finished longer ago, or
+/// it has no run and was created longer ago. A `Build` with a run in progress is kept.
+pub(crate) fn remote_expired(
+    build: &Build,
+    runs: &[BuildRun],
+    retention: Duration,
+    now: Timestamp,
+) -> bool {
+    let name = build.metadata.name.as_deref().unwrap_or_default();
+    let mut newest: Option<Timestamp> = build.metadata.creation_timestamp.as_ref().map(|t| t.0);
+    let mut has_run = false;
+    for run in runs {
+        if run.spec.build_ref != name {
+            continue;
+        }
+        let Some(status) = &run.status else {
+            return false;
+        };
+        if !is_finished(status.phase) {
+            return false;
+        }
+        let finished = status
+            .completion_time
+            .as_deref()
+            .and_then(|t| t.parse::<Timestamp>().ok())
+            .or_else(|| run.metadata.creation_timestamp.as_ref().map(|t| t.0));
+        if !has_run || finished > newest {
+            newest = finished;
+        }
+        has_run = true;
+    }
+    newest.is_some_and(|at| now.duration_since(at).unsigned_abs() > retention)
 }
 
 /// A ref without its `refs/heads/` or `refs/tags/` prefix.

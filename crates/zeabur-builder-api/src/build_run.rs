@@ -11,6 +11,7 @@ use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::build::MAX_UPLOAD_REQUEST;
 use crate::common::{DIGEST_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN};
 
 /// One build of one commit or archive. The spec is immutable: to build again, create another.
@@ -154,6 +155,26 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("format" = "date-time"))]
     pub notified_at: Option<String>,
+    /// The last pull token the controller issued, for the annotation
+    /// `builder.zeabur.com/pull-token-request`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_token: Option<PullToken>,
+}
+
+/// A pull token: a Secret with a short-lived token that only pulls the run's image repository.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PullToken {
+    /// The annotation value it answers.
+    #[schemars(length(max = MAX_UPLOAD_REQUEST))]
+    pub request: String,
+    /// The `kubernetes.io/dockerconfigjson` Secret, in the `BuildRun`'s namespace. Its key
+    /// `token` holds the bare token.
+    #[schemars(length(max = MAX_NAME))]
+    pub secret_name: String,
+    /// When the token expires.
+    #[schemars(extend("format" = "date-time"))]
+    pub expires_at: String,
 }
 
 /// The phases: `Pending → Planning → Building → Succeeded | Failed | Cancelled`.

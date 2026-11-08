@@ -5,11 +5,12 @@ use k8s_openapi::api::core::v1::{
     ContainerState, ContainerStateRunning, ContainerStateTerminated, PodStatus,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use zeabur_builder_api::annotations;
 use zeabur_builder_api::build::{
     ArchiveSource, BuildSpec, GitHubAppSource, GitSource, NotifyTarget, NotifyType, OutputSpec,
     SourceSpec, TriggerSpec,
 };
-use zeabur_builder_api::build_run::BuildRunSpec;
+use zeabur_builder_api::build_run::{BuildRunSpec, PullToken};
 
 use super::*;
 
@@ -1147,4 +1148,107 @@ fn tokens_count_as_expired_once_the_registry_clock_has_passed_them_too() {
     assert!(!tokens_expired(until, at("2026-11-01T10:20:30Z")));
     assert!(!tokens_expired(until, at("2026-11-01T10:21:00Z")));
     assert!(tokens_expired(until, at("2026-11-01T10:21:01Z")));
+}
+
+fn with_pull_request(mut run: BuildRun, value: &str) -> BuildRun {
+    run.metadata
+        .annotations
+        .get_or_insert_default()
+        .insert(annotations::PULL_TOKEN_REQUEST.to_owned(), value.to_owned());
+    run
+}
+
+#[test]
+fn a_succeeded_run_answers_a_new_pull_request() {
+    let at = "2026-10-22T08:00:00Z";
+    let succeeded = run("api-1", A, Some(Phase::Succeeded), at);
+    assert_eq!(pull_request(&succeeded), None);
+    let mut asked = with_pull_request(succeeded, "p1");
+    assert_eq!(pull_request(&asked), Some("p1"));
+
+    let status = asked.status.get_or_insert_default();
+    status.pull_token = Some(PullToken {
+        request: "p1".to_owned(),
+        secret_name: "api-1-pull".to_owned(),
+        expires_at: at.to_owned(),
+    });
+    assert_eq!(pull_request(&asked), None);
+    let asked = with_pull_request(asked, "p2");
+    assert_eq!(pull_request(&asked), Some("p2"));
+}
+
+#[test]
+fn only_a_succeeded_run_with_a_fitting_request_is_answered() {
+    let at = "2026-10-22T08:00:00Z";
+    for phase in [
+        None,
+        Some(Phase::Building),
+        Some(Phase::Failed),
+        Some(Phase::Cancelled),
+    ] {
+        let asked = with_pull_request(run("api-1", A, phase, at), "p1");
+        assert_eq!(pull_request(&asked), None, "{phase:?}");
+    }
+    let long = "x".repeat(MAX_UPLOAD_REQUEST + 1);
+    for value in ["", long.as_str()] {
+        let asked = with_pull_request(run("api-1", A, Some(Phase::Succeeded), at), value);
+        assert_eq!(pull_request(&asked), None, "{value:?}");
+    }
+    let exact = "x".repeat(MAX_UPLOAD_REQUEST);
+    let asked = with_pull_request(run("api-1", A, Some(Phase::Succeeded), at), &exact);
+    assert_eq!(pull_request(&asked), Some(exact.as_str()));
+}
+
+#[test]
+fn a_pull_token_covers_the_default_image_only() {
+    let mut build = build();
+    assert_eq!(
+        pull_repository(&build, "zot.zot.svc:5000").as_deref(),
+        Some("team-a/api")
+    );
+    build.spec.output = Some(OutputSpec {
+        image: Some("ghcr.io/acme/api".to_owned()),
+        ..OutputSpec::default()
+    });
+    assert_eq!(pull_repository(&build, "zot.zot.svc:5000"), None);
+}
+
+#[test]
+fn a_remote_build_expires_after_its_newest_run_finished() {
+    let retention = Duration::from_hours(24);
+    let mut build = build();
+    build.metadata.creation_timestamp = Some(Time("2026-10-01T00:00:00Z".parse().unwrap()));
+    let finished = |name: &str, completed: &str| {
+        let mut r = run(name, A, Some(Phase::Succeeded), "2026-10-01T00:00:00Z");
+        r.status.as_mut().unwrap().completion_time = Some(completed.to_owned());
+        r
+    };
+    let old = finished("api-1", "2026-10-20T00:00:00Z");
+    let recent = finished("api-2", "2026-10-21T20:00:00Z");
+    assert!(remote_expired(&build, &[], retention, now()));
+    assert!(remote_expired(
+        &build,
+        std::slice::from_ref(&old),
+        retention,
+        now()
+    ));
+    assert!(!remote_expired(
+        &build,
+        &[old.clone(), recent],
+        retention,
+        now()
+    ));
+    let building = run("api-3", A, Some(Phase::Building), "2026-10-01T00:00:00Z");
+    assert!(!remote_expired(
+        &build,
+        &[old.clone(), building],
+        retention,
+        now()
+    ));
+    let mut other = old;
+    other.spec.build_ref = "web".to_owned();
+    other.status.as_mut().unwrap().completion_time = Some("2026-10-22T07:00:00Z".to_owned());
+    assert!(remote_expired(&build, &[other], retention, now()));
+    build.metadata.creation_timestamp = Some(Time("2026-10-22T00:00:00Z".parse().unwrap()));
+    assert!(!remote_expired(&build, &[], retention, now()));
 }

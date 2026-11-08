@@ -32,6 +32,9 @@ spec:
             - --buildkitd-memory-limit={{ .Values.buildkitd.resources.limits.memory }}
             - --max-concurrent-builds={{ .Values.maxConcurrentBuilds.namespace | int }}
             - --max-cluster-builds={{ .Values.maxConcurrentBuilds.cluster | int }}
+            {{- if .Values.runner.enabled }}
+            - --remote-retention={{ .Values.runner.retention | int }}
+            {{- end }}
             {{- if .Values.webhooks.enabled }}
             - --webhook-addr=0.0.0.0:{{ .Values.webhooks.port }}
             - --webhook-path={{ include "builder.webhookPath" . }}

@@ -42,6 +42,7 @@ use jiff::Timestamp;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace, ObjectReference, Pod, Secret};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{
     Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams, PropagationPolicy,
 };
@@ -56,7 +57,7 @@ use zeabur_builder_api::build::{
     Build, BuildStatus, MAX_UPLOAD_REQUEST, NotifyTarget, NotifyType, SourceMode, UploadToken,
 };
 use zeabur_builder_api::build_run::{
-    BuildRun, BuildRunSpec, BuildRunStatus, Phase, Reason, Trigger,
+    BuildRun, BuildRunSpec, BuildRunStatus, Phase, PullToken, Reason, Trigger,
 };
 use zeabur_builder_api::cluster_builder::ClusterBuilder;
 use zeabur_builder_api::common::ConditionStatus;
@@ -94,6 +95,8 @@ const SWEEP: Duration = Duration::from_mins(10);
 const TOKEN_MARGIN: Duration = Duration::from_mins(10);
 /// How long an upload token lasts.
 const UPLOAD_TTL: Duration = Duration::from_mins(15);
+/// How long a pull token lasts.
+const PULL_TTL: Duration = Duration::from_mins(15);
 /// How long a token for deleting repositories lasts.
 const DELETE_TTL: Duration = Duration::from_mins(5);
 const EMPTY_DOCKER_CONFIG: &[u8] = br#"{"auths":{}}"#;
@@ -103,6 +106,9 @@ const EMPTY_DOCKER_CONFIG: &[u8] = br#"{"auths":{}}"#;
 pub(crate) struct Settings {
     /// The controller's namespace.
     pub(crate) namespace: String,
+    /// How long a `Build` in a remote-installation namespace is kept after its newest run
+    /// finished.
+    pub(crate) remote_retention: Duration,
     /// How each namespace's buildkitd runs.
     pub(crate) daemon: Arc<daemon::Settings>,
     /// Builds a namespace runs at once, unless its annotation says otherwise.
@@ -784,6 +790,7 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
     }
     let status = run.status.clone().unwrap_or_default();
     if decide::is_finished(status.phase) {
+        answer_pull_request(&ctx, &run, &status).await?;
         return Ok(Action::await_change());
     }
     let namespace = run.namespace().unwrap_or_default();
@@ -1457,36 +1464,63 @@ async fn upload_token(
         .map_err(|e| Error::Invalid(e.to_string()))?;
     record_push(ctx, build, &source, expires).await?;
     let token = signer.token(&[(source.as_str(), registry::Access::PUSH)], at, UPLOAD_TTL);
-    let host = decide::registry_host(&ctx.settings.default_registry);
     let secret_name = format!("{name}-upload");
+    put_token_secret(
+        ctx,
+        &namespace,
+        &secret_name,
+        build.controller_owner_ref(&()),
+        (labels::BUILD, &name),
+        &token,
+    )
+    .await?;
+    tracing::info!(build = %name, namespace = %namespace, request, "upload token issued");
+    Ok(UploadToken {
+        request: request.to_owned(),
+        secret_name,
+        expires_at: expires.to_string(),
+    })
+}
+
+/// Creates or replaces the Secret `secret_name` with `token` as a Docker config for the default
+/// registry and in the key `token`. An existing Secret must carry the label `identity`.
+async fn put_token_secret(
+    ctx: &Context,
+    namespace: &str,
+    secret_name: &str,
+    owner: Option<OwnerReference>,
+    identity: (&str, &str),
+    token: &str,
+) -> Result<(), Error> {
+    let host = decide::registry_host(&ctx.settings.default_registry);
     let data = BTreeMap::from([
         (
             ".dockerconfigjson".to_owned(),
-            ByteString(registry::docker_config(host, &token)),
+            ByteString(registry::docker_config(host, token)),
         ),
-        ("token".to_owned(), ByteString(token.into_bytes())),
+        ("token".to_owned(), ByteString(token.as_bytes().to_vec())),
     ]);
-    let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
-    if let Some(mut secret) = secrets.get_opt(&secret_name).await? {
-        if secret.labels().get(labels::BUILD) != Some(&name) {
+    let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
+    if let Some(mut secret) = secrets.get_opt(secret_name).await? {
+        if secret.labels().get(identity.0).map(String::as_str) != Some(identity.1) {
             return Err(Error::Invalid(format!(
-                "Secret `{secret_name}` exists and is not this Build's upload token"
+                "Secret `{secret_name}` exists and is not this object's token"
             )));
         }
         secret.data = Some(data);
         secrets
-            .replace(&secret_name, &PostParams::default(), &secret)
+            .replace(secret_name, &PostParams::default(), &secret)
             .await?;
     } else {
         let secret = Secret {
             metadata: ObjectMeta {
-                name: Some(secret_name.clone()),
-                namespace: Some(namespace.clone()),
+                name: Some(secret_name.to_owned()),
+                namespace: Some(namespace.to_owned()),
                 labels: Some(BTreeMap::from([
-                    (labels::BUILD.to_owned(), name.clone()),
+                    (identity.0.to_owned(), identity.1.to_owned()),
                     (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
                 ])),
-                owner_references: build.controller_owner_ref(&()).map(|o| vec![o]),
+                owner_references: owner.map(|o| vec![o]),
                 ..ObjectMeta::default()
             },
             type_: Some("kubernetes.io/dockerconfigjson".to_owned()),
@@ -1495,12 +1529,76 @@ async fn upload_token(
         };
         secrets.create(&PostParams::default(), &secret).await?;
     }
-    tracing::info!(build = %name, namespace = %namespace, request, "upload token issued");
-    Ok(UploadToken {
-        request: request.to_owned(),
-        secret_name,
-        expires_at: expires.to_string(),
-    })
+    Ok(())
+}
+
+/// Issues a pull token for a finished run's image when `builder.zeabur.com/pull-token-request`
+/// has a value `status.pullToken` has not answered. A `Build` whose image is outside the default
+/// registry gets a Warning Event and nothing recorded.
+async fn answer_pull_request(
+    ctx: &Context,
+    run: &BuildRun,
+    status: &BuildRunStatus,
+) -> Result<(), Error> {
+    let Some(request) = decide::pull_request(run) else {
+        return Ok(());
+    };
+    let namespace = run.namespace().unwrap_or_default();
+    let name = run.name_any();
+    let Some(build) = Api::<Build>::namespaced(ctx.client.clone(), &namespace)
+        .get_opt(&run.spec.build_ref)
+        .await?
+    else {
+        return Ok(());
+    };
+    let Some(repository) = decide::pull_repository(&build, &ctx.settings.default_registry) else {
+        let note = "the Build's image is outside the default registry, so no pull token is granted";
+        record(
+            ctx,
+            &run.object_ref(&()),
+            EventType::Warning,
+            "PullTokenRefused",
+            "Grant",
+            note,
+        )
+        .await;
+        return Ok(());
+    };
+    let signer = signer(ctx).await.map_err(Error::Invalid)?;
+    let at = now();
+    let expires = at
+        .checked_add(PULL_TTL)
+        .map_err(|e| Error::Invalid(e.to_string()))?;
+    let token = signer.token(
+        &[(repository.as_str(), registry::Access::PULL)],
+        at,
+        PULL_TTL,
+    );
+    let secret_name = format!("{name}-pull");
+    put_token_secret(
+        ctx,
+        &namespace,
+        &secret_name,
+        run.controller_owner_ref(&()),
+        (labels::BUILD_RUN, &name),
+        &token,
+    )
+    .await?;
+    tracing::info!(buildrun = %name, namespace = %namespace, request, "pull token issued");
+    let next = BuildRunStatus {
+        pull_token: Some(PullToken {
+            request: request.to_owned(),
+            secret_name,
+            expires_at: expires.to_string(),
+        }),
+        ..status.clone()
+    };
+    apply_status(
+        &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
+        &name,
+        &next,
+    )
+    .await
 }
 
 /// The records, in the controller's namespace.
@@ -1591,6 +1689,33 @@ async fn all_builds(client: &Client) -> Result<std::collections::HashSet<(String
     }
 }
 
+/// Deletes the `Build`s in remote-installation namespaces that are past the retention. Their
+/// repositories go with them on the delete event.
+async fn expire_remote_builds(ctx: &Context) -> Result<(), Error> {
+    let namespaces = Api::<Namespace>::all(ctx.client.clone())
+        .list(&ListParams::default().labels(labels::REMOTE_INSTALLATION))
+        .await?;
+    for namespace in namespaces {
+        let namespace = namespace.name_any();
+        let builds: Api<Build> = Api::namespaced(ctx.client.clone(), &namespace);
+        let runs = Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace)
+            .list(&ListParams::default())
+            .await?
+            .items;
+        for build in builds.list(&ListParams::default()).await? {
+            if decide::remote_expired(&build, &runs, ctx.settings.remote_retention, now()) {
+                tracing::info!(namespace, build = %build.name_any(), "deleting an expired remote Build");
+                builds
+                    .delete(&build.name_any(), &DeleteParams::default())
+                    .await
+                    .map(drop)
+                    .or_else(not_found)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Deletes the recorded repositories of every `Build` that no longer exists.
 async fn sweep_registry(ctx: &Context) -> Result<(), String> {
     let records = record::list(&records(ctx), PAGE).await?;
@@ -1635,6 +1760,9 @@ async fn janitor(ctx: Arc<Context>) {
                 if !ctx.leader.is_leader() {
                     next_sweep += PENDING_RETRY;
                     continue;
+                }
+                if let Err(error) = expire_remote_builds(&ctx).await {
+                    tracing::warn!(%error, "expiring remote Builds; the sweep tries again");
                 }
                 let wait = match sweep_registry(&ctx).await {
                     Ok(()) => SWEEP,

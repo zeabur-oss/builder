@@ -1041,6 +1041,33 @@
                     "nullable": true,
                     "type": "string"
                   },
+                  "pullToken": {
+                    "description": "The last pull token the controller issued, for the annotation\n`builder.zeabur.com/pull-token-request`.",
+                    "nullable": true,
+                    "properties": {
+                      "expiresAt": {
+                        "description": "When the token expires.",
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "request": {
+                        "description": "The annotation value it answers.",
+                        "maxLength": 63,
+                        "type": "string"
+                      },
+                      "secretName": {
+                        "description": "The `kubernetes.io/dockerconfigjson` Secret, in the `BuildRun`'s namespace. Its key\n`token` holds the bare token.",
+                        "maxLength": 253,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "expiresAt",
+                      "request",
+                      "secretName"
+                    ],
+                    "type": "object"
+                  },
                   "reason": {
                     "description": "Why a `BuildRun` waits or failed.",
                     "enum": [

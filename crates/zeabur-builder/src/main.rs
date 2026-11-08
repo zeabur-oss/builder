@@ -180,6 +180,10 @@ struct ControllerArgs {
     /// How long a finished Job is kept, in seconds, for log collectors.
     #[arg(long, default_value_t = 600)]
     job_ttl: i32,
+    /// How long, in seconds, a `Build` in a namespace labelled
+    /// `builder.zeabur.com/remote-installation` is kept after its newest run finished.
+    #[arg(long, default_value_t = 86400)]
+    remote_retention: u64,
     /// The GitHub App's Secret in the controller's namespace: `app-id`, `client-id`,
     /// `private-key`, `webhook-secret` and, for GitHub Enterprise Server, `api-url`.
     #[arg(
@@ -231,6 +235,7 @@ impl ControllerArgs {
         };
         controller::Settings {
             namespace: self.namespace,
+            remote_retention: Duration::from_secs(self.remote_retention),
             daemon: Arc::new(daemon),
             max_concurrent: self.max_concurrent_builds,
             max_cluster_builds: self.max_cluster_builds,

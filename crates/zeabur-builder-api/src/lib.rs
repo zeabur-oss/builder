@@ -50,7 +50,9 @@ pub mod labels {
     pub const MANAGED_BY: &str = "app.kubernetes.io/managed-by";
     /// The value of [`MANAGED_BY`].
     pub const MANAGER: &str = "zeabur-builder";
-    /// On a runner cluster's Namespace: the remote installation whose builds it holds.
+    /// On a runner cluster's Namespace: the remote installation whose builds it holds. The
+    /// controller deletes a `Build` there once its newest `BuildRun` finished longer ago than
+    /// `--remote-retention`.
     pub const REMOTE_INSTALLATION: &str = "builder.zeabur.com/remote-installation";
 }
 
@@ -91,6 +93,9 @@ pub mod annotations {
     /// On a `Build` with an archive source: a new value asks for an upload token
     /// (`status.uploadToken`).
     pub const UPLOAD_TOKEN_REQUEST: &str = "builder.zeabur.com/upload-token-request";
+    /// On a succeeded `BuildRun`: a new value asks for a pull token for its image
+    /// (`status.pullToken`).
+    pub const PULL_TOKEN_REQUEST: &str = "builder.zeabur.com/pull-token-request";
 }
 
 /// Every custom resource definition, in a stable order.

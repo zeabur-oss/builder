@@ -47,6 +47,9 @@ runner:
   enabled: false
   # The ClusterBuilders a remote Build may use.
   builders: [railpack, dockerfile]
+  # Seconds a remote Build and its images stay after its last run finished. The installation
+  # deletes it after importing the image, so this only bounds what an installation leaves.
+  retention: 86400
 
 registry:
   # Where images go when a Build names no image, such as zot.zot.svc:5000. Required.

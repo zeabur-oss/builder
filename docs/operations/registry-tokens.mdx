@@ -171,3 +171,16 @@ The records are ConfigMaps in the controller's Namespace with the label `builder
 
 - **Deleting a Build doesn't revoke its tokens.** Tokens remain valid until they expire. A run token can push images again after cleanup. The controller deletes those images during the next scan.
 - **Tokens bind to repository names, not Namespace UIDs.** After you delete a Namespace, if someone creates a Namespace with the same name, the old Namespace's run tokens can still push to the new Namespace's repositories until the tokens expire. With the default Job execution deadline, this window lasts up to 70 minutes (60 minutes plus 10 minutes). Wait 70 minutes before handing a deleted Namespace's name to another team.
+
+## Pull a finished build's image from another cluster
+
+Set `builder.zeabur.com/pull-token-request` on a succeeded `BuildRun` to a value of up to 63 characters. The controller creates the Secret `<buildrun>-pull` in the same namespace, with the keys `.dockerconfigjson` and `token`, and reports the request in `.status.pullToken` (`request`, `secretName`, `expiresAt`). A new value creates a new token.
+
+```sh
+kubectl -n team-a annotate buildrun/api-1 --overwrite builder.zeabur.com/pull-token-request=p1
+kubectl -n team-a wait buildrun/api-1 --for=jsonpath='{.status.pullToken.request}'=p1
+```
+
+The token lasts 15 minutes and only pulls the Build's image repository in the default registry. A Build whose `spec.output.image` is outside the default registry gets no token. The controller leaves `.status.pullToken` empty and records a `PullTokenRefused` warning Event. The Secret is deleted with the `BuildRun`.
+
+Builds in a Namespace labelled `builder.zeabur.com/remote-installation` are deleted, with their images, once their newest `BuildRun` finished longer ago than `--remote-retention`. The flag takes seconds and defaults to `86400` (24 hours).
