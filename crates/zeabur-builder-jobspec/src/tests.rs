@@ -445,3 +445,101 @@ fn user_values_never_enter_scripts() {
             .any(|arg| arg.contains("source=https://github.com/acme/a$$(id)b"))
     );
 }
+
+#[test]
+fn import_copies_by_digest_under_the_build_hardening() {
+    let tags = vec!["v1".to_owned(), "$(id)".to_owned()];
+    let owner = OwnerReference {
+        api_version: "builder.zeabur.com/v1alpha1".to_owned(),
+        kind: "BuildRun".to_owned(),
+        name: "api-x7k2p".to_owned(),
+        uid: "6f1c2b8e-0d7a-4c1e-9a43-2f5b7e8d9c10".to_owned(),
+        controller: Some(true),
+        block_owner_deletion: Some(true),
+    };
+    let from = format!("zot.remote:5000/exports/acme/x7k2p@{DIGEST}");
+    let job = import_job(&ImportInputs {
+        name: "api-x7k2p-import",
+        namespace: "team-a",
+        owner: Some(&owner),
+        job_image: "ghcr.io/zeabur-oss/builder-job:v0.2.1",
+        from: &from,
+        to: "zot.local/team-a/api",
+        tags: &tags,
+        registry_auth_secret: "api-x7k2p-registry",
+        registry_ca: Some("-----BEGIN CERTIFICATE-----"),
+        registry_http: false,
+        deadline_seconds: 900,
+        ttl_seconds: 3600,
+    });
+    assert_eq!(
+        job.metadata.owner_references.as_deref(),
+        Some([owner].as_slice())
+    );
+    let spec = job.spec.unwrap();
+    assert_eq!(spec.backoff_limit, Some(0));
+    assert_eq!(spec.active_deadline_seconds, Some(900));
+    assert_eq!(spec.ttl_seconds_after_finished, Some(3600));
+    let pod = spec.template.spec.unwrap();
+
+    // What the chart's admission policy checks.
+    assert_eq!(pod.automount_service_account_token, Some(false));
+    assert_eq!(pod.service_account_name, None);
+    assert!(!pod.host_network.unwrap_or(false));
+    let security = pod.security_context.unwrap();
+    assert_eq!(security.run_as_non_root, Some(true));
+    assert_eq!(security.run_as_user, Some(RUN_AS));
+    for volume in pod.volumes.as_ref().unwrap() {
+        assert!(volume.empty_dir.is_some() || volume.secret.is_some());
+    }
+    assert!(pod.init_containers.is_none());
+    let [copy] = pod.containers.as_slice() else {
+        panic!("one container");
+    };
+    assert_eq!(
+        copy.image.as_deref(),
+        Some("ghcr.io/zeabur-oss/builder-job:v0.2.1")
+    );
+    let context = copy.security_context.as_ref().unwrap();
+    assert_eq!(context.allow_privilege_escalation, Some(false));
+    assert_eq!(context.read_only_root_filesystem, Some(true));
+    assert_eq!(context.privileged, None);
+    assert_eq!(context.capabilities.as_ref().unwrap().add, None);
+
+    assert_eq!(
+        copy.command.as_ref().unwrap(),
+        &[
+            "zeabur-builder-job",
+            "copy",
+            "--work-dir",
+            "/workspace/copy",
+            "--from",
+            from.as_str(),
+            "--to",
+            "zot.local/team-a/api",
+            "--tag",
+            "v1",
+            "--tag",
+            "$$(id)",
+        ]
+    );
+    let env: BTreeMap<_, _> = copy
+        .env
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|e| (e.name.as_str(), e.value.as_deref().unwrap()))
+        .collect();
+    assert_eq!(env["DOCKER_CONFIG"], "/etc/zeabur-builder/registry");
+    assert_eq!(env[REGISTRY_CA_ENV], "-----BEGIN CERTIFICATE-----");
+    let auth = pod
+        .volumes
+        .unwrap()
+        .into_iter()
+        .find(|v| v.name == "registry-auth")
+        .unwrap()
+        .secret
+        .unwrap();
+    assert_eq!(auth.secret_name.as_deref(), Some("api-x7k2p-registry"));
+    assert_eq!(auth.items.unwrap()[0].path, "config.json");
+}

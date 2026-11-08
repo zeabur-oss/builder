@@ -3,11 +3,15 @@
 //! ```text
 //! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …]
 //! zeabur-builder-job fetch-archive [--plain-http] <repository> <digest> <dir>
+//! zeabur-builder-job copy [--plain-http] [--work-dir DIR] --from <host>/<repo>@sha256:<digest> --to <host>/<repo> [--tag TAG]…
 //! ```
 //!
 //! `fetch-archive` is the `fetch` container of an archive source: it pulls the archive
 //! ([`registry`]) and unpacks it into `<dir>` ([`unpack`]). It writes errors to stderr, which the
 //! controller shows as the run's message.
+//!
+//! `copy` is the import Job: it copies an image by digest from one registry to another ([`copy`]),
+//! with the credentials of each host in `$DOCKER_CONFIG/config.json`. It writes errors to stderr.
 //!
 //! Runs the `buildctl` commands it is given (built by `zeabur-builder-jobspec`) one after the
 //! other, prints their `rawjson` progress for people, counts cached steps, reads each digest from
@@ -28,6 +32,7 @@
 //! ([`zeabur_builder_core::railpack`]): it rewrites `DIR/railpack-plan.json` and writes the second
 //! build's `DIR/non-root/Dockerfile`.
 
+mod copy;
 mod progress;
 mod registry;
 mod unpack;
@@ -46,6 +51,7 @@ use zeabur_builder_core::result::{BuildResult, FailureReason, Outcome, PlanSourc
 
 const TERMINATION_LOG: &str = "/dev/termination-log";
 const WORKSPACE: &str = "/workspace";
+const COPY_DIR: &str = "/workspace/copy";
 const OUT: &str = "/workspace/out";
 const PLAN: &str = "/workspace/plan";
 /// The registry's CA, PEM (`zeabur_builder_jobspec::REGISTRY_CA_ENV`).
@@ -429,9 +435,85 @@ async fn fetch_archive(args: &FetchArgs) -> Result<(), String> {
     .map_err(|e| format!("cannot write {OUT}/fetch.json: {e}"))
 }
 
+/// The arguments of `copy`.
+#[derive(Debug, PartialEq, Eq)]
+struct CopyArgs {
+    plain_http: bool,
+    work_dir: String,
+    from: String,
+    digest: String,
+    to: String,
+    tags: Vec<String>,
+}
+
+fn parse_copy(args: &[String]) -> Result<CopyArgs, String> {
+    const USAGE: &str = "usage: copy [--plain-http] [--work-dir DIR] --from <host>/<repo>@sha256:<digest> --to <host>/<repo> [--tag TAG]…";
+    let mut plain_http = false;
+    let mut work_dir = COPY_DIR.to_owned();
+    let mut from = None;
+    let mut to = None;
+    let mut tags = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--plain-http" => plain_http = true,
+            "--work-dir" => work_dir.clone_from(rest.next().ok_or(USAGE)?),
+            "--from" => from = Some(rest.next().ok_or(USAGE)?.clone()),
+            "--to" => to = Some(rest.next().ok_or(USAGE)?.clone()),
+            "--tag" => tags.push(rest.next().ok_or(USAGE)?.clone()),
+            other => return Err(format!("unexpected argument `{other}`. {USAGE}")),
+        }
+    }
+    let from = from.ok_or(USAGE)?;
+    let (from, digest) = from
+        .split_once('@')
+        .ok_or_else(|| format!("`{from}` is not <host>/<repo>@sha256:<digest>"))?;
+    Ok(CopyArgs {
+        plain_http,
+        work_dir,
+        from: from.to_owned(),
+        digest: digest.to_owned(),
+        to: to.ok_or(USAGE)?,
+        tags,
+    })
+}
+
+/// Copies the image and checks the destination.
+async fn copy_image(args: &CopyArgs) -> Result<(), String> {
+    let mut from = open_repository(&args.from, args.plain_http)?;
+    let mut to = open_repository(&args.to, args.plain_http)?.for_push();
+    copy::copy(
+        &mut from,
+        &mut to,
+        &args.digest,
+        &args.tags,
+        std::path::Path::new(&args.work_dir),
+    )
+    .await
+}
+
+/// Runs a subcommand that reports only by its exit code and stderr.
+fn finish(done: Result<(), String>) -> ExitCode {
+    match done {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            drop(writeln!(std::io::stderr().lock(), "{message}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((first, rest)) = raw.split_first()
+        && first == "copy"
+    {
+        return match parse_copy(rest) {
+            Ok(args) => finish(copy_image(&args).await),
+            Err(message) => finish(Err(message)),
+        };
+    }
     if let Some((first, rest)) = raw.split_first()
         && first == "fetch-archive"
     {
@@ -545,6 +627,36 @@ mod tests {
         );
         assert!(parse_fetch(&strings(&["r/a/b/source", "sha256:00"])).is_err());
         assert!(parse_fetch(&strings(&["--plain-http"])).is_err());
+    }
+
+    #[test]
+    fn copy_arguments() {
+        let digest = "sha256:5d2a8f1c0b9e7d6a4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d";
+        let from = format!("zot.remote:5000/exports/a/1@{digest}");
+        assert_eq!(
+            parse_copy(&strings(&[
+                "--from",
+                &from,
+                "--to",
+                "zot.local/team/api",
+                "--tag",
+                "v1",
+                "--tag",
+                "latest",
+            ]))
+            .unwrap(),
+            CopyArgs {
+                plain_http: false,
+                work_dir: COPY_DIR.to_owned(),
+                from: "zot.remote:5000/exports/a/1".to_owned(),
+                digest: digest.to_owned(),
+                to: "zot.local/team/api".to_owned(),
+                tags: strings(&["v1", "latest"]),
+            }
+        );
+        assert!(parse_copy(&strings(&["--from", "zot/a:v1", "--to", "zot/b"])).is_err());
+        assert!(parse_copy(&strings(&["--to", "zot/b"])).is_err());
+        assert!(parse_copy(&strings(&["--from"])).is_err());
     }
 
     #[test]

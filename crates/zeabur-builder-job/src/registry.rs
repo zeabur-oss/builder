@@ -18,15 +18,18 @@
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
-use http::{HeaderValue, Request, Response, StatusCode, header};
-use http_body_util::{BodyExt as _, Empty};
-use hyper::body::Incoming;
+use http::{HeaderValue, Method, Request, Response, StatusCode, header};
+use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::{BodyExt as _, Empty, Full};
+use hyper::body::{Body, Frame, Incoming};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -48,7 +51,95 @@ const MAX_CONFIG_BYTES: u64 = 4 << 20;
 const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json";
 const USER_AGENT: &str = concat!("zeabur-builder-job/", env!("CARGO_PKG_VERSION"));
 
-type HttpClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
+type RequestBody = UnsyncBoxBody<Bytes, std::io::Error>;
+type HttpClient = Client<HttpsConnector<HttpConnector>, RequestBody>;
+
+/// What a request sends.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Payload<'a> {
+    Empty,
+    Bytes(&'a [u8]),
+    /// The first `size` bytes of a file, streamed.
+    File(&'a Path, u64),
+}
+
+/// One request to a repository.
+#[derive(Debug, Clone)]
+struct Call<'a> {
+    method: Method,
+    accept: Option<&'a str>,
+    content_type: Option<&'a str>,
+    payload: Payload<'a>,
+    /// A 404 is an answer, not an error.
+    missing_ok: bool,
+}
+
+impl Call<'_> {
+    const fn new(method: Method) -> Self {
+        Self {
+            method,
+            accept: None,
+            content_type: None,
+            payload: Payload::Empty,
+            missing_ok: false,
+        }
+    }
+}
+
+/// A file as a request body.
+struct FileBody {
+    file: tokio::fs::File,
+    left: u64,
+}
+
+impl Body for FileBody {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        if self.left == 0 {
+            return Poll::Ready(None);
+        }
+        let len = usize::try_from(self.left.min(64 << 10)).unwrap_or(64 << 10);
+        let mut chunk = vec![0; len];
+        let mut buf = tokio::io::ReadBuf::new(&mut chunk);
+        match tokio::io::AsyncRead::poll_read(Pin::new(&mut self.file), cx, &mut buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(Ok(())) => {
+                let read = buf.filled().len();
+                if read == 0 {
+                    return Poll::Ready(Some(Err(std::io::ErrorKind::UnexpectedEof.into())));
+                }
+                chunk.truncate(read);
+                self.left -= u64::try_from(read).unwrap_or(u64::MAX);
+                Poll::Ready(Some(Ok(Frame::data(Bytes::from(chunk)))))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        hyper::body::SizeHint::with_exact(self.left)
+    }
+}
+
+async fn request_body(payload: Payload<'_>) -> Result<RequestBody, String> {
+    Ok(match payload {
+        Payload::Empty => Empty::new().map_err(|e| match e {}).boxed_unsync(),
+        Payload::Bytes(bytes) => Full::new(Bytes::copy_from_slice(bytes))
+            .map_err(|e| match e {})
+            .boxed_unsync(),
+        Payload::File(path, size) => {
+            let file = tokio::fs::File::open(path)
+                .await
+                .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+            FileBody { file, left: size }.boxed_unsync()
+        }
+    })
+}
 
 /// A client that trusts the system's CAs and `ca`, a PEM bundle.
 pub(crate) fn client(ca: Option<&str>) -> Result<HttpClient, String> {
@@ -204,6 +295,8 @@ pub(crate) struct Repository {
     name: String,
     basic: Option<String>,
     bearer: Option<String>,
+    /// The token scope to ask for on a challenge.
+    actions: &'static str,
 }
 
 impl std::fmt::Debug for Repository {
@@ -239,20 +332,33 @@ impl Repository {
             name: name.to_owned(),
             basic,
             bearer,
+            actions: "pull",
         })
+    }
+
+    /// Asks for push access too when the registry challenges.
+    pub(crate) const fn for_push(mut self) -> Self {
+        self.actions = "pull,push";
+        self
     }
 
     async fn send(
         &self,
         url: &str,
-        accept: Option<&str>,
+        call: &Call<'_>,
         authorization: Option<&str>,
     ) -> Result<Response<Incoming>, String> {
         let mut retries = 0;
         loop {
-            let mut request = Request::get(url).header(header::USER_AGENT, USER_AGENT);
-            if let Some(accept) = accept {
+            let mut request = Request::builder()
+                .method(call.method.clone())
+                .uri(url)
+                .header(header::USER_AGENT, USER_AGENT);
+            if let Some(accept) = call.accept {
                 request = request.header(header::ACCEPT, accept);
+            }
+            if let Some(content_type) = call.content_type {
+                request = request.header(header::CONTENT_TYPE, content_type);
             }
             if let Some(value) = authorization {
                 let mut value =
@@ -261,7 +367,7 @@ impl Repository {
                 request = request.header(header::AUTHORIZATION, value);
             }
             let request = request
-                .body(Empty::new())
+                .body(request_body(call.payload).await?)
                 .map_err(|e| format!("{url}: {e}"))?;
             match self.client.request(request).await {
                 Err(e) if e.is_connect() && retries < CONNECT_RETRIES => {
@@ -273,6 +379,10 @@ impl Repository {
         }
     }
 
+    fn url(&self, path: &str) -> String {
+        format!("{}://{}/v2/{}/{path}", self.scheme, self.host, self.name)
+    }
+
     /// GETs `/v2/<name>/<path>`, with a pull token if the registry asks for one, following
     /// redirects.
     async fn get(
@@ -280,7 +390,17 @@ impl Repository {
         path: &str,
         accept: Option<&str>,
     ) -> Result<Response<Incoming>, String> {
-        let first = format!("{}://{}/v2/{}/{path}", self.scheme, self.host, self.name);
+        let call = Call {
+            accept,
+            ..Call::new(Method::GET)
+        };
+        self.call(self.url(path), &call).await
+    }
+
+    /// Sends `call` to `first`. A configured bearer token goes up front, without waiting for a
+    /// challenge. Only a GET or HEAD follows redirects, and credentials stay on this host.
+    async fn call(&mut self, first: String, call: &Call<'_>) -> Result<Response<Incoming>, String> {
+        let follows = matches!(call.method, Method::GET | Method::HEAD);
         let mut url = first.clone();
         let mut same_host = true;
         for _ in 0..=MAX_REDIRECTS {
@@ -289,7 +409,7 @@ impl Repository {
             } else {
                 None
             };
-            let response = self.send(&url, accept, authorization).await?;
+            let response = self.send(&url, call, authorization).await?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED && same_host && self.bearer.is_none() {
                 let challenge = response
@@ -302,7 +422,7 @@ impl Repository {
                     continue;
                 }
             }
-            if status.is_redirection() {
+            if follows && status.is_redirection() {
                 let location = response
                     .headers()
                     .get(header::LOCATION)
@@ -324,7 +444,8 @@ impl Repository {
                 url = next;
                 continue;
             }
-            if !status.is_success() {
+            let missing = call.missing_ok && status == StatusCode::NOT_FOUND;
+            if !status.is_success() && !missing {
                 return Err(format!("{first} answered {status}"));
             }
             return Ok(response);
@@ -346,9 +467,11 @@ impl Repository {
             } else {
                 '?'
             },
-            encode(&format!("repository:{}:pull", self.name))
+            encode(&format!("repository:{}:{}", self.name, self.actions))
         );
-        let response = self.send(&url, None, self.basic.as_deref()).await?;
+        let response = self
+            .send(&url, &Call::new(Method::GET), self.basic.as_deref())
+            .await?;
         if !response.status().is_success() {
             return Err(format!(
                 "{} answered {}",
@@ -364,6 +487,111 @@ impl Repository {
             .or(token.access_token)
             .map(|t| format!("Bearer {t}"))
             .ok_or_else(|| format!("{} gave no token", challenge.realm))
+    }
+
+    /// The manifest at `reference` (a digest or a tag): its media type from the answer, and its
+    /// bytes.
+    pub(crate) async fn manifest(
+        &mut self,
+        reference: &str,
+    ) -> Result<(Option<String>, Bytes), String> {
+        let response = self
+            .get(&format!("manifests/{reference}"), Some(MANIFEST_ACCEPT))
+            .await?;
+        let media_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(';').next())
+            .map(|v| v.trim().to_owned());
+        let body = read_limited(response, MAX_MANIFEST_BYTES).await?;
+        Ok((media_type, body))
+    }
+
+    /// The `Docker-Content-Digest` of the manifest at `reference`.
+    pub(crate) async fn manifest_digest(&mut self, reference: &str) -> Result<String, String> {
+        let url = self.url(&format!("manifests/{reference}"));
+        let call = Call {
+            accept: Some(MANIFEST_ACCEPT),
+            ..Call::new(Method::HEAD)
+        };
+        let response = self.call(url, &call).await?;
+        response
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{reference} has no Docker-Content-Digest"))
+    }
+
+    /// Pushes `body` as the manifest at `reference`, byte for byte.
+    pub(crate) async fn put_manifest(
+        &mut self,
+        reference: &str,
+        media_type: &str,
+        body: &[u8],
+    ) -> Result<(), String> {
+        let url = self.url(&format!("manifests/{reference}"));
+        let call = Call {
+            content_type: Some(media_type),
+            payload: Payload::Bytes(body),
+            ..Call::new(Method::PUT)
+        };
+        drop(self.call(url, &call).await?);
+        Ok(())
+    }
+
+    /// Whether the repository has the blob.
+    pub(crate) async fn has_blob(&mut self, digest: &str) -> Result<bool, String> {
+        let url = self.url(&format!("blobs/{digest}"));
+        let call = Call {
+            missing_ok: true,
+            ..Call::new(Method::HEAD)
+        };
+        Ok(self.call(url, &call).await?.status().is_success())
+    }
+
+    /// Uploads the first `size` bytes of `file` as the blob `digest`, in one request.
+    pub(crate) async fn upload(
+        &mut self,
+        digest: &str,
+        file: &Path,
+        size: u64,
+    ) -> Result<(), String> {
+        let start = self.url("blobs/uploads/");
+        let response = self.call(start, &Call::new(Method::POST)).await?;
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or("the upload has no Location")?;
+        let location = if location.starts_with('/') {
+            format!("{}://{}{location}", self.scheme, self.host)
+        } else {
+            location.to_owned()
+        };
+        let authority = location
+            .parse::<http::Uri>()
+            .map_err(|e| format!("upload to {location}: {e}"))?
+            .authority()
+            .map(http::uri::Authority::to_string);
+        if authority.as_deref() != Some(self.host.as_str()) {
+            return Err(format!("the upload moves to {location}, another host"));
+        }
+        let separator = if location.contains('?') { '&' } else { '?' };
+        let call = Call {
+            content_type: Some("application/octet-stream"),
+            payload: Payload::File(file, size),
+            ..Call::new(Method::PUT)
+        };
+        drop(
+            self.call(
+                format!("{location}{separator}digest={}", encode(digest)),
+                &call,
+            )
+            .await?,
+        );
+        Ok(())
     }
 
     /// The archive's layer, from the manifest with `digest`.

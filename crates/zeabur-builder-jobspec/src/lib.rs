@@ -203,17 +203,7 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
         restart_policy: Some("Never".to_owned()),
         automount_service_account_token: Some(false),
         enable_service_links: Some(false),
-        security_context: Some(PodSecurityContext {
-            run_as_non_root: Some(true),
-            run_as_user: Some(RUN_AS),
-            run_as_group: Some(RUN_AS),
-            fs_group: Some(RUN_AS),
-            seccomp_profile: Some(SeccompProfile {
-                type_: "RuntimeDefault".to_owned(),
-                ..SeccompProfile::default()
-            }),
-            ..PodSecurityContext::default()
-        }),
+        security_context: Some(pod_security_context()),
         init_containers: Some(init_containers),
         containers: vec![build_container(inputs, repo.as_ref())?],
         volumes: Some(volumes(inputs)),
@@ -252,6 +242,123 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
         }),
         status: None,
     })
+}
+
+fn pod_security_context() -> PodSecurityContext {
+    PodSecurityContext {
+        run_as_non_root: Some(true),
+        run_as_user: Some(RUN_AS),
+        run_as_group: Some(RUN_AS),
+        fs_group: Some(RUN_AS),
+        seccomp_profile: Some(SeccompProfile {
+            type_: "RuntimeDefault".to_owned(),
+            ..SeccompProfile::default()
+        }),
+        ..PodSecurityContext::default()
+    }
+}
+
+/// What the controller resolved for one import.
+#[derive(Debug, Clone, Copy)]
+pub struct ImportInputs<'a> {
+    /// The Job's name.
+    pub name: &'a str,
+    /// Its namespace.
+    pub namespace: &'a str,
+    /// The object that owns the Job, usually the `BuildRun`.
+    pub owner: Option<&'a OwnerReference>,
+    /// The job image.
+    pub job_image: &'a str,
+    /// The source, `<host>/<repository>@sha256:<digest>`.
+    pub from: &'a str,
+    /// The destination repository, `<host>/<repository>`, without a tag.
+    pub to: &'a str,
+    /// The tags to push last.
+    pub tags: &'a [String],
+    /// The `kubernetes.io/dockerconfigjson` Secret with the credentials of both registries.
+    pub registry_auth_secret: &'a str,
+    /// The CA of a registry that a public CA did not sign, PEM.
+    pub registry_ca: Option<&'a str>,
+    /// Whether the registries speak plain HTTP. Only for a test cluster.
+    pub registry_http: bool,
+    /// `activeDeadlineSeconds`.
+    pub deadline_seconds: i64,
+    /// `ttlSecondsAfterFinished`.
+    pub ttl_seconds: i32,
+}
+
+/// Builds the Job that runs `zeabur-builder-job copy`.
+///
+/// It has the build Job's hardening and no Service Account token, an empty directory that holds one
+/// blob at a time, and the registry credentials.
+#[must_use]
+pub fn import_job(inputs: &ImportInputs<'_>) -> Job {
+    let mut command = vec!["zeabur-builder-job".to_owned(), "copy".to_owned()];
+    if inputs.registry_http {
+        command.push("--plain-http".to_owned());
+    }
+    command.extend([
+        "--work-dir".to_owned(),
+        format!("{WORKSPACE}/copy"),
+        "--from".to_owned(),
+        literal(inputs.from),
+        "--to".to_owned(),
+        literal(inputs.to),
+    ]);
+    for tag in inputs.tags {
+        command.extend(["--tag".to_owned(), literal(tag)]);
+    }
+    let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
+    if let Some(ca) = inputs.registry_ca {
+        env_vars.push(env(REGISTRY_CA_ENV, &literal(ca)));
+    }
+    let mut mounts = workspace_mounts();
+    mounts.push(mount("registry-auth", REGISTRY_AUTH));
+    let container = Container {
+        name: "copy".to_owned(),
+        image: Some(inputs.job_image.to_owned()),
+        command: Some(command),
+        env: Some(env_vars),
+        volume_mounts: Some(mounts),
+        termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
+        ..hardened()
+    };
+    let labels = BTreeMap::from([(labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned())]);
+    Job {
+        metadata: ObjectMeta {
+            name: Some(inputs.name.to_owned()),
+            namespace: Some(inputs.namespace.to_owned()),
+            labels: Some(labels.clone()),
+            owner_references: inputs.owner.map(|owner| vec![owner.clone()]),
+            ..ObjectMeta::default()
+        },
+        spec: Some(JobSpec {
+            backoff_limit: Some(0),
+            active_deadline_seconds: Some(inputs.deadline_seconds),
+            ttl_seconds_after_finished: Some(inputs.ttl_seconds),
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(labels),
+                    ..ObjectMeta::default()
+                }),
+                spec: Some(PodSpec {
+                    restart_policy: Some("Never".to_owned()),
+                    automount_service_account_token: Some(false),
+                    enable_service_links: Some(false),
+                    security_context: Some(pod_security_context()),
+                    containers: vec![container],
+                    volumes: Some(vec![
+                        empty_dir("workspace"),
+                        empty_dir("tmp"),
+                        registry_auth_volume(inputs.registry_auth_secret),
+                    ]),
+                    ..PodSpec::default()
+                }),
+            },
+            ..JobSpec::default()
+        }),
+        status: None,
+    }
 }
 
 /// Fetches exactly one commit; `$1` is the URL and `$2` the SHA, both checked before the Job is
@@ -647,16 +754,21 @@ fn volumes(inputs: &JobInputs<'_>) -> Vec<Volume> {
         inputs.buildkit_tls_secret,
         None,
     ));
-    volumes.push(secret_volume(
+    volumes.push(registry_auth_volume(inputs.registry_auth_secret));
+    volumes
+}
+
+/// A `kubernetes.io/dockerconfigjson` Secret as `config.json`.
+fn registry_auth_volume(secret: &str) -> Volume {
+    secret_volume(
         "registry-auth",
-        inputs.registry_auth_secret,
+        secret,
         Some(vec![KeyToPath {
             key: ".dockerconfigjson".to_owned(),
             path: "config.json".to_owned(),
             mode: None,
         }]),
-    ));
-    volumes
+    )
 }
 
 fn workspace_mounts() -> Vec<VolumeMount> {
