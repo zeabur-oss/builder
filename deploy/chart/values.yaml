@@ -41,6 +41,13 @@ admissionPolicy:
   # registry's namespaces.
   extraDeniedNamespaces: []
 
+# Accept builds from remote installations (`zeabur-builder remote-pair`). Their Builds and
+# BuildRuns pass an admission policy: suspended, public https Git, a full commit, no Secrets.
+runner:
+  enabled: false
+  # The ClusterBuilders a remote Build may use.
+  builders: [railpack, dockerfile]
+
 registry:
   # Where images go when a Build names no image, such as zot.zot.svc:5000. Required.
   host: ""

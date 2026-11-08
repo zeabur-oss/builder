@@ -1,0 +1,69 @@
+{{- if .Values.runner.enabled }}
+{{- $group := "zeabur-builder:remote" }}
+# Remote installations create Builds and BuildRuns in their zbr-<installation> namespace. A remote
+# Build is a suspended public https Git source with nothing that reads a Secret or sends anywhere;
+# its runs are created by the installation, at a full commit.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Release.Name }}-zeabur-builder-remote
+  labels: {{- include "builder.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [builder.zeabur.com]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [builds, buildruns]
+  matchConditions:
+    - name: remote
+      expression: "'{{ $group }}' in request.userInfo.groups"
+  variables:
+    - name: build
+      expression: request.kind.kind == 'Build'
+    - name: git
+      expression: >-
+        variables.build && has(object.spec.source.git) ? object.spec.source.git.url : ''
+    - name: host
+      expression: >-
+        variables.git.startsWith('https://') ? url(variables.git).getHostname().lowerAscii() : ''
+  validations:
+    - expression: >-
+        request.userInfo.username.startsWith('remote:') &&
+        request.namespace == 'zbr-' + request.userInfo.username.substring(7)
+      message: a remote installation builds only in its own namespace
+    - expression: >-
+        !variables.build || (object.spec.suspend == true &&
+        object.spec.builderRef in {{ include "builder.celList" .Values.runner.builders }})
+      message: a remote Build is suspended and uses an allowed ClusterBuilder
+    - expression: >-
+        !variables.build || (has(object.spec.source.git) && !has(object.spec.source.archive) &&
+        !has(object.spec.source.credentialsRef) && !has(object.spec.source.githubApp))
+      message: a remote Build has a public Git source
+    - expression: >-
+        !variables.build || (variables.host != '' && !isIP(variables.host) &&
+        variables.host.contains('.') && variables.host != 'localhost' &&
+        !['.localhost', '.local', '.internal', '.svc', '.cluster.local'].exists(s, variables.host.endsWith(s)) &&
+        !variables.git.contains('@'))
+      message: a remote Build fetches from a public https host
+    - expression: >-
+        !variables.build || ((!has(object.spec.output) ||
+        (!has(object.spec.output.image) && !has(object.spec.output.pushSecretRef))) &&
+        (!has(object.spec.notify) || size(object.spec.notify) == 0) &&
+        (!has(object.spec.env) || object.spec.env.all(e, !has(e.valueFrom))) &&
+        (!has(object.spec.triggers) || !has(object.spec.triggers.webhook)))
+      message: a remote Build pushes to the runner's registry and reads no Secret
+    - expression: >-
+        variables.build || object.spec.revision.matches('^[0-9a-f]{40}$|^[0-9a-f]{64}$')
+      message: a remote BuildRun names a full commit
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Release.Name }}-zeabur-builder-remote
+  labels: {{- include "builder.labels" . | nindent 4 }}
+spec:
+  policyName: {{ .Release.Name }}-zeabur-builder-remote
+  validationActions: [Deny]
+{{- end }}

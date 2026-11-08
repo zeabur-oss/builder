@@ -84,4 +84,16 @@ for missing in "registry.tokenKey.namespace=" "registry.tokenKey.secret="; do
     exit 1
   fi
 done
+if grep -q 'zeabur-builder-remote' <<<"$off"; then
+  echo "the remote admission policy is installed although runner.enabled is false" >&2
+  exit 1
+fi
+runner=$(helm template builder "$chart" "${base[@]}" --set runner.enabled=true)
+for want in 'name: builder-zeabur-builder-remote$' "object.spec.builderRef in \\['railpack', 'dockerfile'\\]"; do
+  if ! grep -qE -- "$want" <<<"$runner"; then
+    echo "the runner chart lacks $want" >&2
+    exit 1
+  fi
+done
+
 echo "chart ok"
