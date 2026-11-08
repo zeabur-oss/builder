@@ -9,6 +9,7 @@ mod github_app;
 mod leader;
 mod notify;
 mod output;
+mod pair;
 mod record;
 mod registry;
 mod remote;
@@ -46,6 +47,9 @@ enum Command {
     /// the controller's Pod:
     /// `kubectl exec deploy/zeabur-builder -- /zeabur-builder registry-token`.
     RegistryToken(RegistryTokenArgs),
+    /// Pair a requesting installation with this runner cluster: write its pinned keys and its
+    /// `AuthenticationConfiguration` entry under `--out`, and print its namespace and RBAC.
+    RemotePair(pair::PairArgs),
 }
 
 #[derive(Debug, Args)]
@@ -295,6 +299,7 @@ fn main() -> ExitCode {
             })
             .and_then(|runtime| runtime.block_on(registry_token(args)))
             .map(Some),
+        Command::RemotePair(args) => pair::run(&args).map(Some),
     };
     match result {
         Ok(Some(text)) => output::stdout_line(&text),

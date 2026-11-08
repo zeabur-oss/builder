@@ -50,6 +50,28 @@ pub mod labels {
     pub const MANAGED_BY: &str = "app.kubernetes.io/managed-by";
     /// The value of [`MANAGED_BY`].
     pub const MANAGER: &str = "zeabur-builder";
+    /// On a runner cluster's Namespace: the remote installation whose builds it holds.
+    pub const REMOTE_INSTALLATION: &str = "builder.zeabur.com/remote-installation";
+}
+
+/// Names shared by a runner cluster and the installations that build on it.
+pub mod remote {
+    /// The audience of the controller's token for a runner cluster.
+    pub const AUDIENCE: &str = "zeabur-builder-runner";
+    /// The group every remote installation's controller authenticates with.
+    pub const GROUP: &str = "zeabur-builder:remote";
+
+    /// The user an installation's controller authenticates as.
+    #[must_use]
+    pub fn user(installation: &str) -> String {
+        format!("remote:{installation}")
+    }
+
+    /// The runner namespace of an installation's builds.
+    #[must_use]
+    pub fn namespace(installation: &str) -> String {
+        format!("zbr-{installation}")
+    }
 }
 
 /// Annotations people write to act on a `Build`, and that the controller writes for them.
