@@ -1,7 +1,6 @@
 ---
 title: 发行文件与验证
 description: 了解发行流程会生成的镜像、chart 和 Sigstore 签名，并用 cosign verify 和 gh attestation verify 验证。
-source: "3607de86defc"
 ---
 
 [GitHub](https://github.com/zeabur-oss/builder/releases) 上的每个发行版都由发行流程构建、签名并证明构建来源。发行文件包括打包好的 chart、`digests.txt`，以及 `SHA256SUMS` 和它的 Sigstore bundle。安装镜像前，你可以用 `cosign verify` 验证签名。
