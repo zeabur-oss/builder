@@ -418,14 +418,24 @@ pub(crate) struct Limits {
     pub(crate) concurrent: u32,
     /// The resources of one build.
     pub(crate) resources: Resources,
+    /// What the cluster's ceiling took away, for the person who asked for more.
+    pub(crate) clamped: Vec<String>,
+}
+
+/// The most one build may ask for, cluster-wide; unset means no ceiling.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Ceiling {
+    pub(crate) cpu: Option<String>,
+    pub(crate) memory: Option<String>,
 }
 
 /// A namespace's [`Limits`]: the controller's, with each value its annotations set to a valid one
-/// replaced.
+/// replaced, and CPU and memory held to the `ceiling`.
 pub(crate) fn limits(
     annotations: &BTreeMap<String, String>,
     concurrent: u32,
     resources: &Resources,
+    ceiling: &Ceiling,
 ) -> Limits {
     let quantity = |key: &str, default: &Option<String>| {
         annotations
@@ -435,6 +445,29 @@ pub(crate) fn limits(
             .map(str::to_owned)
             .or_else(|| default.clone())
     };
+    let mut clamped = Vec::new();
+    let mut clamp = |what: &str, value: Option<String>, ceiling: &Option<String>| {
+        let (Some(value), Some(max)) = (&value, ceiling) else {
+            return value;
+        };
+        if zeabur_builder_jobspec::buildkitd::exceeds(value, max) {
+            clamped.push(format!(
+                "This build asked for {value} {what}; the cluster allows at most {max} per build, so it gets {max}."
+            ));
+            return Some(max.clone());
+        }
+        Some(value.clone())
+    };
+    let cpu_limit = clamp(
+        "CPU",
+        quantity(annotations::BUILD_CPU, &resources.cpu_limit),
+        &ceiling.cpu,
+    );
+    let memory_limit = clamp(
+        "memory",
+        quantity(annotations::BUILD_MEMORY, &resources.memory_limit),
+        &ceiling.memory,
+    );
     Limits {
         concurrent: concurrency_limit(
             annotations
@@ -443,10 +476,11 @@ pub(crate) fn limits(
             concurrent,
         ),
         resources: Resources {
-            cpu_limit: quantity(annotations::BUILD_CPU, &resources.cpu_limit),
-            memory_limit: quantity(annotations::BUILD_MEMORY, &resources.memory_limit),
+            cpu_limit,
+            memory_limit,
             ..resources.clone()
         },
+        clamped,
     }
 }
 

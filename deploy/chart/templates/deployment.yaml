@@ -30,6 +30,14 @@ spec:
             - --buildkitd-memory-request={{ .Values.buildkitd.resources.requests.memory }}
             - --buildkitd-cpu-limit={{ .Values.buildkitd.resources.limits.cpu }}
             - --buildkitd-memory-limit={{ .Values.buildkitd.resources.limits.memory }}
+            {{- with .Values.buildkitd.resources.max }}
+            {{- with .cpu }}
+            - --buildkitd-cpu-max={{ . }}
+            {{- end }}
+            {{- with .memory }}
+            - --buildkitd-memory-max={{ . }}
+            {{- end }}
+            {{- end }}
             - --max-concurrent-builds={{ .Values.maxConcurrentBuilds.namespace | int }}
             - --max-cluster-builds={{ .Values.maxConcurrentBuilds.cluster | int }}
             {{- if .Values.webhooks.enabled }}
