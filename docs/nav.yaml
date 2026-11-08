@@ -7,7 +7,7 @@
   pages: [triggers, private-repos, archive-source, rollout, external-registries]
 - group: operations
   label: Operate
-  pages: [registry-tokens, controller-permissions, releases]
+  pages: [registry-tokens, remote-builds, controller-permissions, releases]
 - group: reference
   label: Reference
   pages: [how-it-works, security]

@@ -1,0 +1,113 @@
+---
+title: Build on another cluster
+description: Let an installation hand its builds to another cluster, a runner, and copy the images back into its own registry. Set up the runner's trust, permissions and retention.
+---
+
+An installation can build on another cluster instead of running buildkitd itself. That cluster is the runner.
+
+- The installation's controller signs in to the runner's API server with a service account token and creates a Build and a BuildRun in the Namespace `zbr-<installation>`.
+- When the runner's build succeeds, the controller asks it for a pull token that lasts 15 minutes, and a Job copies the image by digest into the installation's registry.
+- After the copy, the installation deletes the BuildRun on the runner. The runner deletes Builds that are no longer used, with their images, after `runner.retention`.
+
+The two sides talk only through the Kubernetes API and the registry. There is no other protocol.
+
+## Limits
+
+A Build that builds on a runner must meet these conditions, or its BuildRun fails at once:
+
+- The source is a public HTTPS Git repository, without `credentialsRef` or `githubApp`.
+- Environment variables have values only. `valueFrom` can't read Secrets.
+- The image goes to the default registry. `spec.output.image` isn't set.
+- `builderRef` is in the runner's `runner.builders` list.
+
+The runner checks these again with a ValidatingAdmissionPolicy, so a stolen installation controller can still create only such Builds.
+
+## Set up the runner
+
+### Before you begin
+
+- The runner's API server reads an `AuthenticationConfiguration` with `--authentication-config`.
+- The runner's registry requires a token to pull. Anonymous reads aren't allowed.
+- Each installation's API server has its own `--service-account-issuer`. The default `https://kubernetes.default.svc.cluster.local` can't tell installations apart, and `remote-pair` refuses it.
+
+<Steps>
+
+<Step>
+
+### Turn on runner mode
+
+```sh
+helm upgrade --install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  --reuse-values --set runner.enabled=true --set runner.retention=86400
+```
+
+`runner.retention` is in seconds and defaults to `86400` (24 hours). The installation no longer needs the runner's image after copying it, so this value only bounds what an installation leaves behind.
+
+</Step>
+
+<Step>
+
+### Get the installation's keys
+
+On the installation's cluster, run:
+
+```sh
+kubectl get --raw /.well-known/openid-configuration > discovery.json
+kubectl get --raw /openid/v1/jwks > jwks.json
+```
+
+</Step>
+
+<Step>
+
+### Generate the authentication config and permissions
+
+On the runner side, run `remote-pair` with the `zeabur-builder` binary from the [releases](./releases.mdx). `--pins-url` is the HTTPS URL that serves the key copies, and `--ca` is its CA:
+
+```sh
+zeabur-builder remote-pair --installation inst-a \
+  --discovery discovery.json --jwks jwks.json \
+  --pins-url https://pins.runner.example --ca pins-ca.pem \
+  --out pins > inst-a-rbac.yaml
+```
+
+It writes:
+
+- `pins/inst-a/.well-known/openid-configuration` and `pins/inst-a/jwks.json`: serve `pins/` under `--pins-url`.
+- `pins/inst-a/authenticator.json`: one `jwt` entry that accepts only the installation controller's token and maps it to the user `remote:inst-a`.
+- `inst-a-rbac.yaml`: the Namespace `zbr-inst-a`, and a Role that lets `remote:inst-a` manage Builds and BuildRuns in it.
+
+If the runner's API server can reach the installation's API server, use `--direct https://api.inst-a.example:6443` instead, with the installation API server's CA as `--ca`. Then there are no key copies to serve, and you don't rerun `remote-pair` when the installation rotates its keys. The installation's API server must let unauthenticated requests read both documents.
+
+</Step>
+
+<Step>
+
+### Apply the config
+
+Add the contents of `authenticator.json` to the `jwt` list of the runner API server's `AuthenticationConfiguration`. The API server reloads it in about 15 seconds. If the config is invalid, it keeps using the last valid one.
+
+```sh
+kubectl apply -f inst-a-rbac.yaml
+```
+
+</Step>
+
+</Steps>
+
+After the installation rotates its service account keys, repeat the two steps before this one and update the key copies.
+
+## Set up the installation
+
+```sh
+helm upgrade --install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  --reuse-values \
+  --set remote.server=https://runner.example:6443 \
+  --set-file remote.ca=runner-ca.pem \
+  --set remote.installation=inst-a \
+  --set remote.registry=registry.runner.example
+```
+
+The chart mounts a token for the audience `zeabur-builder-runner` that lasts 10 minutes, and the controller reads the new one whenever it's refreshed. With `remote.server` set, every BuildRun of the installation builds on the runner.
+
+A BuildRun's `phase` follows the BuildRun on the runner, and its `message` starts with the runner's URL. During the copy it reads `importing <source image>`. See the copy's logs with `kubectl logs job/<buildrun>`.

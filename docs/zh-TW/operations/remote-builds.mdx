@@ -1,0 +1,114 @@
+---
+title: 在另一個叢集建置
+description: 讓安裝把建置交給另一個叢集（runner）執行，再把映像檔複製回自己的 registry，並設定 runner 的信任、權限與保留時間。
+source: "506cbd1988ff"
+---
+
+一套安裝可以不在自己的叢集跑 buildkitd，而是把建置交給另一個叢集。這個叢集叫做 runner。
+
+- 安裝的控制器用 ServiceAccount 權杖登入 runner 的 API server，在 `zbr-<安裝 ID>` Namespace 建立 Build 和 BuildRun。
+- runner 建置完成後，安裝的控制器向它要一把 15 分鐘的拉取權杖，再用一個 Job 依 digest 把映像檔複製到自己的 registry。
+- 複製完成後，安裝會刪掉 runner 上的 BuildRun。runner 會在 `runner.retention` 之後刪掉沒再用到的 Build 和映像檔。
+
+兩邊之間只有 Kubernetes API 和 registry，沒有其他協定。
+
+## 限制
+
+在 runner 上建置的 Build 必須符合以下條件，否則 BuildRun 會直接失敗：
+
+- 來源是公開的 HTTPS Git 儲存庫，不帶 `credentialsRef` 或 `githubApp`。
+- 環境變數只能寫值，不能用 `valueFrom` 讀 Secret。
+- 推送到預設 registry，不設定 `spec.output.image`。
+- `builderRef` 在 runner 的 `runner.builders` 清單裡。
+
+runner 也會用 ValidatingAdmissionPolicy 再檢查一次，所以就算安裝的控制器被盜用，也只能建立符合這些條件的 Build。
+
+## 設定 runner
+
+### 開始之前
+
+- runner 叢集的 API server 用 `--authentication-config` 讀取 `AuthenticationConfiguration`。
+- runner 的 registry 必須要求權杖才能拉取，不允許匿名讀取。
+- 每套安裝的 API server 要有自己的 `--service-account-issuer`。預設的 `https://kubernetes.default.svc.cluster.local` 無法用來分辨不同安裝，`remote-pair` 會拒絕它。
+
+<Steps>
+
+<Step>
+
+### 啟用 runner 模式
+
+```sh
+helm upgrade --install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  --reuse-values --set runner.enabled=true --set runner.retention=86400
+```
+
+`runner.retention` 以秒為單位，預設 `86400`（24 小時）。安裝在複製完映像檔後就不需要 runner 上的映像檔，所以這個值只是安裝沒清掉時的上限。
+
+</Step>
+
+<Step>
+
+### 取得安裝的金鑰
+
+在安裝的叢集執行：
+
+```sh
+kubectl get --raw /.well-known/openid-configuration > discovery.json
+kubectl get --raw /openid/v1/jwks > jwks.json
+```
+
+</Step>
+
+<Step>
+
+### 產生驗證設定與權限
+
+在 runner 這邊用[發行檔](./releases.mdx)中的 `zeabur-builder` 執行 `remote-pair`。`--pins-url` 是放置金鑰副本的 HTTPS 網址，`--ca` 是這個網址的 CA：
+
+```sh
+zeabur-builder remote-pair --installation inst-a \
+  --discovery discovery.json --jwks jwks.json \
+  --pins-url https://pins.runner.example --ca pins-ca.pem \
+  --out pins > inst-a-rbac.yaml
+```
+
+它會產生：
+
+- `pins/inst-a/.well-known/openid-configuration` 和 `pins/inst-a/jwks.json`：把 `pins/` 放到 `--pins-url` 底下。
+- `pins/inst-a/authenticator.json`：一筆 `jwt` 驗證設定，只接受安裝控制器的權杖，並把它對應成使用者 `remote:inst-a`。
+- `inst-a-rbac.yaml`：Namespace `zbr-inst-a`，以及讓 `remote:inst-a` 管理這個 Namespace 中 Build 和 BuildRun 的 Role。
+
+如果 runner 的 API server 能直接連到安裝的 API server，可以改用 `--direct https://api.inst-a.example:6443`，`--ca` 換成安裝 API server 的 CA。這樣就不需要放置金鑰副本，安裝輪替金鑰時也不必重新執行 `remote-pair`。安裝的 API server 必須允許未登入的請求讀取這兩份文件。
+
+</Step>
+
+<Step>
+
+### 套用設定
+
+把 `authenticator.json` 的內容加進 runner API server 的 `AuthenticationConfiguration` 的 `jwt` 清單。API server 大約 15 秒內會重新載入。設定有誤時，它會繼續使用上一份有效的設定。
+
+```sh
+kubectl apply -f inst-a-rbac.yaml
+```
+
+</Step>
+
+</Steps>
+
+安裝輪替 ServiceAccount 金鑰後，重新執行前兩步並更新金鑰副本。
+
+## 設定安裝
+
+```sh
+helm upgrade --install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  --reuse-values \
+  --set remote.server=https://runner.example:6443 \
+  --set-file remote.ca=runner-ca.pem \
+  --set remote.installation=inst-a \
+  --set remote.registry=registry.runner.example
+```
+
+chart 會掛載一把對象為 `zeabur-builder-runner`、10 分鐘有效的權杖，控制器會在權杖更新時自動讀取新的。設定 `remote.server` 後，這套安裝的所有 BuildRun 都會在 runner 上建置。
+
+BuildRun 的 `phase` 跟著 runner 上的 BuildRun 變化，`message` 前面會加上 runner 的網址。複製映像檔時會顯示 `importing <來源映像檔>`，可以用 `kubectl logs job/<buildrun>` 查看複製的紀錄。

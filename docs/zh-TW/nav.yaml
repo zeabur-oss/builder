@@ -15,6 +15,7 @@
   label: 維運
   pages:
     registry-tokens: Registry 權杖與清理
+    remote-builds: 在另一個叢集建置
     controller-permissions: 控制器的權限
     releases: 發行檔與驗證
 - group: reference
