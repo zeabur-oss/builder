@@ -212,6 +212,22 @@ struct ControllerArgs {
     /// Deliveries at once above that average.
     #[arg(long, default_value_t = 50)]
     webhook_burst: u32,
+    /// Build on this runner cluster's API server instead of here, such as
+    /// `https://runner.example.com:6443`.
+    #[arg(long, requires_all = ["remote_installation", "remote_registry"])]
+    remote_server: Option<String>,
+    /// The runner API server's CA, PEM, unless a public CA signed it.
+    #[arg(long, env = "ZEABUR_BUILDER_REMOTE_CA")]
+    remote_ca: Option<String>,
+    /// The projected token for the runner, audience `zeabur-builder-runner`.
+    #[arg(long, default_value = "/var/run/secrets/zeabur-builder-runner/token")]
+    remote_token_file: std::path::PathBuf,
+    /// This installation's id on the runner.
+    #[arg(long)]
+    remote_installation: Option<String>,
+    /// The runner's registry host, such as `registry.runner.example.com`.
+    #[arg(long)]
+    remote_registry: Option<String>,
 }
 
 impl ControllerArgs {
@@ -255,6 +271,13 @@ impl ControllerArgs {
                 rate: self.webhook_rate,
                 burst: self.webhook_burst,
             }),
+            remote: self.remote_server.map(|server| controller::RemoteSettings {
+                server,
+                ca: self.remote_ca.filter(|ca| !ca.trim().is_empty()),
+                token_file: self.remote_token_file,
+                installation: self.remote_installation.unwrap_or_default(),
+                registry: self.remote_registry.unwrap_or_default(),
+            }),
         }
     }
 }
@@ -267,7 +290,7 @@ async fn run_controller(args: ControllerArgs) -> Result<(), String> {
     let client = kube::Client::try_default()
         .await
         .map_err(|e| format!("cannot reach Kubernetes: {e}"))?;
-    controller::run(client, args.settings()).await
+    Box::pin(controller::run(client, args.settings())).await
 }
 
 fn main() -> ExitCode {

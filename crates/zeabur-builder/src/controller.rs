@@ -32,6 +32,8 @@
 //! Only the holder of the Lease reconciles ([`crate::leader`]). The other replicas watch and
 //! receive webhooks.
 
+mod remote_build;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +53,7 @@ use kube::runtime::events::{Event, EventType, Recorder, Reporter};
 use kube::runtime::reflector::Store;
 use kube::runtime::watcher::{self, watcher};
 use kube::{Client, Resource as _, ResourceExt as _};
+pub(crate) use remote_build::Settings as RemoteSettings;
 use serde::Serialize;
 use thiserror::Error;
 use zeabur_builder_api::build::{
@@ -136,6 +139,8 @@ pub(crate) struct Settings {
     pub(crate) github_app_grants: String,
     /// The webhook receiver, when it runs.
     pub(crate) webhook: Option<webhook::Settings>,
+    /// The runner cluster that builds instead of this one.
+    pub(crate) remote: Option<remote_build::Settings>,
 }
 
 struct Context {
@@ -149,6 +154,13 @@ struct Context {
     github: Arc<GitHub>,
     /// Held from a run's admission until its slot is recorded.
     admitting: tokio::sync::Mutex<()>,
+    /// The runner cluster, in remote mode.
+    remote: Option<Remote>,
+}
+
+struct Remote {
+    client: Client,
+    settings: remote_build::Settings,
 }
 
 /// What the receiver reads: `Build`s from the reconciler's cache, Secrets from the API server.
@@ -274,9 +286,17 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
     ));
     let receiver_settings = settings.webhook.clone();
     let daemon_settings = Arc::clone(&settings.daemon);
+    let remote = match &settings.remote {
+        Some(remote) => Some(Remote {
+            client: remote_build::client(remote)?,
+            settings: remote.clone(),
+        }),
+        None => None,
+    };
     let context = Arc::new(Context {
         leader: leader.clone(),
         admitting: tokio::sync::Mutex::new(()),
+        remote,
         github: Arc::clone(&github),
         recorder: Recorder::new(
             client.clone(),
@@ -771,6 +791,7 @@ async fn cancel_run(ctx: &Context, build: &Build, name: &str) -> Result<(), Erro
         "replaced by a newer commit",
     )
     .await;
+    remote_build::cancel(ctx, &run).await?;
     Api::<Job>::namespaced(ctx.client.clone(), namespace)
         .delete(
             name,
@@ -792,6 +813,9 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
     if decide::is_finished(status.phase) {
         answer_pull_request(&ctx, &run, &status).await?;
         return Ok(Action::await_change());
+    }
+    if ctx.remote.is_some() {
+        return Box::pin(remote_build::reconcile(&ctx, &run, status)).await;
     }
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();

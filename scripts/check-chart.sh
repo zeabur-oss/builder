@@ -96,4 +96,20 @@ for want in 'name: builder-zeabur-builder-remote$' "object.spec.builderRef in \\
   fi
 done
 
+if grep -q -- '--remote-server\|runner-token' <<<"$plain"; then
+  echo "default install: the chart builds remotely although remote.server is empty" >&2
+  exit 1
+fi
+remote=$(helm template builder "$chart" "${base[@]}" --set remote.server=https://runner.example:6443 \
+  --set remote.installation=inst-a --set remote.registry=registry.runner.example --set remote.ca=CA)
+require "$remote" "remote builds" '--remote-server=https://runner.example:6443$' \
+  '--remote-installation=inst-a$' '--remote-registry=registry.runner.example$' \
+  'name: ZEABUR_BUILDER_REMOTE_CA$' 'audience: zeabur-builder-runner' \
+  'mountPath: /var/run/secrets/zeabur-builder-runner'
+if helm template builder "$chart" "${base[@]}" --set remote.server=https://runner.example:6443 \
+  >/dev/null 2>&1; then
+  echo "remote builds: the chart renders without remote.installation" >&2
+  exit 1
+fi
+
 echo "chart ok"

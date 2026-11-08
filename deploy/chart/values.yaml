@@ -51,6 +51,18 @@ runner:
   # deletes it after importing the image, so this only bounds what an installation leaves.
   retention: 86400
 
+# Build on a runner cluster instead of here: this installation's runs become Builds there, and
+# a Job copies each finished image into registry.host. See docs/operations/remote-builds.mdx.
+remote:
+  # The runner's API server, such as https://runner.example:6443. Empty builds here.
+  server: ""
+  # The runner API server's CA, PEM. Empty uses the system roots.
+  ca: ""
+  # This installation's id, as paired on the runner (`remote-pair --installation`).
+  installation: ""
+  # The runner's registry, such as registry.runner.example.
+  registry: ""
+
 registry:
   # Where images go when a Build names no image, such as zot.zot.svc:5000. Required.
   host: ""

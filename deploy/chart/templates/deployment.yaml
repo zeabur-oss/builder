@@ -35,6 +35,11 @@ spec:
             {{- if .Values.runner.enabled }}
             - --remote-retention={{ .Values.runner.retention | int }}
             {{- end }}
+            {{- with .Values.remote.server }}
+            - --remote-server={{ . }}
+            - --remote-installation={{ required "remote.installation is required" $.Values.remote.installation }}
+            - --remote-registry={{ required "remote.registry is required" $.Values.remote.registry }}
+            {{- end }}
             {{- if .Values.webhooks.enabled }}
             - --webhook-addr=0.0.0.0:{{ .Values.webhooks.port }}
             - --webhook-path={{ include "builder.webhookPath" . }}
@@ -63,6 +68,14 @@ spec:
             {{- if .Values.registry.http }}
             - {name: ZEABUR_BUILDER_REGISTRY_HTTP, value: "true"}
             {{- end }}
+            {{- if and .Values.remote.server .Values.remote.ca }}
+            - name: ZEABUR_BUILDER_REMOTE_CA
+              value: {{ .Values.remote.ca | quote }}
+            {{- end }}
+          {{- if .Values.remote.server }}
+          volumeMounts:
+            - {name: runner-token, mountPath: /var/run/secrets/zeabur-builder-runner, readOnly: true}
+          {{- end }}
             {{- if .Values.webhooks.enabled }}
           ports:
             - {name: webhooks, containerPort: {{ .Values.webhooks.port }}}
@@ -74,3 +87,10 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           resources: {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.remote.server }}
+      volumes:
+        - name: runner-token
+          projected:
+            sources:
+              - serviceAccountToken: {audience: zeabur-builder-runner, expirationSeconds: 600, path: token}
+      {{- end }}
