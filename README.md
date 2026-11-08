@@ -50,11 +50,7 @@ pipeline, rollout tool and log collector.
 - [Install](docs/get-started/install.mdx) and [your first Build](docs/get-started/first-build.mdx)
 - [Triggers](docs/builds/triggers.mdx), [private repositories](docs/builds/private-repos.mdx), [archive sources](docs/builds/archive-source.mdx), [rollout](docs/builds/rollout.mdx) and [external registries](docs/builds/external-registries.mdx)
 - [Registry tokens](docs/operations/registry-tokens.mdx), [controller permissions](docs/operations/controller-permissions.mdx) and [releases](docs/operations/releases.mdx)
-- [How it works](docs/reference/how-it-works.mdx), [status](docs/reference/status.mdx) and [security](docs/reference/security.mdx)
-
-## Status
-
-Zeabur Builder has no release yet. The API is `v1alpha1`. See [status](docs/reference/status.mdx) for what runs on `main`.
+- [How it works](docs/reference/how-it-works.mdx) and [security](docs/reference/security.mdx)
 
 ## Contributing
 

@@ -10,4 +10,4 @@
   pages: [registry-tokens, controller-permissions, releases]
 - group: reference
   label: Reference
-  pages: [how-it-works, status, security]
+  pages: [how-it-works, security]

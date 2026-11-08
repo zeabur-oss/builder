@@ -27,7 +27,7 @@ rules:
     resources: [namespaces]
     verbs: [get, list]
   # Credentials and webhook secrets Builds name, the Secrets copied into build namespaces, and
-  # upload tokens. Cluster-wide get is wider than needed (open issue in docs/reference/status.mdx).
+  # upload tokens. Cluster-wide get is wider than needed (docs/operations/controller-permissions.mdx).
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create, update, delete]
