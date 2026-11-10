@@ -53,7 +53,8 @@ use kube::{Client, Resource as _, ResourceExt as _};
 use serde::Serialize;
 use thiserror::Error;
 use zeabur_builder_api::build::{
-    Build, BuildStatus, MAX_UPLOAD_REQUEST, NotifyTarget, NotifyType, SourceMode, UploadToken,
+    Build, BuildStatus, ConditionReason, MAX_UPLOAD_REQUEST, NotifyTarget, NotifyType, SourceMode,
+    UploadToken,
 };
 use zeabur_builder_api::build_run::{
     BuildRun, BuildRunSpec, BuildRunStatus, Phase, Reason, Trigger,
@@ -373,15 +374,8 @@ async fn find_builder(
     let builder = Api::<ClusterBuilder>::all(ctx.client.clone())
         .get_opt(&build.spec.builder_ref)
         .await?;
-    let (ready, reason, message) = if builder.is_some() {
-        (ConditionStatus::True, "Found", String::new())
-    } else {
-        (
-            ConditionStatus::False,
-            "BuilderNotFound",
-            format!("no ClusterBuilder `{}`", build.spec.builder_ref),
-        )
-    };
+    let (ready, reason, message) =
+        decide::builder_ready(builder.is_some(), &build.spec.builder_ref);
     decide::set_condition(
         &mut status.conditions,
         "BuilderReady",
@@ -504,36 +498,8 @@ async fn resolve_source(
 ) -> Option<String> {
     let generation = build.metadata.generation;
     let Some(git) = &build.spec.source.git else {
-        let (ready, reason, message, digest) = build.spec.source.archive.as_ref().map_or_else(
-            || {
-                (
-                    ConditionStatus::False,
-                    "NoSource",
-                    "set git or archive".to_owned(),
-                    None,
-                )
-            },
-            |archive| {
-                archive.digest.as_ref().map_or_else(
-                    || {
-                        (
-                            ConditionStatus::False,
-                            "WaitingForUpload",
-                            "set archive.digest once the archive is pushed".to_owned(),
-                            None,
-                        )
-                    },
-                    |digest| {
-                        (
-                            ConditionStatus::True,
-                            "Archive",
-                            format!("archive {digest}"),
-                            Some(digest.clone()),
-                        )
-                    },
-                )
-            },
-        );
+        let (ready, reason, message, digest) =
+            decide::archive_source(build.spec.source.archive.as_ref());
         status.remote_revision.clone_from(&digest);
         status.resolved_ref = None;
         decide::set_condition(
@@ -568,7 +534,7 @@ async fn resolve_source(
         status
             .remote_revision
             .clone()
-            .ok_or(("ResolveFailed", String::new()))
+            .ok_or((ConditionReason::ResolveFailed, String::new()))
     };
     match &resolved {
         Ok(sha) => {
@@ -577,19 +543,19 @@ async fn resolve_source(
                 &mut status.conditions,
                 "SourceReady",
                 ConditionStatus::True,
-                "Resolved",
+                ConditionReason::Resolved,
                 &decide::resolved_message(&git.git_ref, status.resolved_ref.as_deref(), sha),
                 at,
                 generation,
             );
         }
         Err((reason, message)) => {
-            tracing::info!(build = %build.name_any(), reason, message, "ref not resolved");
+            tracing::info!(build = %build.name_any(), %reason, message, "ref not resolved");
             decide::set_condition(
                 &mut status.conditions,
                 "SourceReady",
                 ConditionStatus::False,
-                reason,
+                *reason,
                 message,
                 at,
                 generation,
@@ -621,10 +587,15 @@ async fn git_credentials(ctx: &Context, build: &Build) -> Result<Option<GitCrede
     let secret = Api::<Secret>::namespaced(ctx.client.clone(), &namespace)
         .get_opt(name)
         .await
-        .map_err(|e| ("CredentialsUnreadable", format!("Secret `{name}`: {e}")))?
+        .map_err(|e| {
+            (
+                ConditionReason::CredentialsUnreadable,
+                format!("Secret `{name}`: {e}"),
+            )
+        })?
         .ok_or_else(|| {
             (
-                "CredentialsMissing",
+                ConditionReason::CredentialsMissing,
                 format!("no Secret `{name}` in `{namespace}`"),
             )
         })?;
@@ -646,11 +617,15 @@ async fn git_credentials_for_job(
 /// the installation.
 async fn app_token(ctx: &Context, build: &Build, access: Access) -> Result<String, Refusal> {
     let (Some(app), Some(git)) = (&build.spec.source.github_app, &build.spec.source.git) else {
-        return Err(("CredentialsMissing", "no githubApp source".to_owned()));
+        return Err((
+            ConditionReason::CredentialsMissing,
+            "no githubApp source".to_owned(),
+        ));
     };
     let namespace = build.namespace().unwrap_or_default();
     ctx.github.allowed(app.installation_id, &namespace).await?;
-    let key = RepoKey::parse(&git.url).map_err(|e| ("UnsupportedURL", e.to_string()))?;
+    let key =
+        RepoKey::parse(&git.url).map_err(|e| (ConditionReason::UnsupportedURL, e.to_string()))?;
     ctx.github.token(app.installation_id, &key, access).await
 }
 
@@ -785,7 +760,9 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
         return Ok(Action::await_change());
     }
     let status = run.status.clone().unwrap_or_default();
-    if decide::is_finished(status.phase) {
+    // A newer controller wrote a phase this one cannot read. Writing a status back would replace it
+    // with `Unknown`.
+    if decide::is_finished(status.phase) || status.phase == Some(Phase::Unknown) {
         return Ok(Action::await_change());
     }
     let namespace = run.namespace().unwrap_or_default();
@@ -1275,7 +1252,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
 
     let credentials = match git_credentials_for_job(ctx, &build).await {
         Ok(credentials) => credentials,
-        Err(("CredentialsUnreadable", message)) => {
+        Err((ConditionReason::CredentialsUnreadable, message)) => {
             return pending(ctx, run, status, Reason::InfraError, message).await;
         }
         Err((_, message)) => return finish(ctx, run, source_failed(message)).await,
@@ -1307,7 +1284,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         // Minted only now, so a run waiting for a slot does not mint a token every retry.
         match app_token(ctx, &build, Access::Fetch).await {
             Ok(token) => ensure_git_secret(ctx, run, &git_secret, token).await?,
-            Err(("ResolveFailed", message)) => {
+            Err((ConditionReason::ResolveFailed, message)) => {
                 return pending(ctx, run, status, Reason::InfraError, message).await;
             }
             Err((_, message)) => return finish(ctx, run, source_failed(message)).await,

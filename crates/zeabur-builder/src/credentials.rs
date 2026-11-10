@@ -6,6 +6,7 @@
 use std::fmt;
 
 use k8s_openapi::api::core::v1::Secret;
+use zeabur_builder_api::build::ConditionReason;
 use zeabur_builder_api::labels;
 use zeabur_builder_jobspec::GitAuth;
 
@@ -37,7 +38,7 @@ impl fmt::Debug for GitCredentials {
 }
 
 /// Why a Secret gives no credentials: the `SourceReady` reason and message.
-pub(crate) type Refusal = (&'static str, String);
+pub(crate) type Refusal = (ConditionReason, String);
 
 impl GitCredentials {
     /// Reads `secret`, named `name`.
@@ -50,14 +51,14 @@ impl GitCredentials {
             .is_some_and(|v| v == "true");
         if !labelled {
             return Err((
-                "CredentialsMissing",
+                ConditionReason::CredentialsMissing,
                 format!(
                     "Secret `{name}` needs the label `{}: \"true\"`",
                     labels::GIT_CREDENTIALS
                 ),
             ));
         }
-        let invalid = |message: String| ("CredentialsInvalid", message);
+        let invalid = |message: String| (ConditionReason::CredentialsInvalid, message);
         let data = secret.data.as_ref();
         let key = |key: &str| {
             data.and_then(|d| d.get(key))
@@ -150,15 +151,15 @@ mod tests {
         let data = [("username", "u"), ("password", "p")];
         assert_eq!(
             reason(&secret(None, BASIC_AUTH, &data)),
-            Err("CredentialsMissing")
+            Err(ConditionReason::CredentialsMissing)
         );
         assert_eq!(
             reason(&secret(Some("false"), BASIC_AUTH, &data)),
-            Err("CredentialsMissing")
+            Err(ConditionReason::CredentialsMissing)
         );
         assert_eq!(
             reason(&secret(Some("true"), "Opaque", &data)),
-            Err("CredentialsInvalid")
+            Err(ConditionReason::CredentialsInvalid)
         );
         assert_eq!(
             reason(&secret(
@@ -166,7 +167,7 @@ mod tests {
                 SSH_AUTH,
                 &[("ssh-privatekey", "KEY")]
             )),
-            Err("CredentialsInvalid")
+            Err(ConditionReason::CredentialsInvalid)
         );
         assert_eq!(
             reason(&secret(
@@ -174,7 +175,7 @@ mod tests {
                 BASIC_AUTH,
                 &[("username", "u"), ("password", "")]
             )),
-            Err("CredentialsInvalid")
+            Err(ConditionReason::CredentialsInvalid)
         );
     }
 

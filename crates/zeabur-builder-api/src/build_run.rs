@@ -171,6 +171,10 @@ pub enum Phase {
     Failed,
     /// A newer commit replaced it, or a person cancelled it.
     Cancelled,
+    /// A phase this version does not know. It encodes as `Unknown`, so a writer must not send
+    /// back a status it read.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Why a `BuildRun` waits or failed.
@@ -198,6 +202,10 @@ pub enum Reason {
     Cancelled,
     /// The Pod disappeared, or buildkitd could not be reached.
     InfraError,
+    /// A reason this version does not know. It encodes as `Unknown`, so a writer must not send
+    /// back a status it read.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Where a plan came from.
@@ -219,4 +227,42 @@ pub struct CacheStats {
     /// Steps answered from cache.
     #[schemars(range(min = 0))]
     pub cached: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_values_keep_their_spelling_and_round_trip() {
+        let status = BuildRunStatus {
+            phase: Some(Phase::Failed),
+            reason: Some(Reason::OutOfMemory),
+            ..BuildRunStatus::default()
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["phase"], "Failed");
+        assert_eq!(json["reason"], "OutOfMemory");
+        assert_eq!(
+            serde_json::from_value::<BuildRunStatus>(json).unwrap(),
+            status
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_phase_or_reason_decodes_as_unknown() {
+        let status: BuildRunStatus = serde_json::from_value(serde_json::json!({
+            "phase": "Paused",
+            "reason": "DiskFull",
+            "message": "kept",
+        }))
+        .unwrap();
+        assert_eq!(status.phase, Some(Phase::Unknown));
+        assert_eq!(status.reason, Some(Reason::Unknown));
+        assert_eq!(status.message.as_deref(), Some("kept"));
+
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["phase"], "Unknown");
+        assert_eq!(json["reason"], "Unknown");
+    }
 }

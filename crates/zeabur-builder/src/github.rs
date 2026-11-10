@@ -53,6 +53,7 @@ use jiff::Timestamp;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use kube::Api;
 use serde_json::{Value, json};
+use zeabur_builder_api::build::ConditionReason;
 use zeabur_builder_core::repo::RepoKey;
 
 use crate::credentials::Refusal;
@@ -307,12 +308,17 @@ impl GitHub {
     /// The App, or why there is none.
     pub(crate) async fn app(&self) -> Result<Arc<AppConfig>, Refusal> {
         let name = &self.secret_name;
-        let missing = |m: String| ("GitHubAppMissing", m);
+        let missing = |m: String| (ConditionReason::GitHubAppMissing, m);
         let secret = self
             .secrets
             .get_opt(name)
             .await
-            .map_err(|e| ("ResolveFailed", format!("the GitHub App's Secret: {e}")))?
+            .map_err(|e| {
+                (
+                    ConditionReason::ResolveFailed,
+                    format!("the GitHub App's Secret: {e}"),
+                )
+            })?
             .ok_or_else(|| missing(format!("no GitHub App: the Secret `{name}` is missing")))?;
         let version = secret.metadata.resource_version.clone().unwrap_or_default();
         let mut cached = self.app.lock().unwrap_or_else(PoisonError::into_inner);
@@ -336,7 +342,12 @@ impl GitHub {
             .config_maps
             .get_opt(&self.grants_name)
             .await
-            .map_err(|e| ("ResolveFailed", format!("the GitHub App's grants: {e}")))?;
+            .map_err(|e| {
+                (
+                    ConditionReason::ResolveFailed,
+                    format!("the GitHub App's grants: {e}"),
+                )
+            })?;
         let grant = grants
             .and_then(|c| c.data)
             .and_then(|mut d| d.remove(&installation.to_string()));
@@ -344,7 +355,7 @@ impl GitHub {
             Ok(())
         } else {
             Err((
-                "InstallationNotAllowed",
+                ConditionReason::InstallationNotAllowed,
                 format!(
                     "a cluster admin has not allowed namespace `{namespace}` to use GitHub App installation {installation}"
                 ),
@@ -371,8 +382,12 @@ impl GitHub {
             }
         }
         let app = self.app().await?;
-        let (_, name) = app.repository(key).map_err(|m| ("UnsupportedURL", m))?;
-        let jwt = app.jwt(now).map_err(|m| ("GitHubAppMissing", m))?;
+        let (_, name) = app
+            .repository(key)
+            .map_err(|m| (ConditionReason::UnsupportedURL, m))?;
+        let jwt = app
+            .jwt(now)
+            .map_err(|m| (ConditionReason::GitHubAppMissing, m))?;
         let url = format!(
             "{}/app/installations/{installation}/access_tokens",
             app.api_url
@@ -381,9 +396,9 @@ impl GitHub {
         let (status, answer) = self.call(Method::POST, &url, &jwt, &body).await?;
         if status != StatusCode::CREATED {
             let reason = if status.is_server_error() {
-                "ResolveFailed"
+                ConditionReason::ResolveFailed
             } else {
-                "AuthFailed"
+                ConditionReason::AuthFailed
             };
             return Err((
                 reason,
@@ -395,14 +410,19 @@ impl GitHub {
         }
         let answer: Value = serde_json::from_slice(&answer).map_err(|_error| {
             (
-                "ResolveFailed",
+                ConditionReason::ResolveFailed,
                 "GitHub's token answer is not JSON".to_owned(),
             )
         })?;
         let token = answer
             .get("token")
             .and_then(Value::as_str)
-            .ok_or_else(|| ("ResolveFailed", "GitHub's answer has no token".to_owned()))?
+            .ok_or_else(|| {
+                (
+                    ConditionReason::ResolveFailed,
+                    "GitHub's answer has no token".to_owned(),
+                )
+            })?
             .to_owned();
         let expires = answer
             .get("expires_at")
@@ -432,7 +452,9 @@ impl GitHub {
         body: &Value,
     ) -> Result<(), Refusal> {
         let app = self.app().await?;
-        let (owner, name) = app.repository(key).map_err(|m| ("UnsupportedURL", m))?;
+        let (owner, name) = app
+            .repository(key)
+            .map_err(|m| (ConditionReason::UnsupportedURL, m))?;
         let token = self.token(installation, key, Access::Controller).await?;
         let url = format!("{}/repos/{owner}/{name}/statuses/{sha}", app.api_url);
         let (status, answer) = self.call(Method::POST, &url, &token, body).await?;
@@ -440,7 +462,7 @@ impl GitHub {
             Ok(())
         } else {
             Err((
-                "AuthFailed",
+                ConditionReason::AuthFailed,
                 format!("{status} {}", github_message(&answer)),
             ))
         }
@@ -453,7 +475,7 @@ impl GitHub {
         bearer: &str,
         body: &Value,
     ) -> Result<(StatusCode, Bytes), Refusal> {
-        let failed = |e: &dyn fmt::Display| ("ResolveFailed", format!("{url}: {e}"));
+        let failed = |e: &dyn fmt::Display| (ConditionReason::ResolveFailed, format!("{url}: {e}"));
         let mut auth =
             header::HeaderValue::try_from(format!("Bearer {bearer}")).map_err(|e| failed(&e))?;
         auth.set_sensitive(true);
