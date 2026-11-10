@@ -9,6 +9,7 @@ use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::build_run::Reason;
 use crate::common::{
     Condition, DIGEST_PATTERN, DURATION_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN,
     SecretKeyRef, SecretRef,
@@ -440,4 +441,134 @@ pub enum SourceMode {
     PlainGit,
     /// From an uploaded archive.
     Archive,
+}
+
+/// The `reason` of a `Build` condition, written as its name.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConditionReason {
+    /// `SourceReady`: neither `git` nor `archive` is set.
+    NoSource,
+    /// `SourceReady`: the archive has no digest yet.
+    WaitingForUpload,
+    /// `SourceReady`: the archive's digest is set.
+    Archive,
+    /// `SourceReady`: the ref resolved to a commit.
+    Resolved,
+    /// `SourceReady`: the repository has no such ref.
+    RefNotFound,
+    /// `SourceReady`: the server refused the credentials or the repository.
+    AuthFailed,
+    /// `SourceReady`: the repository URL is not one the builder can fetch.
+    UnsupportedURL,
+    /// `SourceReady`: the credentials the source names are missing.
+    CredentialsMissing,
+    /// `SourceReady`: the credentials do not fit the URL, or do not parse.
+    CredentialsInvalid,
+    /// `SourceReady`: the credentials' Secret could not be read.
+    CredentialsUnreadable,
+    /// `SourceReady`: the SSH host key is not in `known_hosts`.
+    HostKeyMismatch,
+    /// `SourceReady`: the ref could not be asked, or the answer was not understood.
+    ResolveFailed,
+    /// `SourceReady`: the GitHub App's Secret is missing or unusable.
+    GitHubAppMissing,
+    /// `SourceReady`: the namespace may not use the App installation.
+    InstallationNotAllowed,
+    /// `BuilderReady`: the `ClusterBuilder` exists.
+    Found,
+    /// `BuilderReady`: there is no such `ClusterBuilder`.
+    BuilderNotFound,
+    /// `Ready`: no run has finished.
+    NotBuilt,
+    /// `Ready`: the latest finished run succeeded.
+    Succeeded,
+    /// `Ready`: the latest finished run failed without a reason.
+    Failed,
+    /// `Ready`: the latest finished run failed or was cancelled for [`Reason::QuotaExceeded`].
+    QuotaExceeded,
+    /// `Ready`: [`Reason::BuildkitdStarting`].
+    BuildkitdStarting,
+    /// `Ready`: [`Reason::RegistryCredentialsMissing`].
+    RegistryCredentialsMissing,
+    /// `Ready`: [`Reason::SourceFailed`].
+    SourceFailed,
+    /// `Ready`: [`Reason::PlanFailed`].
+    PlanFailed,
+    /// `Ready`: [`Reason::BuildFailed`].
+    BuildFailed,
+    /// `Ready`: [`Reason::OutOfMemory`].
+    OutOfMemory,
+    /// `Ready`: [`Reason::Timeout`].
+    Timeout,
+    /// `Ready`: [`Reason::Cancelled`].
+    Cancelled,
+    /// `Ready`: [`Reason::InfraError`].
+    InfraError,
+    /// `Ready`: the run's reason is one this version does not know.
+    Unknown,
+}
+
+impl std::fmt::Display for ConditionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
+}
+
+impl From<Reason> for ConditionReason {
+    fn from(reason: Reason) -> Self {
+        match reason {
+            Reason::QuotaExceeded => Self::QuotaExceeded,
+            Reason::BuildkitdStarting => Self::BuildkitdStarting,
+            Reason::RegistryCredentialsMissing => Self::RegistryCredentialsMissing,
+            Reason::SourceFailed => Self::SourceFailed,
+            Reason::PlanFailed => Self::PlanFailed,
+            Reason::BuildFailed => Self::BuildFailed,
+            Reason::OutOfMemory => Self::OutOfMemory,
+            Reason::Timeout => Self::Timeout,
+            Reason::Cancelled => Self::Cancelled,
+            Reason::InfraError => Self::InfraError,
+            Reason::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_condition_reason_is_written_as_its_name() {
+        for (reason, written) in [
+            (ConditionReason::WaitingForUpload, "WaitingForUpload"),
+            (ConditionReason::UnsupportedURL, "UnsupportedURL"),
+            (ConditionReason::GitHubAppMissing, "GitHubAppMissing"),
+            (ConditionReason::BuilderNotFound, "BuilderNotFound"),
+            (ConditionReason::NotBuilt, "NotBuilt"),
+        ] {
+            assert_eq!(reason.to_string(), written);
+            assert_eq!(serde_json::to_value(reason).unwrap(), written);
+        }
+    }
+
+    #[test]
+    fn a_run_reason_is_the_same_word_in_the_ready_condition() {
+        for reason in [
+            Reason::QuotaExceeded,
+            Reason::BuildkitdStarting,
+            Reason::RegistryCredentialsMissing,
+            Reason::SourceFailed,
+            Reason::PlanFailed,
+            Reason::BuildFailed,
+            Reason::OutOfMemory,
+            Reason::Timeout,
+            Reason::Cancelled,
+            Reason::InfraError,
+            Reason::Unknown,
+        ] {
+            assert_eq!(
+                ConditionReason::from(reason).to_string(),
+                serde_json::to_value(reason).unwrap().as_str().unwrap()
+            );
+        }
+    }
 }

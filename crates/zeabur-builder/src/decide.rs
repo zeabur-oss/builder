@@ -9,7 +9,7 @@ use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::Serialize;
-use zeabur_builder_api::build::{Build, BuildStatus, Concurrency};
+use zeabur_builder_api::build::{ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason};
 use zeabur_builder_api::build_run::{
     BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, Trigger,
 };
@@ -162,12 +162,53 @@ fn phase(run: &BuildRun) -> Option<Phase> {
     run.status.as_ref().and_then(|s| s.phase)
 }
 
+/// The `BuilderReady` condition: whether the `ClusterBuilder` `name` exists.
+pub(crate) fn builder_ready(found: bool, name: &str) -> (ConditionStatus, ConditionReason, String) {
+    if found {
+        (ConditionStatus::True, ConditionReason::Found, String::new())
+    } else {
+        (
+            ConditionStatus::False,
+            ConditionReason::BuilderNotFound,
+            format!("no ClusterBuilder `{name}`"),
+        )
+    }
+}
+
+/// The `SourceReady` condition of a `Build` with no `git` source, and the digest it builds.
+pub(crate) fn archive_source(
+    archive: Option<&ArchiveSource>,
+) -> (ConditionStatus, ConditionReason, String, Option<String>) {
+    let Some(archive) = archive else {
+        return (
+            ConditionStatus::False,
+            ConditionReason::NoSource,
+            "set git or archive".to_owned(),
+            None,
+        );
+    };
+    let Some(digest) = &archive.digest else {
+        return (
+            ConditionStatus::False,
+            ConditionReason::WaitingForUpload,
+            "set archive.digest once the archive is pushed".to_owned(),
+            None,
+        );
+    };
+    (
+        ConditionStatus::True,
+        ConditionReason::Archive,
+        format!("archive {digest}"),
+        Some(digest.clone()),
+    )
+}
+
 /// Sets a condition, keeping its transition time when the status did not change.
 pub(crate) fn set_condition(
     conditions: &mut Vec<Condition>,
     kind: &str,
     status: ConditionStatus,
-    reason: &str,
+    reason: ConditionReason,
     message: &str,
     now: Timestamp,
     generation: Option<i64>,
@@ -180,7 +221,7 @@ pub(crate) fn set_condition(
     conditions.push(Condition {
         kind: kind.to_owned(),
         status,
-        reason: reason.to_owned(),
+        reason: reason.to_string(),
         message: message.to_owned(),
         last_transition_time: transition,
         observed_generation: generation,
@@ -795,7 +836,7 @@ pub(crate) fn summarise(
         || {
             (
                 ConditionStatus::Unknown,
-                "NotBuilt".to_owned(),
+                ConditionReason::NotBuilt,
                 String::new(),
             )
         },
@@ -805,14 +846,14 @@ pub(crate) fn summarise(
             if s.phase == Some(Phase::Succeeded) {
                 (
                     ConditionStatus::True,
-                    "Succeeded".to_owned(),
+                    ConditionReason::Succeeded,
                     format!("{name} built {}", run.spec.revision),
                 )
             } else {
                 (
                     ConditionStatus::False,
                     s.reason
-                        .map_or_else(|| "Failed".to_owned(), |r| format!("{r:?}")),
+                        .map_or(ConditionReason::Failed, ConditionReason::from),
                     format!("{name}: {}", s.message.unwrap_or_default()),
                 )
             }
@@ -822,7 +863,7 @@ pub(crate) fn summarise(
         &mut status.conditions,
         "Ready",
         ready,
-        &reason,
+        reason,
         &message,
         now,
         generation,

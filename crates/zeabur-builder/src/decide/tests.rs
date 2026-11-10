@@ -95,7 +95,7 @@ fn conditions_keep_their_transition_time() {
         &mut conditions,
         "Ready",
         ConditionStatus::True,
-        "Succeeded",
+        ConditionReason::Succeeded,
         "",
         earlier,
         Some(1),
@@ -104,7 +104,7 @@ fn conditions_keep_their_transition_time() {
         &mut conditions,
         "Ready",
         ConditionStatus::True,
-        "Succeeded",
+        ConditionReason::Succeeded,
         "again",
         now(),
         Some(2),
@@ -116,7 +116,7 @@ fn conditions_keep_their_transition_time() {
         &mut conditions,
         "Ready",
         ConditionStatus::False,
-        "BuildFailed",
+        ConditionReason::BuildFailed,
         "",
         now(),
         Some(2),
@@ -1062,7 +1062,7 @@ fn a_ref_that_does_not_resolve_is_asked_less_often() {
             &mut status.conditions,
             "SourceReady",
             ConditionStatus::False,
-            "ResolveFailed",
+            ConditionReason::ResolveFailed,
             "",
             since.parse().unwrap(),
             None,
@@ -1178,4 +1178,74 @@ fn tokens_count_as_expired_once_the_registry_clock_has_passed_them_too() {
     assert!(!tokens_expired(until, at("2026-11-01T10:20:30Z")));
     assert!(!tokens_expired(until, at("2026-11-01T10:21:00Z")));
     assert!(tokens_expired(until, at("2026-11-01T10:21:01Z")));
+}
+
+#[test]
+fn a_missing_builder_and_a_found_one_set_builder_ready() {
+    let (status, reason, message) = builder_ready(true, "dockerfile");
+    assert_eq!(status, ConditionStatus::True);
+    assert_eq!(reason.to_string(), "Found");
+    assert_eq!(message, "");
+
+    let (status, reason, message) = builder_ready(false, "railpack");
+    assert_eq!(status, ConditionStatus::False);
+    assert_eq!(reason.to_string(), "BuilderNotFound");
+    assert_eq!(message, "no ClusterBuilder `railpack`");
+}
+
+#[test]
+fn an_archive_source_sets_source_ready_by_its_digest() {
+    let archive = |digest: Option<&str>| ArchiveSource {
+        digest: digest.map(str::to_owned),
+        context_dir: None,
+        dockerfile: None,
+    };
+    let reason = |archive: Option<&ArchiveSource>| {
+        let (status, reason, _, digest) = archive_source(archive);
+        (status, reason.to_string(), digest)
+    };
+    assert_eq!(
+        reason(None),
+        (ConditionStatus::False, "NoSource".to_owned(), None)
+    );
+    assert_eq!(
+        reason(Some(&archive(None))),
+        (ConditionStatus::False, "WaitingForUpload".to_owned(), None)
+    );
+    assert_eq!(
+        reason(Some(&archive(Some(DIGEST)))),
+        (
+            ConditionStatus::True,
+            "Archive".to_owned(),
+            Some(DIGEST.to_owned())
+        )
+    );
+}
+
+#[test]
+fn ready_names_the_outcome_of_the_latest_finished_run() {
+    let ready = |runs: &[BuildRun]| {
+        let mut status = BuildStatus::default();
+        summarise(&mut status, runs, "r/team-a/api", now(), Some(1));
+        status.conditions[0].reason.clone()
+    };
+    assert_eq!(ready(&[]), "NotBuilt");
+
+    let ok = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+    assert_eq!(ready(&[ok]), "Succeeded");
+
+    let mut failed = run("api-2", A, Some(Phase::Failed), "2026-10-22T02:00:00Z");
+    assert_eq!(ready(&[failed.clone()]), "Failed");
+
+    for (reason, written) in [
+        (Reason::Timeout, "Timeout"),
+        (
+            Reason::RegistryCredentialsMissing,
+            "RegistryCredentialsMissing",
+        ),
+        (Reason::Unknown, "Unknown"),
+    ] {
+        failed.status.as_mut().unwrap().reason = Some(reason);
+        assert_eq!(ready(&[failed.clone()]), written);
+    }
 }

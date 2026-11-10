@@ -1011,7 +1011,8 @@
                       "Building",
                       "Succeeded",
                       "Failed",
-                      "Cancelled"
+                      "Cancelled",
+                      "Unknown"
                     ],
                     "nullable": true,
                     "type": "string"
@@ -1053,7 +1054,8 @@
                       "OutOfMemory",
                       "Timeout",
                       "Cancelled",
-                      "InfraError"
+                      "InfraError",
+                      "Unknown"
                     ],
                     "nullable": true,
                     "type": "string"

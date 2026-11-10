@@ -19,6 +19,7 @@ use rustls::ClientConfig;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject as _;
 use thiserror::Error;
+use zeabur_builder_api::build::ConditionReason;
 use zeabur_builder_core::git::{self, Advertisement, GitError, MAX_RESPONSE_BYTES};
 use zeabur_builder_core::ssh::SshRemote;
 
@@ -59,20 +60,22 @@ pub(crate) enum ResolveError {
 
 impl ResolveError {
     /// The `SourceReady` reason.
-    pub(crate) const fn reason(&self) -> &'static str {
+    pub(crate) const fn reason(&self) -> ConditionReason {
         match self {
-            Self::Git(GitError::RefNotFound(_) | GitError::NoDefaultBranch) => "RefNotFound",
+            Self::Git(GitError::RefNotFound(_) | GitError::NoDefaultBranch) => {
+                ConditionReason::RefNotFound
+            }
             Self::Status(_, status)
                 if status.as_u16() == 401 || status.as_u16() == 403 || status.as_u16() == 404 =>
             {
-                "AuthFailed"
+                ConditionReason::AuthFailed
             }
-            Self::Denied(_) => "AuthFailed",
-            Self::Scheme(_) => "UnsupportedURL",
-            Self::NoCredentials(_) => "CredentialsMissing",
-            Self::Credentials(_) => "CredentialsInvalid",
-            Self::HostKey(_) => "HostKeyMismatch",
-            Self::Status(..) | Self::Transport(..) | Self::Git(_) => "ResolveFailed",
+            Self::Denied(_) => ConditionReason::AuthFailed,
+            Self::Scheme(_) => ConditionReason::UnsupportedURL,
+            Self::NoCredentials(_) => ConditionReason::CredentialsMissing,
+            Self::Credentials(_) => ConditionReason::CredentialsInvalid,
+            Self::HostKey(_) => ConditionReason::HostKeyMismatch,
+            Self::Status(..) | Self::Transport(..) | Self::Git(_) => ConditionReason::ResolveFailed,
         }
     }
 }
@@ -271,6 +274,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_resolve_error_names_its_source_condition_reason() {
+        let text = || String::from("x");
+        for (error, reason) in [
+            (
+                ResolveError::Git(GitError::RefNotFound(text())),
+                ConditionReason::RefNotFound,
+            ),
+            (
+                ResolveError::Git(GitError::NoDefaultBranch),
+                ConditionReason::RefNotFound,
+            ),
+            (
+                ResolveError::Status(text(), StatusCode::NOT_FOUND),
+                ConditionReason::AuthFailed,
+            ),
+            (ResolveError::Denied(text()), ConditionReason::AuthFailed),
+            (
+                ResolveError::Scheme(text()),
+                ConditionReason::UnsupportedURL,
+            ),
+            (
+                ResolveError::NoCredentials(text()),
+                ConditionReason::CredentialsMissing,
+            ),
+            (
+                ResolveError::Credentials(text()),
+                ConditionReason::CredentialsInvalid,
+            ),
+            (
+                ResolveError::HostKey(text()),
+                ConditionReason::HostKeyMismatch,
+            ),
+            (
+                ResolveError::Status(text(), StatusCode::BAD_GATEWAY),
+                ConditionReason::ResolveFailed,
+            ),
+            (
+                ResolveError::Transport(text(), text()),
+                ConditionReason::ResolveFailed,
+            ),
+        ] {
+            assert_eq!(error.reason(), reason);
+        }
+    }
+
+    #[test]
     fn basic_auth_header() {
         let request = git_request(
             Method::GET,
@@ -316,27 +365,27 @@ mod tests {
         };
         assert_eq!(
             reason("https://github.com/acme/api.git", Some(&ssh)).await,
-            Err("CredentialsInvalid")
+            Err(ConditionReason::CredentialsInvalid)
         );
         assert_eq!(
             reason("git@github.com:acme/api.git", None).await,
-            Err("CredentialsMissing")
+            Err(ConditionReason::CredentialsMissing)
         );
         assert_eq!(
             reason("git@github.com:acme/api.git", Some(&basic)).await,
-            Err("CredentialsInvalid")
+            Err(ConditionReason::CredentialsInvalid)
         );
         assert_eq!(
             reason("git@github.com:acme/api.git", Some(&ssh)).await,
-            Err("CredentialsInvalid")
+            Err(ConditionReason::CredentialsInvalid)
         );
         assert_eq!(
             reason("http://git.example.com/acme/api.git", Some(&basic)).await,
-            Err("CredentialsInvalid")
+            Err(ConditionReason::CredentialsInvalid)
         );
         assert_eq!(
             reason("file:///srv/api.git", None).await,
-            Err("UnsupportedURL")
+            Err(ConditionReason::UnsupportedURL)
         );
     }
 }
