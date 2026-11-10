@@ -53,6 +53,8 @@ pub const PORT: i32 = 1234;
 pub const APP: &str = "buildkitd";
 const APP_LABEL: &str = "app.kubernetes.io/name";
 const SOCKET: &str = "unix:///run/buildkit/buildkitd.sock";
+/// The volume claim template of the cache.
+const CACHE: &str = "cache";
 
 /// How the container starts buildkitd (`sh -c START buildkitd <args>`): first, the TCP
 /// connections of `RUN` steps get a maximum segment size that fits the Pod's interface.
@@ -80,6 +82,15 @@ exec buildkitd \"$@\"";
 #[must_use]
 pub fn tls_secret(namespace: &str) -> String {
     format!("{}-tls", daemon::name(namespace))
+}
+
+/// The cache claim of a namespace's daemon Pod: `<template>-<StatefulSet>-<ordinal>`
+/// ([`getPersistentVolumeClaimName`]).
+///
+/// [`getPersistentVolumeClaimName`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/controller/statefulset/stateful_set_utils.go#L118-L121
+#[must_use]
+pub fn cache_claim(namespace: &str) -> String {
+    format!("{CACHE}-{}", daemon::pod(namespace))
 }
 
 /// What the controller decided for one namespace's buildkitd.
@@ -209,7 +220,7 @@ pub fn daemon(inputs: &DaemonInputs<'_>) -> Daemon {
             },
             volume_claim_templates: Some(vec![PersistentVolumeClaim {
                 metadata: ObjectMeta {
-                    name: Some("cache".to_owned()),
+                    name: Some(CACHE.to_owned()),
                     ..ObjectMeta::default()
                 },
                 spec: Some(PersistentVolumeClaimSpec {
@@ -376,7 +387,7 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
             volume_mounts: Some(vec![
                 mount("config", "/etc/buildkit", true),
                 mount("certs", "/certs", true),
-                mount("cache", "/var/lib/buildkit", false),
+                mount(CACHE, "/var/lib/buildkit", false),
             ]),
             ..Container::default()
         }],

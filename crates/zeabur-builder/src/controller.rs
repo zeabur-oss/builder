@@ -83,8 +83,6 @@ const WEBHOOK_MANAGER: &str = "zeabur-builder-webhook";
 const PENDING_RETRY: Duration = Duration::from_secs(15);
 /// How often a `BuildRun` waiting for its buildkitd to start is looked at again.
 const STARTING_RETRY: Duration = Duration::from_secs(2);
-/// Selects the `BuildRun`s that are not finished, by the selectable field `status.phase`.
-const UNFINISHED: &str = "status.phase!=Succeeded,status.phase!=Failed,status.phase!=Cancelled";
 /// Objects read per page of a LIST.
 const PAGE: u32 = 100;
 /// The name of the client certificate Secret in a build namespace.
@@ -784,7 +782,7 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
             )
             .await;
         }
-        return start(&ctx, &run, status).await;
+        return Box::pin(start(&ctx, &run, status)).await;
     };
 
     let Some(status) = decide::recorded(status, &job, now()) else {
@@ -1099,7 +1097,7 @@ async fn admit(
 ) -> Result<Result<ByteString, (Reason, String)>, Error> {
     let namespace = build.namespace().unwrap_or_default();
     let runs = Api::<BuildRun>::all(ctx.client.clone());
-    let mut params = ListParams::default().fields(UNFINISHED).limit(PAGE);
+    let mut params = ListParams::default().fields(decide::UNFINISHED).limit(PAGE);
     let mut unfinished = Vec::new();
     loop {
         let page = runs.list(&params).await?;
@@ -1269,17 +1267,13 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         Ok(auth) => auth,
         Err((reason, message)) => return pending(ctx, run, status, reason, message).await,
     };
-    let woken = daemon::wake(&ctx.client, &settings.daemon, &namespace, &limits).await?;
-    if !woken.ready {
-        return pending(
-            ctx,
-            run,
-            status,
-            Reason::BuildkitdStarting,
-            format!("waiting for {} to be ready", woken.pod),
-        )
-        .await;
-    }
+    let woken = match daemon::wake(&ctx.client, &settings.daemon, &namespace, &limits).await? {
+        daemon::Wake::Ready(woken) => woken,
+        daemon::Wake::Starting(message) => {
+            return pending(ctx, run, status, Reason::BuildkitdStarting, message).await;
+        }
+        daemon::Wake::Invalid(message) => return finish(ctx, run, fail(message)).await,
+    };
     if build.spec.source.github_app.is_some() {
         // Minted only now, so a run waiting for a slot does not mint a token every retry.
         match app_token(ctx, &build, Access::Fetch).await {
