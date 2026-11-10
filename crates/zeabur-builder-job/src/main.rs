@@ -10,11 +10,11 @@
 //! controller shows as the run's message.
 //!
 //! Runs the `buildctl` commands it is given (built by `zeabur-builder-jobspec`) one after the
-//! other, prints their `rawjson` progress for people, counts cached steps, reads each digest from
-//! its `--metadata-file`, and writes the result to `/dev/termination-log`, where the controller
-//! reads it from the Pod's status ([`zeabur_builder_core::result`]). The same JSON is the last
-//! line on stdout. The result is the last command's digest and tags; `{digest}` in a command
-//! stands for the digest of the one before it.
+//! other, prints their `rawjson` progress for people, counts cached steps, records the steps, reads
+//! each digest from its `--metadata-file`, and writes the result to `/dev/termination-log`, where
+//! the controller reads it from the Pod's status ([`zeabur_builder_core::result`]). The same JSON
+//! is the last line on stdout. The result is the last command's digest and tags; `{digest}` in a
+//! command stands for the digest of the one before it.
 //!
 //! After a success it reads the pushed image's config from the registry (`--plain-http` if the
 //! registry speaks http) and reports its `ExposedPorts`; failing to read them does not fail the
@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncBufReadExt as _;
 use zeabur_builder_core::archive::MAX_UNPACKED_BYTES;
-use zeabur_builder_core::progress::CacheCounter;
+use zeabur_builder_core::progress::{CacheCounter, StepLog};
 use zeabur_builder_core::railpack;
 use zeabur_builder_core::result::{BuildResult, FailureReason, Outcome, PlanSource};
 
@@ -248,6 +248,7 @@ async fn build(
     command: &[String],
     renderer: &mut progress::Renderer,
     counter: &mut CacheCounter,
+    steps: &mut StepLog,
 ) -> Result<String, (FailureReason, String)> {
     let Some((program, rest)) = command.split_first() else {
         return Err((FailureReason::BuildFailed, String::from("no command")));
@@ -258,6 +259,7 @@ async fn build(
         .stderr(Stdio::piped())
         .spawn();
     renderer.next_run();
+    steps.next_run();
     let mut child = child.map_err(|e| {
         (
             FailureReason::BuildFailed,
@@ -269,6 +271,7 @@ async fn build(
         let mut out = std::io::stdout();
         while let Ok(Some(line)) = lines.next_line().await {
             counter.line(&line);
+            steps.line(&line);
             for text in renderer.line(&line) {
                 if writeln!(out, "{text}").is_err() {
                     // stdout gone: keep reading so buildctl is not blocked.
@@ -324,11 +327,12 @@ async fn run(args: &Args) -> BuildResult {
     let start = Instant::now();
     let mut renderer = progress::Renderer::default();
     let mut counter = CacheCounter::default();
+    let mut steps = StepLog::default();
     let mut built: Option<String> = None;
     let mut outcome = Ok(());
     for command in &commands {
         let command = with_digest(command, built.as_deref());
-        match build(&command, &mut renderer, &mut counter).await {
+        match build(&command, &mut renderer, &mut counter, &mut steps).await {
             Ok(digest) => built = Some(digest),
             Err(failure) => {
                 outcome = Err(failure);
@@ -340,6 +344,7 @@ async fn run(args: &Args) -> BuildResult {
         .phases
         .insert("build".to_owned(), start.elapsed().as_secs_f64());
     result.cache = Some(counter.stats());
+    (result.steps, result.failed_step) = steps.finish();
     match (outcome, built) {
         (Ok(()), Some(digest)) => {
             result.result = Outcome::Succeeded;

@@ -1,10 +1,13 @@
-//! Cache statistics from `buildctl build --progress rawjson`.
+//! Cache statistics and steps from `buildctl build --progress rawjson`.
 //!
 //! In `rawjson` mode buildctl writes each `client.SolveStatus` as one JSON object per line on
 //! stderr ([progressui], `RawJSONMode`). A vertex is reported many times as it starts and
 //! completes; it counts once, by digest, and counts as cached when its completed report says
 //! `cached: true` (`client.Vertex`, [graph.go]). Lines that are not JSON (buildctl's own messages)
 //! are ignored, so the counter can read the whole stream.
+//!
+//! [`StepLog`] keeps one [`Step`] per vertex of each `buildctl` run, in the order the vertices
+//! first appear, with the `started`, `completed`, `cached` and `error` of their reports.
 //!
 //! [progressui]: https://github.com/moby/buildkit/blob/v0.34.1/util/progress/progressui/display.go
 //! [graph.go]: https://github.com/moby/buildkit/blob/v0.34.1/client/graph.go
@@ -13,7 +16,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::result::CacheStats;
+use crate::result::{CacheStats, Step, StepState};
 
 #[derive(Debug, Deserialize)]
 struct SolveStatus {
@@ -25,9 +28,15 @@ struct SolveStatus {
 struct Vertex {
     digest: String,
     #[serde(default)]
+    name: String,
+    #[serde(default)]
+    started: Option<String>,
+    #[serde(default)]
     completed: Option<String>,
     #[serde(default)]
     cached: bool,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 /// Counts distinct and cached build steps.
@@ -61,6 +70,76 @@ impl CacheCounter {
     }
 }
 
+/// The steps of a build, over all its `buildctl` runs.
+#[derive(Debug, Clone, Default)]
+pub struct StepLog {
+    steps: Vec<Step>,
+    /// Digest → index in `steps`, for the current run.
+    run: BTreeMap<String, usize>,
+    /// The index of the first step that failed.
+    failed: Option<usize>,
+}
+
+impl StepLog {
+    /// Starts the next `buildctl` run: a vertex seen again is a new step.
+    pub fn next_run(&mut self) {
+        self.run.clear();
+    }
+
+    /// Reads one line of the progress stream.
+    pub fn line(&mut self, line: &str) {
+        let Ok(status) = serde_json::from_str::<SolveStatus>(line) else {
+            return;
+        };
+        for vertex in status.vertexes {
+            let index = *self.run.entry(vertex.digest).or_insert_with(|| {
+                self.steps.push(Step::default());
+                self.steps.len() - 1
+            });
+            let Some(step) = self.steps.get_mut(index) else {
+                continue;
+            };
+            if step.state != StepState::Running {
+                continue;
+            }
+            if !vertex.name.is_empty() {
+                step.name = vertex.name;
+            }
+            if step.start_time.is_none() {
+                step.start_time = vertex.started.as_deref().map(seconds);
+            }
+            step.cached |= vertex.cached;
+            if let Some(error) = vertex.error {
+                step.state = StepState::Failed;
+                step.message = error;
+                self.failed.get_or_insert(index);
+            } else if vertex.cached || vertex.completed.is_some() {
+                step.state = StepState::Succeeded;
+            }
+            if step.state != StepState::Running {
+                step.completion_time = vertex.completed.as_deref().map(seconds);
+            }
+        }
+    }
+
+    /// Every step, oldest first, and the first that failed.
+    #[must_use]
+    pub fn finish(self) -> (Vec<Step>, Option<Step>) {
+        let failed = self.failed.and_then(|i| self.steps.get(i).cloned());
+        (self.steps, failed)
+    }
+}
+
+/// An RFC 3339 time without its fraction of a second: `2026-10-22T00:00:01.5Z` becomes
+/// `2026-10-22T00:00:01Z`.
+fn seconds(time: &str) -> String {
+    let Some((whole, rest)) = time.split_once('.') else {
+        return time.to_owned();
+    };
+    let zone = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+    format!("{whole}{zone}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +166,65 @@ not json
                 cached: 2
             }
         );
+    }
+
+    #[test]
+    fn steps_follow_vertices_in_the_order_they_start() {
+        let stream = r#"{"vertexes":[{"digest":"sha256:a","name":"[1/3] FROM node","started":"2026-10-22T00:00:00.123456789Z"}]}
+{"vertexes":[{"digest":"sha256:a","name":"[1/3] FROM node","started":"2026-10-22T00:00:00Z","completed":"2026-10-22T00:00:01Z","cached":true}]}
+{"vertexes":[{"digest":"sha256:b","name":"[2/3] RUN npm ci","started":"2026-10-22T00:00:01Z"},{"digest":"sha256:c","name":"[3/3] COPY . .","started":"2026-10-22T00:00:01Z"}]}
+{"vertexes":[{"digest":"sha256:b","name":"[2/3] RUN npm ci","started":"2026-10-22T00:00:01Z","completed":"2026-10-22T00:00:09.5+00:00","error":"process \"npm ci\" did not complete successfully: exit code: 1"}]}
+{"vertexes":[{"digest":"sha256:c","name":"[3/3] COPY . .","completed":"2026-10-22T00:00:09Z","error":"context canceled"}]}
+not json"#;
+        let mut log = StepLog::default();
+        for line in stream.lines() {
+            log.line(line);
+        }
+        let (steps, failed) = log.finish();
+        let npm = Step {
+            name: "[2/3] RUN npm ci".to_owned(),
+            state: StepState::Failed,
+            cached: false,
+            start_time: Some("2026-10-22T00:00:01Z".to_owned()),
+            completion_time: Some("2026-10-22T00:00:09+00:00".to_owned()),
+            message: r#"process "npm ci" did not complete successfully: exit code: 1"#.to_owned(),
+        };
+        assert_eq!(
+            steps,
+            [
+                Step {
+                    name: "[1/3] FROM node".to_owned(),
+                    state: StepState::Succeeded,
+                    cached: true,
+                    start_time: Some("2026-10-22T00:00:00Z".to_owned()),
+                    completion_time: Some("2026-10-22T00:00:01Z".to_owned()),
+                    message: String::new(),
+                },
+                npm.clone(),
+                Step {
+                    name: "[3/3] COPY . .".to_owned(),
+                    state: StepState::Failed,
+                    cached: false,
+                    start_time: Some("2026-10-22T00:00:01Z".to_owned()),
+                    completion_time: Some("2026-10-22T00:00:09Z".to_owned()),
+                    message: "context canceled".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(failed, Some(npm));
+    }
+
+    #[test]
+    fn a_vertex_of_the_next_run_is_a_new_step() {
+        let line = r#"{"vertexes":[{"digest":"sha256:a","name":"load metadata","completed":"2026-10-22T00:00:01Z"}]}"#;
+        let mut log = StepLog::default();
+        log.line(line);
+        log.line(line);
+        log.next_run();
+        log.line(line);
+        let (steps, failed) = log.finish();
+        assert_eq!(steps.len(), 2);
+        assert!(steps.iter().all(|s| s.state == StepState::Succeeded));
+        assert_eq!(failed, None);
     }
 }

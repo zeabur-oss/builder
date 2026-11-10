@@ -967,6 +967,11 @@ fn failures_name_their_phase() {
         panic!()
     };
     assert_eq!(status.reason, Some(Reason::SourceFailed));
+    let failed_step = status.failed_step.as_ref().unwrap();
+    assert_eq!(failed_step.name, "fetch");
+    assert_eq!(failed_step.state, StepState::Failed);
+    assert_eq!(failed_step.message, "fatal: couldn't find remote ref");
+    assert_eq!(status.steps, std::slice::from_ref(failed_step));
 
     let plan = pod(
         vec![
@@ -980,6 +985,13 @@ fn failures_name_their_phase() {
     };
     assert_eq!(status.reason, Some(Reason::PlanFailed));
     assert_eq!(status.message.as_deref(), Some("Error"));
+    assert_eq!(
+        status
+            .failed_step
+            .as_ref()
+            .map(|s| (s.name.as_str(), s.state)),
+        Some(("plan", StepState::Failed))
+    );
 
     let build = pod(
         vec![container("fetch", terminated(0, None))],
@@ -1248,4 +1260,165 @@ fn ready_names_the_outcome_of_the_latest_finished_run() {
         failed.status.as_mut().unwrap().reason = Some(reason);
         assert_eq!(ready(&[failed.clone()]), written);
     }
+}
+
+#[test]
+fn steps_reach_the_run_within_the_crd_bounds() {
+    let long = "錯".repeat(300);
+    let step = |i: usize| {
+        format!(r#"{{"name":"{i} {long}","state":"succeeded","startTime":"2026-10-22T00:00:00Z"}}"#)
+    };
+    let steps: Vec<String> = (0..25).map(step).collect();
+    let message = format!(
+        r#"{{"result":"failed","reason":"BuildFailed","message":"exit code: 1","omittedSteps":3,"steps":[{}],"failedStep":{{"name":"0 {long}","state":"failed","message":"{long}"}}}}"#,
+        steps.join(",")
+    );
+    let decoded = BuildResult::decode(&message);
+    // Larger than a termination message holds; the controller must still bound what it copies.
+    assert!(decoded.is_err());
+    let Observed::Finished(status) = from_result(serde_json::from_str(&message).unwrap()) else {
+        panic!("finished expected")
+    };
+    assert_eq!(status.steps.len(), run_api::MAX_STEPS);
+    assert!(status.steps[0].name.starts_with("5 "));
+    assert_eq!(status.omitted_steps, Some(8));
+    for step in status.steps.iter().chain(status.failed_step.as_ref()) {
+        assert!(step.name.chars().count() <= run_api::MAX_STEP_TEXT);
+        assert!(step.message.chars().count() <= run_api::MAX_STEP_TEXT);
+    }
+    assert_eq!(
+        status.failed_step.as_ref().map(|s| s.state),
+        Some(StepState::Failed)
+    );
+}
+
+fn condition<'a>(status: &'a BuildRunStatus, kind: &str) -> Option<&'a Condition> {
+    status.conditions.iter().find(|c| c.kind == kind)
+}
+
+#[test]
+fn run_conditions_follow_the_phase() {
+    let mut subject = run("api-1", A, None, "2026-10-22T01:00:00Z");
+    subject.metadata.generation = Some(3);
+    let t = |at: &str| -> Timestamp { at.parse().unwrap() };
+    let step = |status: BuildRunStatus, phase: Phase, reason: Option<Reason>, at: &str| {
+        run_status(
+            &subject,
+            BuildRunStatus {
+                phase: Some(phase),
+                reason,
+                ..status
+            },
+            t(at),
+        )
+    };
+    let finished = [
+        (
+            Phase::Succeeded,
+            None,
+            None,
+            ConditionStatus::True,
+            "Succeeded",
+        ),
+        (
+            Phase::Failed,
+            Some(Reason::BuildFailed),
+            Some("BuildFailed"),
+            ConditionStatus::False,
+            "BuildFailed",
+        ),
+        (
+            Phase::Failed,
+            Some(Reason::OutOfMemory),
+            Some("OutOfMemory"),
+            ConditionStatus::False,
+            "OutOfMemory",
+        ),
+        (
+            Phase::Cancelled,
+            Some(Reason::Cancelled),
+            Some("Cancelled"),
+            ConditionStatus::False,
+            "Cancelled",
+        ),
+    ];
+    for (end, reason, stalled, ready, ready_reason) in finished {
+        let case = format!("{end:?}/{reason:?}");
+        let pending = step(
+            BuildRunStatus::default(),
+            Phase::Pending,
+            Some(Reason::QuotaExceeded),
+            "2026-10-22T01:00:00Z",
+        );
+        let reconciling = condition(&pending, "Reconciling").unwrap();
+        assert_eq!(reconciling.status, ConditionStatus::True, "{case}");
+        assert_eq!(reconciling.reason, "QuotaExceeded", "{case}");
+        assert_eq!(
+            condition(&pending, "Ready").unwrap().status,
+            ConditionStatus::False
+        );
+        assert!(condition(&pending, "Stalled").is_none(), "{case}");
+
+        let planning = step(pending, Phase::Planning, None, "2026-10-22T01:01:00Z");
+        let building = step(planning, Phase::Building, None, "2026-10-22T01:02:00Z");
+        let reconciling = condition(&building, "Reconciling").unwrap();
+        assert_eq!(reconciling.reason, "Building", "{case}");
+        // Still True since Pending: the transition time stays.
+        assert_eq!(
+            reconciling.last_transition_time, "2026-10-22T01:00:00Z",
+            "{case}"
+        );
+        let ready_since = condition(&building, "Ready")
+            .unwrap()
+            .last_transition_time
+            .clone();
+        assert_eq!(ready_since, "2026-10-22T01:00:00Z", "{case}");
+
+        let done = step(building, end, reason, "2026-10-22T01:03:00Z");
+        assert!(condition(&done, "Reconciling").is_none(), "{case}");
+        assert_eq!(
+            condition(&done, "Stalled").map(|c| (c.status, c.reason.as_str())),
+            stalled.map(|r| (ConditionStatus::True, r)),
+            "{case}"
+        );
+        let ready_condition = condition(&done, "Ready").unwrap();
+        assert_eq!(ready_condition.status, ready, "{case}");
+        assert_eq!(ready_condition.reason, ready_reason, "{case}");
+        let moved = ready == ConditionStatus::True;
+        assert_eq!(
+            ready_condition.last_transition_time == "2026-10-22T01:03:00Z",
+            moved,
+            "{case}"
+        );
+        for c in &done.conditions {
+            assert_eq!(c.observed_generation, Some(3), "{case}");
+        }
+
+        // Writing the finished status again changes nothing.
+        let again = run_status(&subject, done.clone(), t("2026-10-22T02:00:00Z"));
+        assert_eq!(again, done, "{case}");
+    }
+}
+
+#[test]
+fn a_run_records_its_own_rebuild_request() {
+    let mut subject = run("api-1", A, None, "2026-10-22T01:00:00Z");
+    let status = BuildRunStatus {
+        phase: Some(Phase::Pending),
+        ..BuildRunStatus::default()
+    };
+    assert_eq!(
+        run_status(&subject, status.clone(), now()).observed_rebuild,
+        None
+    );
+    subject.metadata.annotations = Some(BTreeMap::from([(
+        annotations::REBUILD.to_owned(),
+        "2026-10-22T00:59:00Z".to_owned(),
+    )]));
+    assert_eq!(
+        run_status(&subject, status, now())
+            .observed_rebuild
+            .as_deref(),
+        Some("2026-10-22T00:59:00Z")
+    );
 }

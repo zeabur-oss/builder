@@ -244,6 +244,16 @@ where
     Ok(())
 }
 
+/// Writes a run's status with the conditions and rebuild request [`decide::run_status`] derives.
+async fn apply_run_status(
+    api: &Api<BuildRun>,
+    run: &BuildRun,
+    status: BuildRunStatus,
+) -> Result<(), Error> {
+    let status = decide::run_status(run, status, now());
+    apply_status(api, &run.name_any(), &status).await
+}
+
 /// Runs both controllers, the buildkitd sweep and the webhook receiver until a termination
 /// signal.
 pub(crate) async fn run(client: Client, settings: Settings) -> Result<(), String> {
@@ -733,7 +743,7 @@ async fn cancel_run(ctx: &Context, build: &Build, name: &str) -> Result<(), Erro
     status.reason = Some(Reason::Cancelled);
     status.message = Some("a newer run replaced it".to_owned());
     status.completion_time = Some(now().to_string());
-    apply_status(&runs, name, &status).await?;
+    apply_run_status(&runs, &run, status).await?;
     report(
         ctx,
         build,
@@ -805,7 +815,7 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
                     reason: None,
                     ..status
                 };
-                apply_status(&runs, &name, &next).await?;
+                apply_run_status(&runs, &run, next).await?;
             }
             Ok(Action::await_change())
         }
@@ -859,6 +869,7 @@ async fn finish(
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
     status.completion_time = Some(now().to_string());
+    let status = decide::run_status(run, status, now());
     apply_status(
         &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
         &name,
@@ -975,10 +986,10 @@ async fn notify_targets(
         notified_at: Some(now().to_string()),
         ..run.status.clone().unwrap_or_default()
     };
-    apply_status(
+    apply_run_status(
         &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
-        &run.name_any(),
-        &status,
+        run,
+        status,
     )
     .await
 }
@@ -1036,6 +1047,7 @@ async fn pending(
     status.phase = Some(Phase::Pending);
     status.reason = Some(reason);
     status.message = Some(message);
+    let status = decide::run_status(run, status, now());
     if run.status.as_ref() != Some(&status) {
         let api =
             Api::<BuildRun>::namespaced(ctx.client.clone(), &run.namespace().unwrap_or_default());
@@ -1159,10 +1171,10 @@ async fn reserve(
     {
         status.reason = None;
         status.message = None;
-        apply_status(
+        apply_run_status(
             &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
-            &run.name_any(),
-            status,
+            run,
+            status.clone(),
         )
         .await?;
     }
@@ -1188,10 +1200,10 @@ async fn job_created(
         tags,
         ..status
     };
-    apply_status(
+    apply_run_status(
         &Api::<BuildRun>::namespaced(ctx.client.clone(), &run.namespace().unwrap_or_default()),
-        &name,
-        &next,
+        run,
+        next,
     )
     .await
 }
