@@ -1296,18 +1296,28 @@ fn condition<'a>(status: &'a BuildRunStatus, kind: &str) -> Option<&'a Condition
     status.conditions.iter().find(|c| c.kind == kind)
 }
 
+/// `run` as the server stores it with `status`.
+fn stored(run: &BuildRun, status: BuildRunStatus) -> BuildRun {
+    BuildRun {
+        status: Some(status),
+        ..run.clone()
+    }
+}
+
 #[test]
 fn run_conditions_follow_the_phase() {
     let mut subject = run("api-1", A, None, "2026-10-22T01:00:00Z");
     subject.metadata.generation = Some(3);
     let t = |at: &str| -> Timestamp { at.parse().unwrap() };
-    let step = |status: BuildRunStatus, phase: Phase, reason: Option<Reason>, at: &str| {
+    // Each write starts from a new status, as a finished status does; only the stored run keeps
+    // the earlier conditions.
+    let step = |before: BuildRunStatus, phase: Phase, reason: Option<Reason>, at: &str| {
         run_status(
-            &subject,
+            &stored(&subject, before),
             BuildRunStatus {
                 phase: Some(phase),
                 reason,
-                ..status
+                ..BuildRunStatus::default()
             },
             t(at),
         )
@@ -1395,7 +1405,11 @@ fn run_conditions_follow_the_phase() {
         }
 
         // Writing the finished status again changes nothing.
-        let again = run_status(&subject, done.clone(), t("2026-10-22T02:00:00Z"));
+        let again = run_status(
+            &stored(&subject, done.clone()),
+            done.clone(),
+            t("2026-10-22T02:00:00Z"),
+        );
         assert_eq!(again, done, "{case}");
     }
 }

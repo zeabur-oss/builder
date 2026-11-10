@@ -209,7 +209,8 @@ pub(crate) fn archive_source(
 ///
 /// The conditions follow kstatus ([kstatus]): `Reconciling` and `Stalled` are "abnormal-true"
 /// and are present only while they hold; `Ready` is always present. Each carries the run's
-/// `metadata.generation`, and keeps its `lastTransitionTime` while its status does not change.
+/// `metadata.generation`, and keeps the `lastTransitionTime` stored on `run` while its status
+/// does not change. The conditions in `status` are ignored.
 ///
 /// [kstatus]: https://github.com/kubernetes-sigs/cli-utils/blob/5895ad6c17dd06b99c1e5c8af17e2b12a3504fad/pkg/kstatus/README.md#conditions
 pub(crate) fn run_status(
@@ -231,6 +232,10 @@ pub(crate) fn run_status(
         Phase::Succeeded => (false, false, ConditionStatus::True),
         Phase::Failed | Phase::Cancelled | Phase::Unknown => (false, true, ConditionStatus::False),
     };
+    status.conditions = run
+        .status
+        .as_ref()
+        .map_or_default(|stored| stored.conditions.clone());
     let conditions = &mut status.conditions;
     for (kind, holds) in [("Reconciling", reconciling), ("Stalled", stalled)] {
         if holds {
