@@ -443,7 +443,7 @@ pub enum SourceMode {
     Archive,
 }
 
-/// The `reason` of a `Build` condition, written as its name.
+/// The `reason` of a `Build` or `ClusterBuilder` condition, written as its name.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConditionReason {
     /// `SourceReady`: neither `git` nor `archive` is set.
@@ -476,6 +476,8 @@ pub enum ConditionReason {
     InstallationNotAllowed,
     /// `BuilderReady`: the `ClusterBuilder` exists.
     Found,
+    /// A `ClusterBuilder`'s `Ready`: its status holds the controller's settings.
+    Published,
     /// `BuilderReady`: there is no such `ClusterBuilder`.
     BuilderNotFound,
     /// `Ready`: no run has finished.

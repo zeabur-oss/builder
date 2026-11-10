@@ -604,6 +604,116 @@ fn a_ceiling_holds_a_namespace_to_the_cluster_limit_and_says_so() {
     assert_eq!(open.clamped, Vec::<String>::new());
 }
 
+fn cluster_builder(generation: i64) -> ClusterBuilder {
+    use zeabur_builder_api::cluster_builder::{
+        BuilderType, ClusterBuilderSpec, FrontendSpec, FrontendType,
+    };
+    let mut builder = ClusterBuilder::new(
+        "dockerfile",
+        ClusterBuilderSpec {
+            kind: BuilderType::Dockerfile,
+            planner: None,
+            frontend: FrontendSpec {
+                kind: FrontendType::Dockerfile,
+                source: None,
+                opts: BTreeMap::new(),
+            },
+        },
+    );
+    builder.metadata.generation = Some(generation);
+    builder
+}
+
+fn flags() -> Resources {
+    Resources {
+        cpu_request: Some("100m".to_owned()),
+        memory_request: Some("256Mi".to_owned()),
+        cpu_limit: Some("1".to_owned()),
+        memory_limit: Some("1Gi".to_owned()),
+    }
+}
+
+#[test]
+fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
+    let status =
+        cluster_builder_status(&cluster_builder(1), &flags(), &Ceiling::default(), 3, now());
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(
+        json["buildDefaults"],
+        serde_json::json!({
+            "cpuRequest": "100m",
+            "memoryRequest": "256Mi",
+            "cpuLimit": "1",
+            "memoryLimit": "1Gi",
+        })
+    );
+    assert_eq!(json["defaultConcurrentBuilds"], 3);
+    // No ceiling is a missing field, never a zero.
+    assert!(json.get("buildCeiling").is_none(), "{json}");
+    let ready = &status.conditions[0];
+    assert_eq!(
+        (ready.kind.as_str(), ready.status, ready.reason.as_str()),
+        ("Ready", ConditionStatus::True, "Published")
+    );
+    assert_eq!(ready.observed_generation, Some(1));
+
+    let unset = Resources {
+        cpu_limit: None,
+        ..flags()
+    };
+    let json = serde_json::to_value(cluster_builder_status(
+        &cluster_builder(1),
+        &unset,
+        &Ceiling::default(),
+        3,
+        now(),
+    ))
+    .unwrap();
+    assert!(json["buildDefaults"].get("cpuLimit").is_none(), "{json}");
+}
+
+#[test]
+fn a_cluster_builder_status_shows_the_ceiling_namespaces_are_held_to() {
+    let ceiling = Ceiling {
+        cpu: None,
+        memory: Some("4Gi".to_owned()),
+    };
+    let status = cluster_builder_status(&cluster_builder(1), &flags(), &ceiling, 1, now());
+    assert_eq!(
+        serde_json::to_value(&status).unwrap()["buildCeiling"],
+        serde_json::json!({"memory": "4Gi"})
+    );
+    // A namespace that asks for more gets the ceiling the status shows.
+    let annotations = BTreeMap::from([(annotations::BUILD_MEMORY.to_owned(), "16Gi".to_owned())]);
+    let held = limits(&annotations, 1, &flags(), &ceiling);
+    assert_eq!(
+        held.resources.memory_limit.map(Quantity),
+        status.build_ceiling.and_then(|c| c.memory)
+    );
+}
+
+#[test]
+fn a_cluster_builder_status_written_again_is_the_same() {
+    let mut builder = cluster_builder(1);
+    let first = cluster_builder_status(&builder, &flags(), &Ceiling::default(), 1, now());
+    builder.status = Some(first.clone());
+    let later: Timestamp = "2026-10-22T09:00:00Z".parse().unwrap();
+    // Unchanged, so the controller writes nothing.
+    assert_eq!(
+        cluster_builder_status(&builder, &flags(), &Ceiling::default(), 1, later),
+        first
+    );
+
+    // A new spec: the condition says so and keeps its transition time.
+    builder.metadata.generation = Some(2);
+    let changed = cluster_builder_status(&builder, &flags(), &Ceiling::default(), 1, later);
+    assert_eq!(changed.conditions[0].observed_generation, Some(2));
+    assert_eq!(
+        changed.conditions[0].last_transition_time,
+        first.conditions[0].last_transition_time
+    );
+}
+
 #[test]
 fn a_memory_kill_since_the_run_started_is_out_of_memory() {
     let killed = |at: &str| {
