@@ -6,7 +6,7 @@ use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt as _, Full};
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, Toleration};
 use kube::Client;
 use serde_json::{Value, json};
 
@@ -473,6 +473,46 @@ async fn a_new_build_node_replaces_the_daemon_only_when_no_build_runs() {
         "{replacing:?}"
     );
     assert_eq!(lock(&cluster).deletes().len(), 1);
+}
+
+#[tokio::test]
+async fn new_tolerations_wait_for_running_builds_and_then_apply() {
+    let cluster = running("standard");
+    let mut tainted = desired("standard");
+    if let Some(pod) = tainted.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+        pod.tolerations = Some(vec![Toleration {
+            key: Some("builder.zeabur.com/builds".to_owned()),
+            operator: Some("Exists".to_owned()),
+            ..Toleration::default()
+        }]);
+    }
+    let old = lock(&cluster).uid(&set_key());
+    lock(&cluster).put(
+        "buildruns/web-1",
+        json!({"metadata": {"name": "web-1", "namespace": NAMESPACE},
+               "spec": {"buildRef": "web", "revision": "abc"},
+               "status": {"phase": "Building", "jobRef": "web-1"}}),
+    );
+
+    let client = client(&cluster);
+    let waiting = stateful_set(&client, DAEMONS, NAMESPACE, &tainted).await;
+    assert!(
+        matches!(&waiting, Ok(Applied::Waiting(m)) if m.contains("1 running build")),
+        "{waiting:?}"
+    );
+    let stored = object(&cluster, &set_key());
+    assert!(stored["spec"]["template"]["spec"]["tolerations"].is_null());
+
+    lock(&cluster).collect("buildruns/web-1");
+    let applied = stateful_set(&client, DAEMONS, NAMESPACE, &tainted).await;
+    assert!(matches!(applied, Ok(Applied::Set(_))), "{applied:?}");
+    assert!(lock(&cluster).deletes().is_empty());
+    assert_eq!(lock(&cluster).uid(&set_key()), old);
+    let stored = object(&cluster, &set_key());
+    assert_eq!(
+        stored["spec"]["template"]["spec"]["tolerations"][0]["key"],
+        "builder.zeabur.com/builds"
+    );
 }
 
 #[test]

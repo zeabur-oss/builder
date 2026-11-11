@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Pod, Secret, Service};
+use k8s_openapi::api::core::v1::{
+    Namespace, PersistentVolumeClaim, Pod, Secret, Service, Toleration,
+};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions};
 use kube::runtime::reflector::Store;
@@ -214,6 +216,8 @@ enum Applied {
 /// - A changed node selector counts as a refused update: the cache claim is bound to the node its
 ///   Pod first ran on, so a Pod on another node would wait for it forever. The old `StatefulSet` is
 ///   replaced the same way, without the apply.
+/// - A changed toleration is applied, but not while a build uses the daemon: the update restarts
+///   the Pod.
 /// - Any other apply error, a `409 Conflict` included, is returned without a delete.
 ///
 /// [Dry-run]: https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run
@@ -230,19 +234,31 @@ async fn stateful_set(
     let sets: Api<StatefulSet> = Api::namespaced(client.clone(), daemon_namespace);
     let name = desired.name_any();
     let mut moved = false;
+    let mut retaint = false;
     match sets.get_opt(&name).await? {
         Some(old) if old.metadata.deletion_timestamp.is_some() => {
             return Ok(Applied::Waiting(format!(
                 "waiting for the old {name} to be deleted"
             )));
         }
-        Some(old) => moved = node_selector(&old) != node_selector(desired),
+        Some(old) => {
+            moved = node_selector(&old) != node_selector(desired);
+            retaint = tolerations(&old) != tolerations(desired);
+        }
         None => {
             if let Some(left) = leftover(client, daemon_namespace, namespace).await? {
                 return Ok(Applied::Waiting(format!(
                     "waiting for the old {name}'s {left} to be deleted"
                 )));
             }
+        }
+    }
+    if retaint && !moved {
+        let building = building(client, namespace).await?;
+        if building > 0 {
+            return Ok(Applied::Waiting(format!(
+                "waiting for {building} running build(s) to finish before the tolerations of {name} change"
+            )));
         }
     }
     let refused = if moved {
@@ -316,6 +332,17 @@ fn node_selector(set: &StatefulSet) -> Option<&BTreeMap<String, String>> {
         .spec
         .as_ref()?
         .node_selector
+        .as_ref()
+}
+
+/// The tolerations of the Pods of `set`.
+fn tolerations(set: &StatefulSet) -> Option<&Vec<Toleration>> {
+    set.spec
+        .as_ref()?
+        .template
+        .spec
+        .as_ref()?
+        .tolerations
         .as_ref()
 }
 
