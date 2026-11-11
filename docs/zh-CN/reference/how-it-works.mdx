@@ -69,6 +69,12 @@ Zeabur Builder 使用 `Build`、`BuildRun` 与 `ClusterBuilder` 三种自定义�
 
 `Build` 指定 Git 仓库与构建器。控制器为新的 commit 创建 `BuildRun`，记录该次构建的状态与结果。
 
+每个 `ClusterBuilder` 的状态列出控制器给每次构建的设置，所有构建器都相同：`buildDefaults` 是一次构建的 `requests` 和 `limits`，各有 `cpu` 与 `memory`；`buildCeiling` 是一次构建最多能获得的 CPU 与内存，无论命名空间的注解要求多少都不会超过，没有这个值表示没有上限；`defaultConcurrentBuilds` 是命名空间没有用注解另行设置时，同时能运行的构建数。buildkitd 容器请求的资源是每次构建的值乘以命名空间的同时构建数。
+
+```sh
+kubectl get clusterbuilder dockerfile -o jsonpath='{.status}'
+```
+
 ## 确认结果
 
 查看各个 Build 的构建器、来源、版本与就绪状态：

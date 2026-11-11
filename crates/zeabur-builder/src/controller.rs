@@ -1,4 +1,4 @@
-//! The two reconcilers, on kube-runtime.
+//! The reconcilers, on kube-runtime.
 //!
 //! - **Build**: resolves the ref, creates a `BuildRun` for a new commit or a new `rebuild` value,
 //!   cancels or waits for older runs, prunes history, summarises the newest result in its status
@@ -8,6 +8,8 @@
 //!   `Build`, annotations included, wakes it.
 //! - **`BuildRun`**: waits for a slot in its namespace and for the namespace's buildkitd
 //!   ([`crate::daemon`]), creates the Job and follows it to a result.
+//! - **`ClusterBuilder`**: writes the controller's build settings into its status
+//!   ([`decide::cluster_builder_status`]).
 //!
 //! Decisions are in [`crate::decide`]; this module only reads and writes objects. Status is
 //! written with server-side apply, so a field the controller stops setting is removed.
@@ -252,7 +254,7 @@ async fn apply_run_status(
     apply_status(api, &run.name_any(), &status).await
 }
 
-/// Runs both controllers, the buildkitd sweep and the webhook receiver until a termination
+/// Runs the controllers, the buildkitd sweep and the webhook receiver until a termination
 /// signal.
 pub(crate) async fn run(client: Client, settings: Settings) -> Result<(), String> {
     let identity = std::env::var("POD_NAME").ok();
@@ -330,6 +332,7 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
         watcher::Config::default().labels(&format!("{}={}", labels::MANAGED_BY, labels::MANAGER)),
     )
     .reconcile_all_on(leader.taken());
+    let builders = builders(client.clone(), &leader, Arc::clone(&context));
     let janitor = janitor(Arc::clone(&context));
     let sweep = daemon::sweep_forever(client.clone(), daemon_settings, runs.store(), leader);
     let runs = runs
@@ -347,12 +350,30 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
         }
     };
     tokio::select! {
-        ((), ()) = async { tokio::join!(builds, runs) } => {}
+        ((), (), ()) = async { tokio::join!(builds, runs, builders) } => {}
         () = sweep => {}
         () = janitor => {}
         served = receive => served?,
     }
     Ok(())
+}
+
+/// The `ClusterBuilder` reconciler, boxed to keep [`run_replica`]'s future small.
+fn builders(client: Client, leader: &Leader, context: Arc<Context>) -> BoxFuture<'static, ()> {
+    Box::pin(
+        Controller::new(
+            Api::<ClusterBuilder>::all(client),
+            watcher::Config::default(),
+        )
+        .reconcile_all_on(leader.taken())
+        .shutdown_on_signal()
+        .run(reconcile_builder, retry, context)
+        .for_each(|result| async move {
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "clusterbuilder reconcile");
+            }
+        }),
+    )
 }
 
 fn retry<K>(_: Arc<K>, error: &Error, _: Arc<Context>) -> Action {
@@ -394,6 +415,31 @@ async fn find_builder(
         build.metadata.generation,
     );
     Ok(builder)
+}
+
+/// Writes the controller's build settings into a `ClusterBuilder`'s status. The settings do not
+/// change while the process runs, so the object changing or a new leader is all that calls for a
+/// write.
+async fn reconcile_builder(
+    builder: Arc<ClusterBuilder>,
+    ctx: Arc<Context>,
+) -> Result<Action, Error> {
+    if !ctx.leader.is_leader() {
+        return Ok(Action::await_change());
+    }
+    let settings = &ctx.settings;
+    let status = decide::cluster_builder_status(
+        &builder,
+        &settings.daemon.resources,
+        &settings.ceiling,
+        settings.max_concurrent,
+        now(),
+    );
+    if builder.status.as_ref() != Some(&status) {
+        let api = Api::<ClusterBuilder>::all(ctx.client.clone());
+        apply_status(&api, &builder.name_any(), &status).await?;
+    }
+    Ok(Action::await_change())
 }
 
 async fn reconcile_build(build: Arc<Build>, ctx: Arc<Context>) -> Result<Action, Error> {

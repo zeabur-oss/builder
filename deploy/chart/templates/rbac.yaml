@@ -14,7 +14,7 @@ rules:
     resources: [builds, buildruns, clusterbuilders]
     verbs: [get, list, watch, create, delete]
   - apiGroups: [builder.zeabur.com]
-    resources: [builds/status, buildruns/status]
+    resources: [builds/status, buildruns/status, clusterbuilders/status]
     verbs: [get, patch]
   - apiGroups: [batch]
     resources: [jobs]

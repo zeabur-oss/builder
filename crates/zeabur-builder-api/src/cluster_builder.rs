@@ -7,16 +7,20 @@
 
 use std::collections::BTreeMap;
 
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::DURATION_PATTERN;
+use crate::build::MAX_CONDITIONS;
+use crate::common::{Condition, DURATION_PATTERN};
 
 /// Longest image reference.
 pub const MAX_IMAGE: usize = 512;
 /// Most frontend options.
 pub const MAX_OPTS: usize = 32;
+/// Longest quantity in the status.
+pub const MAX_QUANTITY: usize = 64;
 
 /// A way to build. Every builder reduces to the same shape: an optional planner that writes files
 /// into `/workspace/plan`, then a `BuildKit` frontend with options that reads them.
@@ -31,8 +35,14 @@ pub const MAX_OPTS: usize = 32;
     kind = "ClusterBuilder",
     shortname = "cbuilder",
     category = "zeabur-builder",
+    status = "ClusterBuilderStatus",
     printcolumn(name = "Type", type_ = "string", json_path = ".spec.type"),
     printcolumn(name = "Frontend", type_ = "string", json_path = ".spec.frontend.type"),
+    printcolumn(
+        name = "Ready",
+        type_ = "string",
+        json_path = ".status.conditions[?(@.type==\"Ready\")].status"
+    ),
     printcolumn(
         name = "Age",
         type_ = "date",
@@ -54,6 +64,72 @@ pub struct ClusterBuilderSpec {
     pub planner: Option<PlannerSpec>,
     /// The frontend that builds the plan.
     pub frontend: FrontendSpec,
+}
+
+/// The controller's settings for every build, whatever the builder. Each value is the
+/// controller's command-line setting; a Namespace annotation can change some of them for its
+/// builds.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterBuilderStatus {
+    /// What one build gets on its namespace's buildkitd when the Namespace annotations
+    /// `builder.zeabur.com/build-cpu` and `builder.zeabur.com/build-memory` do not say otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_defaults: Option<BuildDefaults>,
+    /// The most one build may get, whatever a Namespace annotation asks. A missing `cpu` or
+    /// `memory` means no ceiling for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_ceiling: Option<BuildCeiling>,
+    /// Builds a namespace runs at once when its annotation
+    /// `builder.zeabur.com/max-concurrent-builds` does not say otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_concurrent_builds: Option<u32>,
+    /// `Ready` is `True` once the controller that holds the lease has written this status for the
+    /// current generation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = MAX_CONDITIONS))]
+    pub conditions: Vec<Condition>,
+}
+
+/// One build's CPU and memory by default, laid out as Kubernetes writes `resources`. A missing
+/// value means the controller sets none.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildDefaults {
+    /// `--buildkitd-cpu-request` and `--buildkitd-memory-request`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests: Option<BuildQuantities>,
+    /// `--buildkitd-cpu-limit` and `--buildkitd-memory-limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<BuildQuantities>,
+}
+
+/// A CPU and a memory quantity.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildQuantities {
+    /// CPU, such as `100m` or `1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    pub cpu: Option<Quantity>,
+    /// Memory, such as `256Mi`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    pub memory: Option<Quantity>,
+}
+
+/// The most CPU and memory one build may get.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildCeiling {
+    /// `--buildkitd-cpu-max`; missing: no ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    pub cpu: Option<Quantity>,
+    /// `--buildkitd-memory-max`; missing: no ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    pub memory: Option<Quantity>,
 }
 
 /// The builders.

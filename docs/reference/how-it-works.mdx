@@ -69,6 +69,12 @@ Zeabur Builder uses three custom resources: `Build`, `BuildRun`, and `ClusterBui
 
 `Build` specifies the Git repository and builder. The controller creates a `BuildRun` for each new commit to record the build's status and results.
 
+The status of each `ClusterBuilder` shows the controller's per-build settings, which are the same for every builder: `buildDefaults` (the `requests` and `limits` of one build, each with `cpu` and `memory`), `buildCeiling` (the most CPU and memory one build may get, whatever a Namespace annotation asks; a missing value means no ceiling) and `defaultConcurrentBuilds` (builds a Namespace runs at once unless its annotation sets another number). buildkitd's container asks for the per-build values times the Namespace's concurrent builds.
+
+```sh
+kubectl get clusterbuilder dockerfile -o jsonpath='{.status}'
+```
+
 ## Check the results
 
 View the builder, source, version, and readiness status of each Build:

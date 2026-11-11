@@ -42,7 +42,7 @@ pub struct SecretKeyRef {
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
     /// The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,
-    /// `Reconciling`, `Stalled` or `Ready`.
+    /// `Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.
     #[serde(rename = "type")]
     #[schemars(length(min = 1, max = 316))]
     pub kind: String,

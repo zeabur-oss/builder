@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The chart from this checkout on k3s, with the images built here: a Dockerfile build in two
-# namespaces and a Railpack build, the two failures the samples make on purpose, the isolation
-# between the namespaces and the admission policy. It creates the k3d cluster `zeabur-builder` and
-# deletes it when it ends; set ZEABUR_CI_KEEP=1 to keep it. K3S_IMAGE picks the k3s release.
-# K3D_REGISTRY_CONFIG passes a registries.yaml to k3d, such as one with pull-through mirrors.
-# ZEABUR_CI_IMAGE_TAG uses the images zeabur-builder/<name>:<tag> already in Docker instead of
-# building them (the release smoke).
+# namespaces and a Railpack build, the ClusterBuilders' status, the two failures the samples make
+# on purpose, the isolation between the namespaces and the admission policy. It creates the k3d
+# cluster `zeabur-builder` and deletes it when it ends; set ZEABUR_CI_KEEP=1 to keep it.
+# K3S_IMAGE picks the k3s release. K3D_REGISTRY_CONFIG passes a registries.yaml to k3d, such as
+# one with pull-through mirrors. ZEABUR_CI_IMAGE_TAG uses the images zeabur-builder/<name>:<tag>
+# already in Docker instead of building them (the release smoke).
 #
 # It leaves what is worth keeping in CI_ARTIFACTS (default target/ci/artifacts): the log of every
 # Pod, and when it fails the Builds, BuildRuns, events and the network context.
@@ -144,6 +144,7 @@ if ! {
     team-a/whoami team-a/hello-python team-b/whoami &&
     kubectl -n team-a wait build/whoami --timeout 60s \
       --for 'jsonpath={.status.exposedPorts[0]}=80/tcp' &&
+    kubectl wait clusterbuilder --all --timeout 60s --for condition=Ready &&
     kubectl -n team-a wait build/no-such-ref --timeout 120s \
       --for 'jsonpath={.status.conditions[?(@.type=="SourceReady")].reason}=RefNotFound' &&
     kubectl -n team-a wait buildrun -l builder.zeabur.com/build=no-such-dockerfile --timeout 600s \

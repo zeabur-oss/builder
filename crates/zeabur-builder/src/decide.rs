@@ -7,12 +7,16 @@ use std::time::Duration;
 use jiff::Timestamp;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::Serialize;
 use zeabur_builder_api::build::{ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason};
 use zeabur_builder_api::build_run::{
     self as run_api, BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, StepState,
     Trigger,
+};
+use zeabur_builder_api::cluster_builder::{
+    BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderStatus,
 };
 use zeabur_builder_api::common::{Condition, ConditionStatus};
 use zeabur_builder_api::{annotations, labels};
@@ -553,6 +557,54 @@ pub(crate) struct Limits {
 pub(crate) struct Ceiling {
     pub(crate) cpu: Option<String>,
     pub(crate) memory: Option<String>,
+}
+
+/// A `ClusterBuilder`'s status: the per-build `defaults`, the `ceiling` and the per-namespace
+/// `concurrent` builds that [`limits`] starts from, the same for every builder. `Ready` keeps its
+/// transition time from the status stored on `builder`.
+pub(crate) fn cluster_builder_status(
+    builder: &ClusterBuilder,
+    defaults: &Resources,
+    ceiling: &Ceiling,
+    concurrent: u32,
+    now: Timestamp,
+) -> ClusterBuilderStatus {
+    let quantity = |value: &Option<String>| value.clone().map(Quantity);
+    let non_empty = |quantities: BuildQuantities| {
+        (quantities != BuildQuantities::default()).then_some(quantities)
+    };
+    let build_ceiling = BuildCeiling {
+        cpu: quantity(&ceiling.cpu),
+        memory: quantity(&ceiling.memory),
+    };
+    let mut conditions = builder
+        .status
+        .as_ref()
+        .map_or_default(|stored| stored.conditions.clone());
+    set_condition(
+        &mut conditions,
+        "Ready",
+        ConditionStatus::True,
+        ConditionReason::Published,
+        "the status holds the controller's build settings",
+        now,
+        builder.metadata.generation,
+    );
+    ClusterBuilderStatus {
+        build_defaults: Some(BuildDefaults {
+            requests: non_empty(BuildQuantities {
+                cpu: quantity(&defaults.cpu_request),
+                memory: quantity(&defaults.memory_request),
+            }),
+            limits: non_empty(BuildQuantities {
+                cpu: quantity(&defaults.cpu_limit),
+                memory: quantity(&defaults.memory_limit),
+            }),
+        }),
+        build_ceiling: (build_ceiling != BuildCeiling::default()).then_some(build_ceiling),
+        default_concurrent_builds: Some(concurrent),
+        conditions,
+    }
 }
 
 /// A namespace's [`Limits`]: the controller's, with each value its annotations set to a valid one

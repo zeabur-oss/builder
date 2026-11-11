@@ -33,6 +33,11 @@
             "type": "string"
           },
           {
+            "jsonPath": ".status.conditions[?(@.type==\"Ready\")].status",
+            "name": "Ready",
+            "type": "string"
+          },
+          {
             "jsonPath": ".metadata.creationTimestamp",
             "name": "Age",
             "type": "date"
@@ -172,6 +177,139 @@
                     "rule": "self.type == 'dockerfile' ? !has(self.planner) : has(self.planner)"
                   }
                 ]
+              },
+              "status": {
+                "description": "The controller's settings for every build, whatever the builder. Each value is the\ncontroller's command-line setting; a Namespace annotation can change some of them for its\nbuilds.",
+                "nullable": true,
+                "properties": {
+                  "buildCeiling": {
+                    "description": "The most one build may get, whatever a Namespace annotation asks. A missing `cpu` or\n`memory` means no ceiling for it.",
+                    "nullable": true,
+                    "properties": {
+                      "cpu": {
+                        "description": "`--buildkitd-cpu-max`; missing: no ceiling.",
+                        "maxLength": 64,
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "memory": {
+                        "description": "`--buildkitd-memory-max`; missing: no ceiling.",
+                        "maxLength": 64,
+                        "nullable": true,
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "buildDefaults": {
+                    "description": "What one build gets on its namespace's buildkitd when the Namespace annotations\n`builder.zeabur.com/build-cpu` and `builder.zeabur.com/build-memory` do not say otherwise.",
+                    "nullable": true,
+                    "properties": {
+                      "limits": {
+                        "description": "`--buildkitd-cpu-limit` and `--buildkitd-memory-limit`.",
+                        "nullable": true,
+                        "properties": {
+                          "cpu": {
+                            "description": "CPU, such as `100m` or `1`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "memory": {
+                            "description": "Memory, such as `256Mi`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "requests": {
+                        "description": "`--buildkitd-cpu-request` and `--buildkitd-memory-request`.",
+                        "nullable": true,
+                        "properties": {
+                          "cpu": {
+                            "description": "CPU, such as `100m` or `1`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "memory": {
+                            "description": "Memory, such as `256Mi`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "conditions": {
+                    "description": "`Ready` is `True` once the controller that holds the lease has written this status for the\ncurrent generation.",
+                    "items": {
+                      "description": "A status condition, as `metav1.Condition`.",
+                      "properties": {
+                        "lastTransitionTime": {
+                          "description": "When the status last changed (RFC 3339).",
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "message": {
+                          "description": "A human-readable message.",
+                          "maxLength": 32768,
+                          "type": "string"
+                        },
+                        "observedGeneration": {
+                          "description": "The `metadata.generation` the condition was computed from.",
+                          "format": "int64",
+                          "minimum": 0.0,
+                          "nullable": true,
+                          "type": "integer"
+                        },
+                        "reason": {
+                          "description": "A `CamelCase` reason.",
+                          "maxLength": 1024,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "status": {
+                          "description": "`True`, `False` or `Unknown`.",
+                          "enum": [
+                            "True",
+                            "False",
+                            "Unknown"
+                          ],
+                          "type": "string"
+                        },
+                        "type": {
+                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.",
+                          "maxLength": 316,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "lastTransitionTime",
+                        "reason",
+                        "status",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  },
+                  "defaultConcurrentBuilds": {
+                    "description": "Builds a namespace runs at once when its annotation\n`builder.zeabur.com/max-concurrent-builds` does not say otherwise.",
+                    "format": "uint32",
+                    "minimum": 0.0,
+                    "nullable": true,
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
               }
             },
             "required": [
@@ -182,7 +320,10 @@
           }
         },
         "served": true,
-        "storage": true
+        "storage": true,
+        "subresources": {
+          "status": {}
+        }
       }
     ]
   }
@@ -665,7 +806,7 @@
                           "type": "string"
                         },
                         "type": {
-                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`.",
+                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.",
                           "maxLength": 316,
                           "minLength": 1,
                           "type": "string"
@@ -1013,7 +1154,7 @@
                           "type": "string"
                         },
                         "type": {
-                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`.",
+                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.",
                           "maxLength": 316,
                           "minLength": 1,
                           "type": "string"
