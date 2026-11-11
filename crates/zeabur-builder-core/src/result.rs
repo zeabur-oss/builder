@@ -3,8 +3,9 @@
 //! The build container writes one JSON object to `/dev/termination-log`; the kubelet copies it into
 //! the Pod's container status, where the controller reads it without `pods/log` access or a side
 //! channel. The kubelet keeps at most 4096 bytes of a termination message ([termination
-//! messages]), so [`BuildResult::encode`] shortens `message` and drops optional lists until the
-//! object fits, and [`BuildResult::decode`] refuses anything larger.
+//! messages]), counted in bytes of UTF-8. [`BuildResult::encode`] caps the lists and shortens the
+//! object until it fits, in the order its documentation gives, and [`BuildResult::decode`] refuses
+//! anything larger.
 //!
 //! [termination messages]: https://kubernetes.io/docs/tasks/debug/debug-application/determine-reason-pod-failure/#customizing-the-termination-message
 
@@ -24,6 +25,12 @@ pub const MAX_BASE_IMAGES: usize = 10;
 
 /// The most exposed ports recorded.
 pub const MAX_EXPOSED_PORTS: usize = 32;
+
+/// The most steps recorded: the last ones, in the order they started.
+pub const MAX_STEPS: usize = 20;
+
+/// The longest step name or step message kept, in characters.
+pub const MAX_STEP_TEXT: usize = 120;
 
 /// What a build Job reports.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -61,6 +68,60 @@ pub struct BuildResult {
     /// Build steps, and how many came from cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheStats>,
+    /// The last steps, at most [`MAX_STEPS`], in the order they started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Step>,
+    /// How many earlier steps `steps` leaves out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted_steps: u32,
+    /// The step that failed, also when `steps` leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_step: Option<Step>,
+}
+
+/// One step of a build: a `BuildKit` vertex.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Step {
+    /// Its name, such as `[2/3] RUN npm ci`, at most [`MAX_STEP_TEXT`] characters.
+    pub name: String,
+    /// Where it got to.
+    pub state: StepState,
+    /// Whether it came from cache.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached: bool,
+    /// When it started, RFC 3339 to the second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    /// When it finished, RFC 3339 to the second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_time: Option<String>,
+    /// Its error, at most [`MAX_STEP_TEXT`] characters.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
+
+impl Step {
+    /// The step with its name and message cut to [`MAX_STEP_TEXT`] characters.
+    #[must_use]
+    pub fn bounded(mut self) -> Self {
+        self.name = chars(&self.name, MAX_STEP_TEXT);
+        self.message = chars(&self.message, MAX_STEP_TEXT);
+        self
+    }
+}
+
+/// Where a [`Step`] got to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StepState {
+    /// Started, and not reported finished.
+    #[default]
+    Running,
+    /// Finished, or answered from cache.
+    Succeeded,
+    /// Finished with an error.
+    Failed,
 }
 
 /// Success or failure.
@@ -148,17 +209,42 @@ impl BuildResult {
         }
     }
 
-    /// Writes the message, shortened to fit [`MAX_MESSAGE_BYTES`].
+    /// Writes the message as JSON of at most [`MAX_MESSAGE_BYTES`] bytes.
+    ///
+    /// First `message` is cut to [`MAX_DETAIL_BYTES`], the lists to [`MAX_BASE_IMAGES`],
+    /// [`MAX_EXPOSED_PORTS`] and the last [`MAX_STEPS`] steps, and step names and messages to
+    /// [`MAX_STEP_TEXT`] characters. While the JSON is still too long, it drops, one at a time:
+    ///
+    /// 1. the oldest step, counted in `omittedSteps`;
+    /// 2. the last base image;
+    /// 3. the last exposed port;
+    /// 4. every tag but the first;
+    /// 5. `message`;
+    /// 6. the phase times and the tags.
+    ///
+    /// `result`, `reason`, `digest`, `cache` and `failedStep` are always kept.
     #[must_use]
     pub fn encode(&self) -> String {
         let mut result = self.clone();
         result.message = truncate(&result.message, MAX_DETAIL_BYTES);
         result.base_images.truncate(MAX_BASE_IMAGES);
         result.exposed_ports.truncate(MAX_EXPOSED_PORTS);
+        let extra = result.steps.len().saturating_sub(MAX_STEPS);
+        result.steps.drain(..extra);
+        result.omitted_steps = result
+            .omitted_steps
+            .saturating_add(u32::try_from(extra).unwrap_or(u32::MAX));
+        result.steps = result.steps.into_iter().map(Step::bounded).collect();
+        result.failed_step = result.failed_step.map(Step::bounded);
         loop {
             let text = serde_json::to_string(&result).unwrap_or_default();
             if text.len() <= MAX_MESSAGE_BYTES {
                 return text;
+            }
+            if !result.steps.is_empty() {
+                result.steps.remove(0);
+                result.omitted_steps = result.omitted_steps.saturating_add(1);
+                continue;
             }
             if result.base_images.pop().is_some() {
                 continue;
@@ -190,6 +276,19 @@ pub fn is_digest(s: &str) -> bool {
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` passes a reference"
+)]
+const fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// Cuts a string to at most `max` characters.
+fn chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
 }
 
 /// Cuts a string to at most `max` bytes on a character boundary.
@@ -296,5 +395,98 @@ mod tests {
 
         result.exposed_ports.clear();
         assert!(!result.encode().contains("exposedPorts"));
+    }
+
+    fn step(name: String, message: String) -> Step {
+        Step {
+            name,
+            state: StepState::Succeeded,
+            cached: false,
+            start_time: Some("2026-10-22T00:00:00Z".to_owned()),
+            completion_time: Some("2026-10-22T00:00:01Z".to_owned()),
+            message,
+        }
+    }
+
+    #[test]
+    fn decode_takes_4096_bytes_and_refuses_4097() {
+        let message = |len: usize| {
+            let head = r#"{"result":"failed","reason":"BuildFailed","message":""#;
+            let tail = r#""}"#;
+            format!("{head}{}{tail}", "x".repeat(len - head.len() - tail.len()))
+        };
+        let full = message(MAX_MESSAGE_BYTES);
+        assert_eq!(full.len(), MAX_MESSAGE_BYTES);
+        assert_eq!(
+            BuildResult::decode(&full).unwrap().reason,
+            Some(FailureReason::BuildFailed)
+        );
+        assert!(matches!(
+            BuildResult::decode(&message(MAX_MESSAGE_BYTES + 1)),
+            Err(DecodeError::TooLong)
+        ));
+    }
+
+    #[test]
+    fn encode_keeps_the_last_steps_and_counts_the_rest() {
+        let result = BuildResult {
+            result: Outcome::Succeeded,
+            digest: Some(DIGEST.to_owned()),
+            steps: (0..25)
+                .map(|i| step(format!("step {i}"), String::new()))
+                .collect(),
+            ..BuildResult::default()
+        };
+        let back = BuildResult::decode(&result.encode()).unwrap();
+        let names: Vec<&str> = back.steps.iter().map(|s| s.name.as_str()).collect();
+        let want: Vec<String> = (5..25).map(|i| format!("step {i}")).collect();
+        assert_eq!(names, want);
+        assert_eq!(back.omitted_steps, 5);
+    }
+
+    #[test]
+    fn encode_drops_the_oldest_steps_first_by_bytes_and_keeps_the_failure() {
+        let long = |c: &str| c.repeat(200);
+        for (case, text) in [("ascii", "x"), ("chinese", "錯")] {
+            let failed = Step {
+                state: StepState::Failed,
+                ..step(format!("0 {}", long(text)), long(text))
+            };
+            let mut steps = vec![failed.clone()];
+            steps.extend((1..30).map(|i| step(format!("{i} {}", long(text)), long(text))));
+            let result = BuildResult {
+                result: Outcome::Failed,
+                reason: Some(FailureReason::BuildFailed),
+                message: long(text),
+                base_images: (0..10)
+                    .map(|i| format!("docker.io/library/i{i}@{DIGEST}"))
+                    .collect(),
+                steps: steps.clone(),
+                failed_step: Some(failed.clone()),
+                ..BuildResult::default()
+            };
+
+            let text = result.encode();
+            assert!(text.len() <= MAX_MESSAGE_BYTES, "{case}: {}", text.len());
+            let back = BuildResult::decode(&text).unwrap();
+            assert_eq!(back.result, Outcome::Failed, "{case}");
+            assert_eq!(back.reason, Some(FailureReason::BuildFailed), "{case}");
+            assert_eq!(back.failed_step, Some(failed.bounded()), "{case}");
+            let kept = back.steps.len();
+            let last: Vec<Step> = steps[steps.len() - kept..]
+                .iter()
+                .cloned()
+                .map(Step::bounded)
+                .collect();
+            assert_eq!(back.steps, last, "{case}");
+            assert_eq!(back.omitted_steps as usize + kept, steps.len(), "{case}");
+            if kept > 0 {
+                assert_eq!(back.base_images, result.base_images, "{case}");
+            }
+            for step in &back.steps {
+                assert!(step.name.chars().count() <= MAX_STEP_TEXT, "{case}");
+                assert!(step.message.chars().count() <= MAX_STEP_TEXT, "{case}");
+            }
+        }
     }
 }

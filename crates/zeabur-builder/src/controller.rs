@@ -85,8 +85,6 @@ const WEBHOOK_MANAGER: &str = "zeabur-builder-webhook";
 const PENDING_RETRY: Duration = Duration::from_secs(15);
 /// How often a `BuildRun` waiting for its buildkitd to start is looked at again.
 const STARTING_RETRY: Duration = Duration::from_secs(2);
-/// Selects the `BuildRun`s that are not finished, by the selectable field `status.phase`.
-const UNFINISHED: &str = "status.phase!=Succeeded,status.phase!=Failed,status.phase!=Cancelled";
 /// Objects read per page of a LIST.
 const PAGE: u32 = 100;
 /// The name of the client certificate Secret in a build namespace.
@@ -244,6 +242,16 @@ where
     )
     .await?;
     Ok(())
+}
+
+/// Writes a run's status with the conditions and rebuild request [`decide::run_status`] derives.
+async fn apply_run_status(
+    api: &Api<BuildRun>,
+    run: &BuildRun,
+    status: BuildRunStatus,
+) -> Result<(), Error> {
+    let status = decide::run_status(run, status, now());
+    apply_status(api, &run.name_any(), &status).await
 }
 
 /// Runs the controllers, the buildkitd sweep and the webhook receiver until a termination
@@ -779,7 +787,7 @@ async fn cancel_run(ctx: &Context, build: &Build, name: &str) -> Result<(), Erro
     status.reason = Some(Reason::Cancelled);
     status.message = Some("a newer run replaced it".to_owned());
     status.completion_time = Some(now().to_string());
-    apply_status(&runs, name, &status).await?;
+    apply_run_status(&runs, &run, status).await?;
     report(
         ctx,
         build,
@@ -830,7 +838,7 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
             )
             .await;
         }
-        return start(&ctx, &run, status).await;
+        return Box::pin(start(&ctx, &run, status)).await;
     };
 
     let Some(status) = decide::recorded(status, &job, now()) else {
@@ -851,7 +859,7 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
                     reason: None,
                     ..status
                 };
-                apply_status(&runs, &name, &next).await?;
+                apply_run_status(&runs, &run, next).await?;
             }
             Ok(Action::await_change())
         }
@@ -905,6 +913,7 @@ async fn finish(
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
     status.completion_time = Some(now().to_string());
+    let status = decide::run_status(run, status, now());
     apply_status(
         &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
         &name,
@@ -1021,10 +1030,10 @@ async fn notify_targets(
         notified_at: Some(now().to_string()),
         ..run.status.clone().unwrap_or_default()
     };
-    apply_status(
+    apply_run_status(
         &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
-        &run.name_any(),
-        &status,
+        run,
+        status,
     )
     .await
 }
@@ -1082,6 +1091,7 @@ async fn pending(
     status.phase = Some(Phase::Pending);
     status.reason = Some(reason);
     status.message = Some(message);
+    let status = decide::run_status(run, status, now());
     if run.status.as_ref() != Some(&status) {
         let api =
             Api::<BuildRun>::namespaced(ctx.client.clone(), &run.namespace().unwrap_or_default());
@@ -1145,7 +1155,7 @@ async fn admit(
 ) -> Result<Result<ByteString, (Reason, String)>, Error> {
     let namespace = build.namespace().unwrap_or_default();
     let runs = Api::<BuildRun>::all(ctx.client.clone());
-    let mut params = ListParams::default().fields(UNFINISHED).limit(PAGE);
+    let mut params = ListParams::default().fields(decide::UNFINISHED).limit(PAGE);
     let mut unfinished = Vec::new();
     loop {
         let page = runs.list(&params).await?;
@@ -1205,10 +1215,10 @@ async fn reserve(
     {
         status.reason = None;
         status.message = None;
-        apply_status(
+        apply_run_status(
             &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
-            &run.name_any(),
-            status,
+            run,
+            status.clone(),
         )
         .await?;
     }
@@ -1234,10 +1244,10 @@ async fn job_created(
         tags,
         ..status
     };
-    apply_status(
+    apply_run_status(
         &Api::<BuildRun>::namespaced(ctx.client.clone(), &run.namespace().unwrap_or_default()),
-        &name,
-        &next,
+        run,
+        next,
     )
     .await
 }
@@ -1315,17 +1325,13 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         Ok(auth) => auth,
         Err((reason, message)) => return pending(ctx, run, status, reason, message).await,
     };
-    let woken = daemon::wake(&ctx.client, &settings.daemon, &namespace, &limits).await?;
-    if !woken.ready {
-        return pending(
-            ctx,
-            run,
-            status,
-            Reason::BuildkitdStarting,
-            format!("waiting for {} to be ready", woken.pod),
-        )
-        .await;
-    }
+    let woken = match daemon::wake(&ctx.client, &settings.daemon, &namespace, &limits).await? {
+        daemon::Wake::Ready(woken) => woken,
+        daemon::Wake::Starting(message) => {
+            return pending(ctx, run, status, Reason::BuildkitdStarting, message).await;
+        }
+        daemon::Wake::Invalid(message) => return finish(ctx, run, fail(message)).await,
+    };
     if build.spec.source.github_app.is_some() {
         // Minted only now, so a run waiting for a slot does not mint a token every retry.
         match app_token(ctx, &build, Access::Fetch).await {

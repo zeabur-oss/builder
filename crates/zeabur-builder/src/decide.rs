@@ -12,17 +12,21 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::Serialize;
 use zeabur_builder_api::build::{ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason};
 use zeabur_builder_api::build_run::{
-    BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, Trigger,
+    self as run_api, BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, StepState,
+    Trigger,
 };
 use zeabur_builder_api::cluster_builder::{
     BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderStatus,
 };
 use zeabur_builder_api::common::{Condition, ConditionStatus};
 use zeabur_builder_api::{annotations, labels};
-use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome};
+use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome, Step};
 use zeabur_builder_core::tag::{self, TagError, TagInputs};
 use zeabur_builder_jobspec::buildkitd::Resources;
 
+/// Selects the `BuildRun`s that are not finished, by the selectable field `status.phase`.
+pub(crate) const UNFINISHED: &str =
+    "status.phase!=Succeeded,status.phase!=Failed,status.phase!=Cancelled";
 /// Polling interval for plain Git when the `Build` sets none.
 pub(crate) const DEFAULT_POLL: Duration = Duration::from_mins(1);
 /// Polling interval for a GitHub App source whose push events reach the controller: only a safety
@@ -207,12 +211,72 @@ pub(crate) fn archive_source(
     )
 }
 
-/// Sets a condition, keeping its transition time when the status did not change.
-pub(crate) fn set_condition(
+/// `status` with the conditions of its phase and the run's rebuild request, as every write of a
+/// run's status records them.
+///
+/// The conditions follow kstatus ([kstatus]): `Reconciling` and `Stalled` are "abnormal-true"
+/// and are present only while they hold; `Ready` is always present. Each carries the run's
+/// `metadata.generation`, and keeps the `lastTransitionTime` stored on `run` while its status
+/// does not change. The conditions in `status` are ignored.
+///
+/// [kstatus]: https://github.com/kubernetes-sigs/cli-utils/blob/5895ad6c17dd06b99c1e5c8af17e2b12a3504fad/pkg/kstatus/README.md#conditions
+pub(crate) fn run_status(
+    run: &BuildRun,
+    mut status: BuildRunStatus,
+    now: Timestamp,
+) -> BuildRunStatus {
+    status.observed_rebuild = rebuild_value(&run.metadata)
+        .filter(|v| v.chars().count() <= run_api::MAX_OBSERVED_REBUILD)
+        .map(str::to_owned);
+    let Some(phase) = status.phase else {
+        return status;
+    };
+    let generation = run.metadata.generation;
+    let message = status.message.clone().unwrap_or_default();
+    let why = status.reason.map_or_else(|| wire(phase), wire);
+    let (reconciling, stalled, ready) = match phase {
+        Phase::Pending | Phase::Planning | Phase::Building => (true, false, ConditionStatus::False),
+        Phase::Succeeded => (false, false, ConditionStatus::True),
+        Phase::Failed | Phase::Cancelled | Phase::Unknown => (false, true, ConditionStatus::False),
+    };
+    status.conditions = run
+        .status
+        .as_ref()
+        .map_or_default(|stored| stored.conditions.clone());
+    let conditions = &mut status.conditions;
+    for (kind, holds) in [("Reconciling", reconciling), ("Stalled", stalled)] {
+        if holds {
+            let reason = why.clone();
+            put_condition(
+                conditions,
+                kind,
+                ConditionStatus::True,
+                reason,
+                &message,
+                now,
+                generation,
+            );
+        } else {
+            conditions.retain(|c| c.kind != kind);
+        }
+    }
+    put_condition(conditions, "Ready", ready, why, &message, now, generation);
+    status
+}
+
+/// The spelling of a `Phase` or `Reason` on the wire.
+fn wire<T: Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "Unknown".to_owned())
+}
+
+fn put_condition(
     conditions: &mut Vec<Condition>,
     kind: &str,
     status: ConditionStatus,
-    reason: ConditionReason,
+    reason: String,
     message: &str,
     now: Timestamp,
     generation: Option<i64>,
@@ -225,11 +289,32 @@ pub(crate) fn set_condition(
     conditions.push(Condition {
         kind: kind.to_owned(),
         status,
-        reason: reason.to_string(),
+        reason,
         message: message.to_owned(),
         last_transition_time: transition,
         observed_generation: generation,
     });
+}
+
+/// Sets a condition, keeping its transition time when the status did not change.
+pub(crate) fn set_condition(
+    conditions: &mut Vec<Condition>,
+    kind: &str,
+    status: ConditionStatus,
+    reason: ConditionReason,
+    message: &str,
+    now: Timestamp,
+    generation: Option<i64>,
+) {
+    put_condition(
+        conditions,
+        kind,
+        status,
+        reason.to_string(),
+        message,
+        now,
+        generation,
+    );
 }
 
 /// Whether the ref must be asked again, or the last answer is recent enough. A new generation
@@ -970,7 +1055,11 @@ fn job_condition(job: &Job, kind: &str) -> Option<String> {
         .map(|c| c.reason.clone().unwrap_or_default())
 }
 
-fn terminated_with_error(statuses: Option<&Vec<ContainerStatus>>, name: &str) -> Option<String> {
+/// The message of the init container `name` that exited with an error, and its step.
+fn terminated_with_error(
+    statuses: Option<&Vec<ContainerStatus>>,
+    name: &str,
+) -> Option<(String, run_api::Step)> {
     let terminated = statuses?
         .iter()
         .find(|s| s.name == name)?
@@ -978,13 +1067,52 @@ fn terminated_with_error(statuses: Option<&Vec<ContainerStatus>>, name: &str) ->
         .as_ref()?
         .terminated
         .as_ref()?;
-    (terminated.exit_code != 0).then(|| {
-        terminated
-            .message
-            .clone()
-            .or_else(|| terminated.reason.clone())
-            .unwrap_or_else(|| format!("exit code {}", terminated.exit_code))
-    })
+    if terminated.exit_code == 0 {
+        return None;
+    }
+    let message = terminated
+        .message
+        .clone()
+        .or_else(|| terminated.reason.clone())
+        .unwrap_or_else(|| format!("exit code {}", terminated.exit_code));
+    let step = Step {
+        name: name.to_owned(),
+        state: result::StepState::Failed,
+        cached: false,
+        start_time: terminated.started_at.as_ref().map(|t| t.0.to_string()),
+        completion_time: terminated.finished_at.as_ref().map(|t| t.0.to_string()),
+        message: message.clone(),
+    };
+    Some((message, api_step(step)))
+}
+
+/// A step of the Job's result as the `BuildRun` records it, cut to the CRD's bounds.
+fn api_step(step: Step) -> run_api::Step {
+    let step = step.bounded();
+    run_api::Step {
+        name: step.name,
+        state: match step.state {
+            result::StepState::Running => StepState::Running,
+            result::StepState::Succeeded => StepState::Succeeded,
+            result::StepState::Failed => StepState::Failed,
+        },
+        cached: step.cached,
+        start_time: step.start_time,
+        completion_time: step.completion_time,
+        message: step.message,
+    }
+}
+
+/// A failure of the init container `fetch` or `plan`, with that step.
+fn init_failed(reason: Reason, message: String, step: run_api::Step) -> Observed {
+    Observed::Finished(Box::new(BuildRunStatus {
+        phase: Some(Phase::Failed),
+        reason: Some(reason),
+        message: Some(message),
+        steps: vec![step.clone()],
+        failed_step: Some(step),
+        ..BuildRunStatus::default()
+    }))
 }
 
 fn termination_message(pod: &Pod) -> Option<String> {
@@ -1012,7 +1140,12 @@ fn failed(reason: Reason, message: String) -> Observed {
 }
 
 fn from_result(result: BuildResult) -> Observed {
+    let extra = result.steps.len().saturating_sub(run_api::MAX_STEPS);
+    let omitted = i64::from(result.omitted_steps).saturating_add(i64::try_from(extra).unwrap_or(0));
     let mut status = BuildRunStatus {
+        steps: result.steps.into_iter().skip(extra).map(api_step).collect(),
+        omitted_steps: (omitted > 0).then_some(omitted),
+        failed_step: result.failed_step.map(api_step),
         message: (!result.message.is_empty()).then_some(result.message),
         tags: result.tags,
         image_digest: result.digest,
@@ -1070,11 +1203,11 @@ pub(crate) fn observe(job: &Job, pod: Option<&Pod>) -> Observed {
             );
         }
         let init = pod_status.and_then(|s| s.init_container_statuses.as_ref());
-        if let Some(e) = terminated_with_error(init, "fetch") {
-            return failed(Reason::SourceFailed, e);
+        if let Some((e, step)) = terminated_with_error(init, "fetch") {
+            return init_failed(Reason::SourceFailed, e, step);
         }
-        if let Some(e) = terminated_with_error(init, "plan") {
-            return failed(Reason::PlanFailed, e);
+        if let Some((e, step)) = terminated_with_error(init, "plan") {
+            return init_failed(Reason::PlanFailed, e, step);
         }
         return match message.as_deref().map(BuildResult::decode) {
             Some(Ok(result)) => from_result(result),
