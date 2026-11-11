@@ -6,7 +6,7 @@ use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt as _, Full};
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, Toleration};
 use kube::Client;
 use serde_json::{Value, json};
 
@@ -439,15 +439,94 @@ async fn a_replacement_waits_for_running_builds() {
     assert_eq!(lock(&cluster).deletes().len(), 1);
 }
 
+#[tokio::test]
+async fn a_new_build_node_replaces_the_daemon_only_when_no_build_runs() {
+    let cluster = running("standard");
+    let mut moved = desired("standard");
+    if let Some(pod) = moved.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+        pod.node_selector = Some(BTreeMap::from([(
+            "builder.zeabur.com/builds".to_owned(),
+            "true".to_owned(),
+        )]));
+    }
+    let old = lock(&cluster).uid(&set_key());
+    lock(&cluster).put(
+        "buildruns/web-1",
+        json!({"metadata": {"name": "web-1", "namespace": NAMESPACE},
+               "spec": {"buildRef": "web", "revision": "abc"},
+               "status": {"phase": "Building", "jobRef": "web-1"}}),
+    );
+
+    let client = client(&cluster);
+    let waiting = stateful_set(&client, DAEMONS, NAMESPACE, &moved).await;
+    assert!(
+        matches!(&waiting, Ok(Applied::Waiting(m)) if m.contains("1 running build")),
+        "{waiting:?}"
+    );
+    assert!(lock(&cluster).deletes().is_empty());
+    assert_eq!(lock(&cluster).uid(&set_key()), old);
+
+    lock(&cluster).collect("buildruns/web-1");
+    let replacing = stateful_set(&client, DAEMONS, NAMESPACE, &moved).await;
+    assert!(
+        matches!(&replacing, Ok(Applied::Waiting(m)) if m.contains("node selector")),
+        "{replacing:?}"
+    );
+    assert_eq!(lock(&cluster).deletes().len(), 1);
+}
+
+#[tokio::test]
+async fn new_tolerations_wait_for_running_builds_and_then_apply() {
+    let cluster = running("standard");
+    let mut tainted = desired("standard");
+    if let Some(pod) = tainted.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+        pod.tolerations = Some(vec![Toleration {
+            key: Some("builder.zeabur.com/builds".to_owned()),
+            operator: Some("Exists".to_owned()),
+            ..Toleration::default()
+        }]);
+    }
+    let old = lock(&cluster).uid(&set_key());
+    lock(&cluster).put(
+        "buildruns/web-1",
+        json!({"metadata": {"name": "web-1", "namespace": NAMESPACE},
+               "spec": {"buildRef": "web", "revision": "abc"},
+               "status": {"phase": "Building", "jobRef": "web-1"}}),
+    );
+
+    let client = client(&cluster);
+    let waiting = stateful_set(&client, DAEMONS, NAMESPACE, &tainted).await;
+    assert!(
+        matches!(&waiting, Ok(Applied::Waiting(m)) if m.contains("1 running build")),
+        "{waiting:?}"
+    );
+    let stored = object(&cluster, &set_key());
+    assert!(stored["spec"]["template"]["spec"]["tolerations"].is_null());
+
+    lock(&cluster).collect("buildruns/web-1");
+    let applied = stateful_set(&client, DAEMONS, NAMESPACE, &tainted).await;
+    assert!(matches!(applied, Ok(Applied::Set(_))), "{applied:?}");
+    assert!(lock(&cluster).deletes().is_empty());
+    assert_eq!(lock(&cluster).uid(&set_key()), old);
+    let stored = object(&cluster, &set_key());
+    assert_eq!(
+        stored["spec"]["template"]["spec"]["tolerations"][0]["key"],
+        "builder.zeabur.com/builds"
+    );
+}
+
 #[test]
 fn only_a_ready_pod_of_the_current_statefulset_is_ready() {
     let set: StatefulSet = serde_json::from_value(json!({
-        "metadata": {"name": NAME, "uid": "new"}, "spec": {"selector": {}, "template": {}}
+        "metadata": {"name": NAME, "uid": "new", "generation": 2},
+        "spec": {"selector": {}, "template": {}},
+        "status": {"observedGeneration": 2, "updateRevision": "r2"},
     }))
     .unwrap_or_default();
-    let pod = |owner: &str, deleting: bool, ready: &str| -> Pod {
+    let pod = |owner: &str, deleting: bool, ready: &str, revision: &str| -> Pod {
         let mut pod = json!({
-            "metadata": {"name": POD, "ownerReferences": [{
+            "metadata": {"name": POD, "labels": {"controller-revision-hash": revision},
+                         "ownerReferences": [{
                 "apiVersion": "apps/v1", "kind": "StatefulSet", "name": NAME,
                 "uid": owner, "controller": true,
             }]},
@@ -459,12 +538,23 @@ fn only_a_ready_pod_of_the_current_statefulset_is_ready() {
         serde_json::from_value(pod).unwrap_or_default()
     };
     let cases = [
-        ("ready, current set", pod("new", false, "True"), true),
-        ("ready, deleted set", pod("old", false, "True"), false),
-        ("ready, terminating", pod("new", true, "True"), false),
-        ("not ready", pod("new", false, "False"), false),
+        ("ready, current set", pod("new", false, "True", "r2"), true),
+        ("ready, deleted set", pod("old", false, "True", "r2"), false),
+        ("ready, terminating", pod("new", true, "True", "r2"), false),
+        ("not ready", pod("new", false, "False", "r2"), false),
+        (
+            "ready, old revision",
+            pod("new", false, "True", "r1"),
+            false,
+        ),
     ];
     for (case, pod, want) in cases {
         assert_eq!(ready(&pod, &set), want, "{case}");
     }
+    let mut unseen = set;
+    unseen.metadata.generation = Some(3);
+    assert!(
+        !ready(&pod("new", false, "True", "r2"), &unseen),
+        "the update is not observed yet"
+    );
 }

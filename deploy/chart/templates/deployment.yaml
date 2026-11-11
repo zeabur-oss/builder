@@ -40,6 +40,12 @@ spec:
             {{- end }}
             - --max-concurrent-builds={{ .Values.maxConcurrentBuilds.namespace | int }}
             - --max-cluster-builds={{ .Values.maxConcurrentBuilds.cluster | int }}
+            {{- range $key, $value := .Values.builds.nodeSelector }}
+            - {{ printf "--build-node-selector=%s=%s" $key $value | quote }}
+            {{- end }}
+            {{- range .Values.builds.tolerations }}
+            - {{ printf "--build-toleration=%s" (toJson .) | quote }}
+            {{- end }}
             {{- if .Values.webhooks.enabled }}
             - --webhook-addr=0.0.0.0:{{ .Values.webhooks.port }}
             - --webhook-path={{ include "builder.webhookPath" . }}

@@ -11,6 +11,7 @@
     archive-source: 从上传的文件夹构建
     rollout: 部署构建好的镜像
     external-registries: 推送到外部镜像仓库
+    build-nodes: 在构建节点上构建
 - group: operations
   label: 运维
   pages:

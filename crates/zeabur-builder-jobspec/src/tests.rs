@@ -138,8 +138,14 @@ fn inputs<'a>(
         registry_auth_secret: "api-x7k2p-registry",
         deadline_seconds: 3600,
         ttl_seconds: 600,
+        placement: &NOWHERE,
     }
 }
+
+static NOWHERE: Placement = Placement {
+    node_selector: BTreeMap::new(),
+    tolerations: Vec::new(),
+};
 
 fn golden(name: &str, expected: &str, job: &Job) {
     let actual = serde_json::to_string_pretty(job).unwrap() + "\n";
@@ -444,4 +450,42 @@ fn user_values_never_enter_scripts() {
             .iter()
             .any(|arg| arg.contains("source=https://github.com/acme/a$$(id)b"))
     );
+}
+
+/// The build node of `docs/builds/build-nodes.mdx`.
+pub(crate) fn build_node() -> Placement {
+    Placement {
+        node_selector: BTreeMap::from([(
+            "builder.zeabur.com/builds".to_owned(),
+            "true".to_owned(),
+        )]),
+        tolerations: vec![Toleration {
+            key: Some("builder.zeabur.com/builds".to_owned()),
+            operator: Some("Equal".to_owned()),
+            value: Some("true".to_owned()),
+            effect: Some("NoSchedule".to_owned()),
+            toleration_seconds: None,
+        }],
+    }
+}
+
+#[test]
+fn jobs_run_on_the_build_node() {
+    let run = build_run();
+    let build = build("https://github.com/acme/api", None, Vec::new());
+    let builder = dockerfile();
+    let tags = tags();
+    let placement = build_node();
+    let mut inputs = inputs(
+        &run,
+        &build,
+        "dockerfile",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    );
+    inputs.placement = &placement;
+    let pod = job(&inputs).unwrap().spec.unwrap().template.spec.unwrap();
+    assert_eq!(pod.node_selector, Some(placement.node_selector));
+    assert_eq!(pod.tolerations, Some(placement.tolerations));
 }

@@ -103,6 +103,15 @@ maxConcurrentBuilds:
   # Across all namespaces.
   cluster: 1
 
+# The nodes build Jobs and each namespace's buildkitd run on (docs/builds/build-nodes.mdx). Empty:
+# wherever the scheduler puts them. The controller stays where it is. A change recreates each
+# namespace's buildkitd once it is idle, with an empty cache.
+builds:
+  # Such as {builder.zeabur.com/builds: "true"}.
+  nodeSelector: {}
+  # Such as [{key: builder.zeabur.com/builds, operator: Equal, value: "true", effect: NoSchedule}].
+  tolerations: []
+
 # Extra controller flags, such as --buildkitd-cache-size=10Gi.
 extraArgs: []
 
