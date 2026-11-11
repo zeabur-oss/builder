@@ -38,6 +38,8 @@ spec:
             - --buildkitd-memory-max={{ . }}
             {{- end }}
             {{- end }}
+            - --job-memory-request={{ .Values.jobResources.requests.memory }}
+            - --job-memory-limit={{ .Values.jobResources.limits.memory }}
             - --max-concurrent-builds={{ .Values.maxConcurrentBuilds.namespace | int }}
             - --max-cluster-builds={{ .Values.maxConcurrentBuilds.cluster | int }}
             {{- range $key, $value := .Values.builds.nodeSelector }}

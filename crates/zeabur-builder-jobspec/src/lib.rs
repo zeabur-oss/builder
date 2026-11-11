@@ -30,7 +30,7 @@
 //!
 //! The Pod runs as a non-root user with a read-only root filesystem, no capabilities and no
 //! service account token: `RUN` steps execute in buildkitd, so the Job needs no
-//! privileges.
+//! privileges. Every container has the same memory request and limit ([`JobMemory`]).
 
 pub mod buildkitd;
 
@@ -39,9 +39,10 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, KeyToPath,
-    PodSecurityContext, PodSpec, PodTemplateSpec, SeccompProfile, SecretKeySelector,
-    SecretVolumeSource, SecurityContext, Toleration, Volume, VolumeMount,
+    PodSecurityContext, PodSpec, PodTemplateSpec, ResourceRequirements, SeccompProfile,
+    SecretKeySelector, SecretVolumeSource, SecurityContext, Toleration, Volume, VolumeMount,
 };
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar};
 use zeabur_builder_api::build_run::BuildRun;
@@ -83,6 +84,28 @@ impl Placement {
 
     fn tolerations(&self) -> Option<Vec<Toleration>> {
         (!self.tolerations.is_empty()).then(|| self.tolerations.clone())
+    }
+}
+
+/// The memory of each container of the build Job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobMemory {
+    /// `requests.memory`, or `limit` when that is lower.
+    pub request: String,
+    /// `limits.memory`.
+    pub limit: String,
+}
+
+impl JobMemory {
+    fn requirements(&self) -> ResourceRequirements {
+        let request = buildkitd::within(Some(&self.request), Some(&self.limit))
+            .unwrap_or_else(|| self.request.clone());
+        let memory = |quantity: String| BTreeMap::from([("memory".to_owned(), Quantity(quantity))]);
+        ResourceRequirements {
+            requests: Some(memory(request)),
+            limits: Some(memory(self.limit.clone())),
+            ..ResourceRequirements::default()
+        }
     }
 }
 
@@ -141,6 +164,8 @@ pub struct JobInputs<'a> {
     pub ttl_seconds: i32,
     /// The nodes the Job runs on.
     pub placement: &'a Placement,
+    /// The memory of each container.
+    pub memory: &'a JobMemory,
 }
 
 /// Why a Job cannot be built.
@@ -219,6 +244,12 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     if let Some(plan) = plan_container(inputs)? {
         init_containers.push(plan);
     }
+    let resources = inputs.memory.requirements();
+    for container in &mut init_containers {
+        container.resources = Some(resources.clone());
+    }
+    let mut build = build_container(inputs, repo.as_ref())?;
+    build.resources = Some(resources);
 
     let pod = PodSpec {
         restart_policy: Some("Never".to_owned()),
@@ -236,7 +267,7 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
             ..PodSecurityContext::default()
         }),
         init_containers: Some(init_containers),
-        containers: vec![build_container(inputs, repo.as_ref())?],
+        containers: vec![build],
         volumes: Some(volumes(inputs)),
         node_selector: inputs.placement.node_selector(),
         tolerations: inputs.placement.tolerations(),

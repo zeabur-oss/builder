@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use k8s_openapi::api::core::v1::Toleration;
-use zeabur_builder_jobspec::Placement;
 use zeabur_builder_jobspec::buildkitd::Resources;
+use zeabur_builder_jobspec::{JobMemory, Placement};
 
 /// Zeabur Builder: turns Git commits into container images with `BuildKit`.
 #[derive(Debug, Parser)]
@@ -212,6 +212,12 @@ struct ControllerArgs {
     /// Seconds a namespace goes without builds before its buildkitd scales to zero.
     #[arg(long, default_value_t = 600)]
     buildkitd_idle: u64,
+    /// The memory request of each container of a build Job.
+    #[arg(long, default_value = "128Mi", value_parser = quantity)]
+    job_memory_request: String,
+    /// The memory limit of each container of a build Job.
+    #[arg(long, default_value = "512Mi", value_parser = quantity)]
+    job_memory_limit: String,
     /// How long a build may run, in seconds.
     #[arg(long, default_value_t = 3600)]
     job_deadline: i64,
@@ -286,6 +292,10 @@ impl ControllerArgs {
             registry_http: self.registry_http,
             registry_token_key: self.registry_token_key,
             job_image: self.job_image,
+            job_memory: JobMemory {
+                request: self.job_memory_request,
+                limit: self.job_memory_limit,
+            },
             job_deadline_seconds: self.job_deadline,
             job_ttl_seconds: self.job_ttl,
             github_app_secret: self.github_app_secret,

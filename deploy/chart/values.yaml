@@ -94,6 +94,12 @@ buildkitd:
     # build over it runs with the ceiling, and its BuildRun gets a BuildLimited Event.
     max: {cpu: "", memory: ""}
 
+# The memory of each container of a build Job: fetching the source, Railpack's plan and buildctl.
+# RUN steps run in buildkitd and use buildkitd.resources instead.
+jobResources:
+  requests: {memory: 128Mi}
+  limits: {memory: 512Mi}
+
 # Builds that run at once. A run over either limit waits, oldest first. Each build gets
 # buildkitd.resources.limits, so a namespace's buildkitd gets those times its limit; a Namespace
 # annotation overrides them (builder.zeabur.com/max-concurrent-builds, build-cpu, build-memory).

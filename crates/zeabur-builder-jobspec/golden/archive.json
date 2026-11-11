@@ -83,6 +83,14 @@
             ],
             "image": "ghcr.io/zeabur-oss/builder-job:v0.0.1",
             "name": "build",
+            "resources": {
+              "limits": {
+                "memory": "512Mi"
+              },
+              "requests": {
+                "memory": "128Mi"
+              }
+            },
             "securityContext": {
               "allowPrivilegeEscalation": false,
               "capabilities": {
@@ -142,6 +150,14 @@
             ],
             "image": "ghcr.io/zeabur-oss/builder-job:v0.0.1",
             "name": "fetch",
+            "resources": {
+              "limits": {
+                "memory": "512Mi"
+              },
+              "requests": {
+                "memory": "128Mi"
+              }
+            },
             "securityContext": {
               "allowPrivilegeEscalation": false,
               "capabilities": {

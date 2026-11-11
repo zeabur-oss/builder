@@ -291,7 +291,7 @@ fn network_policy(
 }
 
 /// `request`, or `limit` when that is lower: Kubernetes rejects a request above its limit.
-fn within(request: Option<&String>, limit: Option<&String>) -> Option<String> {
+pub(crate) fn within(request: Option<&String>, limit: Option<&String>) -> Option<String> {
     let lower = |request: &str, limit: &str| {
         let (request, limit) = (
             ParsedQuantity::try_from(request).ok()?,
