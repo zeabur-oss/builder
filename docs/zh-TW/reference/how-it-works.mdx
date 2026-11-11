@@ -63,6 +63,8 @@ buildkitd 閒置 10 分鐘後會縮到零。
 
 每次建置都有一個 Job。Job 會執行 `buildctl`，不需要特權。
 
+Job 的每個容器要 128 MiB 記憶體，最多能用 512 MiB（chart 的 `jobResources`）。`RUN` 步驟在 buildkitd 裡跑，算在 `buildkitd.resources`。
+
 ## 自訂資源
 
 Zeabur Builder 使用 `Build`、`BuildRun` 與 `ClusterBuilder` 三種自訂資源，API 版本為 `v1alpha1`。

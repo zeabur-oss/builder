@@ -65,7 +65,7 @@ use zeabur_builder_api::cluster_builder::ClusterBuilder;
 use zeabur_builder_api::common::ConditionStatus;
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::repo::RepoKey;
-use zeabur_builder_jobspec::{GitAuth, JobInputs};
+use zeabur_builder_jobspec::{GitAuth, JobInputs, JobMemory};
 
 use crate::credentials::{GitCredentials, Refusal};
 use crate::decide::{self, Observed, Wake};
@@ -124,6 +124,8 @@ pub(crate) struct Settings {
     pub(crate) registry_token_key: (String, String),
     /// The image of `fetch` and `build`.
     pub(crate) job_image: String,
+    /// The memory of each container of a build Job.
+    pub(crate) job_memory: JobMemory,
     /// `activeDeadlineSeconds`.
     pub(crate) job_deadline_seconds: i64,
     /// `ttlSecondsAfterFinished`.
@@ -1414,7 +1416,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
     ensure_registry_secret(ctx, run, &registry_secret, registry_auth).await?;
 
     let image = decide::image(&build, &settings.default_registry);
-    let job = zeabur_builder_jobspec::job(&JobInputs {
+    let job = match zeabur_builder_jobspec::job(&JobInputs {
         build_run: run,
         build: &build,
         builder_name: &build.spec.builder_ref,
@@ -1432,8 +1434,8 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         deadline_seconds: settings.job_deadline_seconds,
         ttl_seconds: settings.job_ttl_seconds,
         placement: &settings.daemon.placement,
-    });
-    let job = match job {
+        memory: &settings.job_memory,
+    }) {
         Ok(job) => job,
         Err(e) => return finish(ctx, run, fail(e.to_string())).await,
     };

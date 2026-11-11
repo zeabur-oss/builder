@@ -139,6 +139,7 @@ fn inputs<'a>(
         deadline_seconds: 3600,
         ttl_seconds: 600,
         placement: &NOWHERE,
+        memory: &MEMORY,
     }
 }
 
@@ -146,6 +147,11 @@ static NOWHERE: Placement = Placement {
     node_selector: BTreeMap::new(),
     tolerations: Vec::new(),
 };
+
+static MEMORY: std::sync::LazyLock<JobMemory> = std::sync::LazyLock::new(|| JobMemory {
+    request: "128Mi".to_owned(),
+    limit: "512Mi".to_owned(),
+});
 
 fn golden(name: &str, expected: &str, job: &Job) {
     let actual = serde_json::to_string_pretty(job).unwrap() + "\n";
@@ -488,4 +494,34 @@ fn jobs_run_on_the_build_node() {
     let pod = job(&inputs).unwrap().spec.unwrap().template.spec.unwrap();
     assert_eq!(pod.node_selector, Some(placement.node_selector));
     assert_eq!(pod.tolerations, Some(placement.tolerations));
+}
+
+#[test]
+fn a_memory_request_never_exceeds_the_limit() {
+    let run = build_run();
+    let build = build("https://github.com/acme/api", None, Vec::new());
+    let builder = railpack();
+    let tags = tags();
+    let memory = JobMemory {
+        request: "1Gi".to_owned(),
+        limit: "256Mi".to_owned(),
+    };
+    let mut inputs = inputs(
+        &run,
+        &build,
+        "railpack",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    );
+    inputs.memory = &memory;
+    let pod = job(&inputs).unwrap().spec.unwrap().template.spec.unwrap();
+    let mut containers = pod.init_containers.unwrap();
+    containers.extend(pod.containers);
+    for container in containers {
+        let resources = container.resources.unwrap();
+        let want = BTreeMap::from([("memory".to_owned(), Quantity("256Mi".to_owned()))]);
+        assert_eq!(resources.requests, Some(want.clone()), "{}", container.name);
+        assert_eq!(resources.limits, Some(want), "{}", container.name);
+    }
 }
