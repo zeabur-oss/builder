@@ -1,7 +1,6 @@
 ---
 title: 在构建节点上构建
 description: 用标签和 taint 留出一个节点专门构建，让构建不占用运行应用的节点。
-source: "8020f5686ed0"
 ---
 
 默认每次构建最多使用 1 个 CPU 和 1 GiB 内存（`buildkitd.resources.limits`）。在节点都不大的集群上，这些 CPU 和内存会分走应用能用的部分。如果有一台空闲的机器，可以把它设为构建节点：每个 Namespace 的 buildkitd 和每个构建 Job 都在这台机器上运行，其他工作负载不会调度到这里。构建不再占用应用的 CPU 和内存，每个 Namespace 的构建缓存也都留在这台机器的磁盘上。
