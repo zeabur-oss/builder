@@ -1,4 +1,4 @@
-//! Cache statistics and steps from `buildctl build --progress rawjson`.
+//! The `buildctl build --progress rawjson` stream: its lines, cache statistics and steps.
 //!
 //! In `rawjson` mode buildctl writes each `client.SolveStatus` as one JSON object per line on
 //! stderr ([progressui], `RawJSONMode`). A vertex is reported many times as it starts and
@@ -18,25 +18,58 @@ use serde::Deserialize;
 
 use crate::result::{CacheStats, Step, StepState};
 
+/// One line of the stream: a `client.SolveStatus`.
 #[derive(Debug, Deserialize)]
-struct SolveStatus {
+pub struct SolveStatus {
+    /// Steps that started, completed, were cached or failed since the last line.
     #[serde(default)]
-    vertexes: Vec<Vertex>,
+    pub vertexes: Vec<Vertex>,
+    /// Output of the steps since the last line.
+    #[serde(default)]
+    pub logs: Vec<Log>,
 }
 
+impl SolveStatus {
+    /// The status on one line, or `None` for buildctl's own messages.
+    #[must_use]
+    pub fn parse(line: &str) -> Option<Self> {
+        serde_json::from_str(line).ok()
+    }
+}
+
+/// One report of a build step.
 #[derive(Debug, Deserialize)]
-struct Vertex {
-    digest: String,
+pub struct Vertex {
+    /// The step's identity within one `buildctl` run.
+    pub digest: String,
+    /// Such as `[2/3] RUN npm ci`.
     #[serde(default)]
-    name: String,
+    pub name: String,
+    /// RFC 3339.
     #[serde(default)]
-    started: Option<String>,
+    pub started: Option<String>,
+    /// RFC 3339.
     #[serde(default)]
-    completed: Option<String>,
+    pub completed: Option<String>,
+    /// Whether the result came from the cache.
     #[serde(default)]
-    cached: bool,
+    pub cached: bool,
+    /// Why the step failed.
     #[serde(default)]
-    error: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Output of a step.
+#[derive(Debug, Deserialize)]
+pub struct Log {
+    /// The [`Vertex::digest`] of the step.
+    pub vertex: String,
+    /// 1 for stdout, 2 for stderr (`util/progress/logs/logs.go`).
+    #[serde(default)]
+    pub stream: u8,
+    /// Base64.
+    #[serde(default)]
+    pub data: String,
 }
 
 /// Counts distinct and cached build steps.
@@ -49,7 +82,7 @@ pub struct CacheCounter {
 impl CacheCounter {
     /// Reads one line of the progress stream.
     pub fn line(&mut self, line: &str) {
-        let Ok(status) = serde_json::from_str::<SolveStatus>(line) else {
+        let Some(status) = SolveStatus::parse(line) else {
             return;
         };
         for vertex in status.vertexes {
@@ -88,7 +121,7 @@ impl StepLog {
 
     /// Reads one line of the progress stream.
     pub fn line(&mut self, line: &str) {
-        let Ok(status) = serde_json::from_str::<SolveStatus>(line) else {
+        let Some(status) = SolveStatus::parse(line) else {
             return;
         };
         for vertex in status.vertexes {

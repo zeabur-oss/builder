@@ -9,7 +9,7 @@
 //! - [`tag`]: the immutable, sortable image tag of a build.
 //! - [`daemon`]: the name and address of a build namespace's own buildkitd.
 //! - [`result`]: the build result a Job reports in its termination message.
-//! - [`progress`]: counting cached steps in `buildctl --progress rawjson` output.
+//! - [`progress`]: reading `buildctl --progress rawjson` output, its cached steps and its steps.
 //! - [`railpack`]: making a Railpack image run as a non-root user.
 //!
 //! The controller and the Job image both depend on this crate, which is why it stays free of I/O,

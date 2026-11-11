@@ -1,48 +1,16 @@
 //! Turns `buildctl --progress rawjson` into NDJSON events for readers of the pod log.
 //!
-//! Each input line is one `client.SolveStatus` ([`zeabur_builder_core::progress`]). A vertex is
-//! numbered in the order it first appears, and the numbers go on across `buildctl` runs, so a
-//! number is unique within a build. Every event carries the vertex's `name`. `stream` is `stdout`
-//! or `stderr`, from BuildKit's `Stream` 1 and 2 (`util/progress/logs/logs.go`). Lines that are
-//! not JSON are buildctl's own messages and become `message` events.
+//! Each input line is one [`SolveStatus`]. A vertex is numbered in the order it first appears,
+//! and the numbers go on across `buildctl` runs, so a number is unique within a build. Every event
+//! carries the vertex's `name`. `stream` is `stdout` or `stderr`. Lines that are not JSON are
+//! buildctl's own messages and become `message` events.
 
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
 use jiff::Timestamp;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Deserialize)]
-struct SolveStatus {
-    #[serde(default)]
-    vertexes: Vec<Vertex>,
-    #[serde(default)]
-    logs: Vec<Log>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Vertex {
-    digest: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    started: Option<String>,
-    #[serde(default)]
-    completed: Option<String>,
-    #[serde(default)]
-    cached: bool,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Log {
-    vertex: String,
-    #[serde(default)]
-    stream: u8,
-    #[serde(default)]
-    data: String,
-}
+use serde::Serialize;
+use zeabur_builder_core::progress::SolveStatus;
 
 #[derive(Debug, Default)]
 struct Step {
@@ -96,7 +64,7 @@ impl Renderer {
 
     /// The events to print for one line of the stream, one JSON object each.
     pub(crate) fn line(&mut self, line: &str) -> Vec<String> {
-        let Ok(status) = serde_json::from_str::<SolveStatus>(line) else {
+        let Some(status) = SolveStatus::parse(line) else {
             if let Some(error) = line.strip_prefix("error: ") {
                 self.last_error = Some(error.to_owned());
             }
