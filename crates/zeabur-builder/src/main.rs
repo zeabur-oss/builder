@@ -329,7 +329,7 @@ async fn run_controller(args: ControllerArgs) -> Result<(), String> {
     let client = kube::Client::try_default()
         .await
         .map_err(|e| format!("cannot reach Kubernetes: {e}"))?;
-    controller::run(client, args.settings()).await
+    Box::pin(controller::run(client, args.settings())).await
 }
 
 fn main() -> ExitCode {
