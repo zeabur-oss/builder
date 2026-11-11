@@ -665,7 +665,7 @@
                           "type": "string"
                         },
                         "type": {
-                          "description": "`Ready`, `SourceReady` or `BuilderReady`.",
+                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`.",
                           "maxLength": 316,
                           "minLength": 1,
                           "type": "string"
@@ -851,6 +851,12 @@
             "type": "string"
           },
           {
+            "jsonPath": ".status.conditions[?(@.type==\"Ready\")].status",
+            "name": "Ready",
+            "priority": 1,
+            "type": "string"
+          },
+          {
             "jsonPath": ".status.startTime",
             "name": "Started",
             "type": "date"
@@ -969,6 +975,61 @@
                     "nullable": true,
                     "type": "string"
                   },
+                  "conditions": {
+                    "description": "`Reconciling`, `Stalled` and `Ready`, in kstatus terms. `Reconciling` is `True` while\nthe phase is `Pending`, `Planning` or `Building`; `Stalled` is `True` on `Failed` and\n`Cancelled`, with the run's `reason`; `Ready` is `True` on `Succeeded` and `False`\notherwise. `Reconciling` and `Stalled` are left out when they do not hold.",
+                    "items": {
+                      "description": "A status condition, as `metav1.Condition`.",
+                      "properties": {
+                        "lastTransitionTime": {
+                          "description": "When the status last changed (RFC 3339).",
+                          "format": "date-time",
+                          "type": "string"
+                        },
+                        "message": {
+                          "description": "A human-readable message.",
+                          "maxLength": 32768,
+                          "type": "string"
+                        },
+                        "observedGeneration": {
+                          "description": "The `metadata.generation` the condition was computed from.",
+                          "format": "int64",
+                          "minimum": 0.0,
+                          "nullable": true,
+                          "type": "integer"
+                        },
+                        "reason": {
+                          "description": "A `CamelCase` reason.",
+                          "maxLength": 1024,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "status": {
+                          "description": "`True`, `False` or `Unknown`.",
+                          "enum": [
+                            "True",
+                            "False",
+                            "Unknown"
+                          ],
+                          "type": "string"
+                        },
+                        "type": {
+                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`.",
+                          "maxLength": 316,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "lastTransitionTime",
+                        "reason",
+                        "status",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 8,
+                    "type": "array"
+                  },
                   "exposedPorts": {
                     "description": "Ports the image declares in its `ExposedPorts`, as the image config writes them\n(`3000/tcp`), sorted.",
                     "items": {
@@ -977,6 +1038,53 @@
                     },
                     "maxItems": 32,
                     "type": "array"
+                  },
+                  "failedStep": {
+                    "description": "The step that failed, also when `steps` leaves it out. `fetch` or `plan` when the run\nstopped while fetching the source or planning.",
+                    "nullable": true,
+                    "properties": {
+                      "cached": {
+                        "description": "Whether it came from cache.",
+                        "type": "boolean"
+                      },
+                      "completionTime": {
+                        "description": "When it finished.",
+                        "format": "date-time",
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "message": {
+                        "description": "Its error.",
+                        "maxLength": 120,
+                        "type": "string"
+                      },
+                      "name": {
+                        "description": "Its name, such as `[2/3] RUN npm ci`.",
+                        "maxLength": 120,
+                        "type": "string"
+                      },
+                      "startTime": {
+                        "description": "When it started.",
+                        "format": "date-time",
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "state": {
+                        "description": "Where it got to.",
+                        "enum": [
+                          "Running",
+                          "Succeeded",
+                          "Failed",
+                          "Unknown"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "state"
+                    ],
+                    "type": "object"
                   },
                   "imageDigest": {
                     "description": "The pushed manifest's digest.",
@@ -1002,6 +1110,19 @@
                     "format": "date-time",
                     "nullable": true,
                     "type": "string"
+                  },
+                  "observedRebuild": {
+                    "description": "The run's own `builder.zeabur.com/rebuild` annotation: the rebuild request it answers.\nNot set for a value longer than 1024 characters.",
+                    "maxLength": 1024,
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "omittedSteps": {
+                    "description": "How many earlier steps `steps` leaves out.",
+                    "format": "int64",
+                    "minimum": 1.0,
+                    "nullable": true,
+                    "type": "integer"
                   },
                   "phase": {
                     "description": "The phases: `Pending → Planning → Building → Succeeded | Failed | Cancelled`.",
@@ -1065,6 +1186,57 @@
                     "format": "date-time",
                     "nullable": true,
                     "type": "string"
+                  },
+                  "steps": {
+                    "description": "The last build steps, in the order they started. Set when the run finishes.",
+                    "items": {
+                      "description": "One build step: a `BuildKit` vertex, or `fetch` or `plan`.",
+                      "properties": {
+                        "cached": {
+                          "description": "Whether it came from cache.",
+                          "type": "boolean"
+                        },
+                        "completionTime": {
+                          "description": "When it finished.",
+                          "format": "date-time",
+                          "nullable": true,
+                          "type": "string"
+                        },
+                        "message": {
+                          "description": "Its error.",
+                          "maxLength": 120,
+                          "type": "string"
+                        },
+                        "name": {
+                          "description": "Its name, such as `[2/3] RUN npm ci`.",
+                          "maxLength": 120,
+                          "type": "string"
+                        },
+                        "startTime": {
+                          "description": "When it started.",
+                          "format": "date-time",
+                          "nullable": true,
+                          "type": "string"
+                        },
+                        "state": {
+                          "description": "Where it got to.",
+                          "enum": [
+                            "Running",
+                            "Succeeded",
+                            "Failed",
+                            "Unknown"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "state"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
                   },
                   "tags": {
                     "description": "The tags pushed.",

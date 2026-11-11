@@ -11,7 +11,15 @@ use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{DIGEST_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN};
+use crate::build::MAX_CONDITIONS;
+use crate::common::{Condition, DIGEST_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN};
+
+/// The most steps a `BuildRun` records: the last ones, in the order they started.
+pub const MAX_STEPS: usize = 20;
+/// The longest step name or step message, in characters.
+pub const MAX_STEP_TEXT: usize = 120;
+/// The longest rebuild request `observedRebuild` shows, in characters.
+pub const MAX_OBSERVED_REBUILD: usize = 1024;
 
 /// One build of one commit or archive. The spec is immutable: to build again, create another.
 #[expect(
@@ -38,6 +46,12 @@ use crate::common::{DIGEST_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN};
     ),
     printcolumn(name = "Phase", type_ = "string", json_path = ".status.phase"),
     printcolumn(name = "Reason", type_ = "string", json_path = ".status.reason"),
+    printcolumn(
+        name = "Ready",
+        type_ = "string",
+        json_path = ".status.conditions[?(@.type==\"Ready\")].status",
+        priority = 1
+    ),
     printcolumn(name = "Started", type_ = "date", json_path = ".status.startTime"),
     printcolumn(
         name = "Finished",
@@ -154,6 +168,71 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("format" = "date-time"))]
     pub notified_at: Option<String>,
+    /// The last build steps, in the order they started. Set when the run finishes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = MAX_STEPS))]
+    pub steps: Vec<Step>,
+    /// How many earlier steps `steps` leaves out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub omitted_steps: Option<i64>,
+    /// The step that failed, also when `steps` leaves it out. `fetch` or `plan` when the run
+    /// stopped while fetching the source or planning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_step: Option<Step>,
+    /// The run's own `builder.zeabur.com/rebuild` annotation: the rebuild request it answers.
+    /// Not set for a value longer than 1024 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = MAX_OBSERVED_REBUILD))]
+    pub observed_rebuild: Option<String>,
+    /// `Reconciling`, `Stalled` and `Ready`, in kstatus terms. `Reconciling` is `True` while
+    /// the phase is `Pending`, `Planning` or `Building`; `Stalled` is `True` on `Failed` and
+    /// `Cancelled`, with the run's `reason`; `Ready` is `True` on `Succeeded` and `False`
+    /// otherwise. `Reconciling` and `Stalled` are left out when they do not hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = MAX_CONDITIONS))]
+    pub conditions: Vec<Condition>,
+}
+
+/// One build step: a `BuildKit` vertex, or `fetch` or `plan`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Step {
+    /// Its name, such as `[2/3] RUN npm ci`.
+    #[schemars(length(max = MAX_STEP_TEXT))]
+    pub name: String,
+    /// Where it got to.
+    pub state: StepState,
+    /// Whether it came from cache.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached: bool,
+    /// When it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("format" = "date-time"))]
+    pub start_time: Option<String>,
+    /// When it finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("format" = "date-time"))]
+    pub completion_time: Option<String>,
+    /// Its error.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[schemars(length(max = MAX_STEP_TEXT))]
+    pub message: String,
+}
+
+/// Where a [`Step`] got to.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+pub enum StepState {
+    /// Started, and not reported finished.
+    Running,
+    /// Finished, or answered from cache.
+    Succeeded,
+    /// Finished with an error.
+    Failed,
+    /// A state this version does not know. It encodes as `Unknown`, so a writer must not send
+    /// back a status it read.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The phases: `Pending → Planning → Building → Succeeded | Failed | Cancelled`.

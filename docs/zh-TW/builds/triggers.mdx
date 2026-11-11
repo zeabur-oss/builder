@@ -64,6 +64,12 @@ spec:
 
 將 Build 的 `builder.zeabur.com/rebuild` annotation 改為新值，就能重新建置目前的 commit。
 
+回應這次要求的 BuildRun 會在 `status.observedRebuild` 顯示這個值，前提是值不超過 1024 個字元。BuildRun 成功時會回報 `Ready`，失敗或取消時回報 `Stalled`，所以可以這樣等它跑完：
+
+```sh
+kubectl wait --for=condition=Ready buildrun/<name>
+```
+
 你可以用 `spec.suspend` 停止自動建置。
 
 ## 處理執行中的建置

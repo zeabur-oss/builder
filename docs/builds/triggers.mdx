@@ -64,6 +64,12 @@ Polling continues after you enable a push webhook.
 
 Change the Build's `builder.zeabur.com/rebuild` annotation to a new value to rebuild the current commit.
 
+The BuildRun that answers it shows the value in `status.observedRebuild`, if the value has at most 1024 characters. A BuildRun reports `Ready` when it succeeds and `Stalled` when it fails or is cancelled, so you can wait for it:
+
+```sh
+kubectl wait --for=condition=Ready buildrun/<name>
+```
+
 Use `spec.suspend` to stop automatic builds.
 
 ## Handle running builds
