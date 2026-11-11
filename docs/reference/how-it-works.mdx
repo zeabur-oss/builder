@@ -57,6 +57,8 @@ The cache persists on the buildkitd volume between builds, so the contents of `R
 
 buildkitd scales to zero after 10 minutes of inactivity.
 
+When you delete the Namespace, Kubernetes garbage collection deletes its buildkitd, cache and CA.
+
 If you change the cache size or storage class, the controller replaces the Namespace's buildkitd and its cache the next time a build starts there. It first waits for the Namespace's running builds to finish. If Kubernetes rejects the new buildkitd, the old one stays, and the build fails with `InfraError` and Kubernetes' message.
 
 ## Build permissions and isolation

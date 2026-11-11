@@ -18,13 +18,15 @@ use std::collections::BTreeMap;
 
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::Secret;
-use kube::Client;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, ObjectMeta, PostParams};
+use kube::{Client, ResourceExt as _};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,
 };
 use zeabur_builder_api::labels;
+use zeabur_builder_jobspec::buildkitd;
 
 /// The PEM files of one side.
 pub(crate) type Pems = BTreeMap<String, String>;
@@ -95,18 +97,34 @@ fn client_pems(secret: &Secret) -> Option<Pems> {
 }
 
 /// Makes the namespace's certificates unless its Secret `secret` exists in `daemon_namespace`,
-/// and returns the client files.
+/// and returns the client files. `None` when the Secret belongs to a deleted namespace of the same
+/// name: a new namespace gets a new CA.
 pub(crate) async fn ensure(
     client: &Client,
     daemon_namespace: &str,
     secret: &str,
     service: &str,
-    namespace: &str,
-) -> Result<Pems, kube::Error> {
+    owner: &OwnerReference,
+) -> Result<Option<Pems>, kube::Error> {
+    let namespace = &owner.name;
     let api: Api<Secret> = Api::namespaced(client.clone(), daemon_namespace);
     let invalid = || kube::Error::Service(format!("Secret `{secret}` lacks a client pair").into());
-    if let Some(existing) = api.get_opt(secret).await? {
-        return client_pems(&existing).ok_or_else(invalid);
+    if let Some(mut existing) = api.get_opt(secret).await? {
+        if buildkitd::of_deleted_namespace(&existing.metadata, &owner.uid) {
+            return Ok(None);
+        }
+        if !existing
+            .owner_references()
+            .iter()
+            .any(|o| o.uid == owner.uid)
+        {
+            // Made before Secrets had an owner.
+            existing.metadata.owner_references = Some(vec![owner.clone()]);
+            existing = api
+                .replace(secret, &PostParams::default(), &existing)
+                .await?;
+        }
+        return client_pems(&existing).map(Some).ok_or_else(invalid);
     }
     let (server, client_pair) = generate(service, daemon_namespace)
         .map_err(|e| kube::Error::Service(e.to_string().into()))?;
@@ -122,8 +140,9 @@ pub(crate) async fn ensure(
             namespace: Some(daemon_namespace.to_owned()),
             labels: Some(BTreeMap::from([
                 (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
-                (labels::NAMESPACE.to_owned(), namespace.to_owned()),
+                (labels::NAMESPACE.to_owned(), namespace.clone()),
             ])),
+            owner_references: Some(vec![owner.clone()]),
             ..ObjectMeta::default()
         },
         data: Some(data(&pems)),
@@ -132,11 +151,13 @@ pub(crate) async fn ensure(
     match api.create(&PostParams::default(), &wanted).await {
         Ok(created) => {
             tracing::info!(%namespace, %secret, "created buildkitd certificates");
-            client_pems(&created).ok_or_else(invalid)
+            client_pems(&created).map(Some).ok_or_else(invalid)
         }
         // Another run in the namespace made them first; theirs are the ones buildkitd mounts.
         Err(kube::Error::Api(status)) if status.is_already_exists() => {
-            client_pems(&api.get(secret).await?).ok_or_else(invalid)
+            client_pems(&api.get(secret).await?)
+                .map(Some)
+                .ok_or_else(invalid)
         }
         Err(e) => Err(e),
     }

@@ -1,5 +1,6 @@
-//! The buildkitd of each build namespace: applied when a run starts, scaled to zero when the
-//! namespace has been idle a while, and deleted when the namespace is gone.
+//! The buildkitd of each build namespace: applied when a run starts and scaled to zero when the
+//! namespace has been idle a while. Its objects name the namespace as their owner, so Kubernetes
+//! garbage collection deletes them with the namespace.
 //!
 //! The objects are [`zeabur_builder_jobspec::buildkitd`]'s, applied with server-side apply, so a
 //! changed setting reaches each daemon the next time it is woken. Scaling down goes through the
@@ -13,10 +14,7 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{
-    Namespace, PersistentVolumeClaim, Pod, Secret, Service, Toleration,
-};
-use k8s_openapi::api::networking::v1::NetworkPolicy;
+use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Pod, Toleration};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions};
 use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt as _};
@@ -73,10 +71,12 @@ pub(crate) struct Woken {
 fn inputs<'a>(
     settings: &'a Settings,
     namespace: &'a str,
+    namespace_uid: &'a str,
     limits: &'a decide::Limits,
 ) -> DaemonInputs<'a> {
     DaemonInputs {
         namespace,
+        namespace_uid,
         daemon_namespace: &settings.namespace,
         image: &settings.image,
         config_map: &settings.config_map,
@@ -134,15 +134,34 @@ pub(crate) async fn wake(
     limits: &decide::Limits,
 ) -> Result<Wake, kube::Error> {
     let name = daemon::name(namespace);
-    let client_pems = tls::ensure(
+    let uid = Api::<Namespace>::all(client.clone())
+        .get(namespace)
+        .await?
+        .uid()
+        .unwrap_or_default();
+    let gone = || {
+        Ok(Wake::Starting(format!(
+            "waiting for garbage collection to delete {name} of a deleted namespace with the same name"
+        )))
+    };
+    let old = Api::<StatefulSet>::namespaced(client.clone(), &settings.namespace)
+        .get_metadata_opt(&name)
+        .await?;
+    if old.is_some_and(|o| buildkitd::of_deleted_namespace(&o.metadata, &uid)) {
+        return gone();
+    }
+    let Some(client_pems) = tls::ensure(
         client,
         &settings.namespace,
         &buildkitd::tls_secret(namespace),
         &name,
-        namespace,
+        &buildkitd::owner(namespace, &uid),
     )
-    .await?;
-    let objects = buildkitd::daemon(&inputs(settings, namespace, limits));
+    .await?
+    else {
+        return gone();
+    };
+    let objects = buildkitd::daemon(&inputs(settings, namespace, &uid, limits));
     apply(client, &settings.namespace, &objects.network_policy).await?;
     apply(client, &settings.namespace, &objects.service).await?;
     let set = match stateful_set(
@@ -485,61 +504,7 @@ pub(crate) async fn ready_namespaces(
     Ok(ready)
 }
 
-async fn remove(
-    client: &Client,
-    settings: &Settings,
-    set: &StatefulSet,
-) -> Result<(), kube::Error> {
-    let name = set.name_any();
-    let ns = &settings.namespace;
-    let gone = |e: kube::Error| {
-        if let kube::Error::Api(status) = &e
-            && status.code == 404
-        {
-            return Ok(());
-        }
-        Err(e)
-    };
-    let params = DeleteParams::background();
-    Api::<StatefulSet>::namespaced(client.clone(), ns)
-        .delete(&name, &params)
-        .await
-        .map(drop)
-        .or_else(gone)?;
-    Api::<Service>::namespaced(client.clone(), ns)
-        .delete(&name, &params)
-        .await
-        .map(drop)
-        .or_else(gone)?;
-    Api::<NetworkPolicy>::namespaced(client.clone(), ns)
-        .delete(&name, &params)
-        .await
-        .map(drop)
-        .or_else(gone)?;
-    Api::<Secret>::namespaced(client.clone(), ns)
-        .delete(&format!("{name}-tls"), &params)
-        .await
-        .map(drop)
-        .or_else(gone)
-}
-
-/// The names of all namespaces, from one paged LIST of their metadata.
-async fn namespaces(client: &Client) -> Result<BTreeSet<String>, kube::Error> {
-    let api: Api<Namespace> = Api::all(client.clone());
-    let mut names = BTreeSet::new();
-    let mut params = ListParams::default().limit(PAGE);
-    loop {
-        let page = api.list_metadata(&params).await?;
-        names.extend(page.items.into_iter().filter_map(|n| n.metadata.name));
-        match page.metadata.continue_ {
-            Some(token) if !token.is_empty() => params = params.continue_token(&token),
-            _ => return Ok(names),
-        }
-    }
-}
-
-/// One pass: scales idle daemons to zero and removes those whose namespace is gone. The runs come
-/// from the `BuildRun` reconciler's cache.
+/// One pass: scales idle daemons to zero. The runs come from the `BuildRun` reconciler's cache.
 async fn sweep(
     client: &Client,
     settings: &Settings,
@@ -559,17 +524,11 @@ async fn sweep(
             .or_default()
             .push(run);
     }
-    let existing = namespaces(client).await?;
     let now = Timestamp::now();
     for set in &sets.items {
         let Some(namespace) = set.labels().get(labels::NAMESPACE) else {
             continue;
         };
-        if !existing.contains(namespace) {
-            remove(client, settings, set).await?;
-            tracing::info!(%namespace, statefulset = %set.name_any(), "namespace gone; buildkitd removed");
-            continue;
-        }
         let replicas = set.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
         let runs = runs_by_namespace
             .get(namespace)

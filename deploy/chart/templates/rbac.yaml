@@ -22,10 +22,10 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
-  # A namespace's max-concurrent-builds annotation, and which namespaces still exist.
+  # A namespace's build annotations, and its UID, the owner of its buildkitd.
   - apiGroups: [""]
     resources: [namespaces]
-    verbs: [get, list]
+    verbs: [get]
   # Credentials and webhook secrets Builds name, the Secrets copied into build namespaces, and
   # upload tokens. Cluster-wide get is wider than needed (docs/operations/controller-permissions.mdx).
   - apiGroups: [""]
@@ -60,10 +60,10 @@ rules:
     verbs: [patch]
   - apiGroups: [""]
     resources: [services]
-    verbs: [get, create, patch, delete]
+    verbs: [get, create, patch]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    verbs: [get, create, patch, delete]
+    verbs: [get, create, patch]
   # Whether a replaced buildkitd's cache claim is gone.
   - apiGroups: [""]
     resources: [persistentvolumeclaims]

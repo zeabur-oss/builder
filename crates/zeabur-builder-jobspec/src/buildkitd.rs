@@ -12,8 +12,9 @@
 //!   `kubernetes.io/metadata.name`, which the API server sets and nobody can change. A Pod label
 //!   would not do: project members create Pods with any label they like.
 //! - **Cache.** One volume per namespace, kept when the daemon scales to zero (`whenScaled:
-//!   Retain`) and deleted with the `StatefulSet` (`whenDeleted: Delete`), which the controller
-//!   removes when the namespace is gone.
+//!   Retain`) and deleted with the `StatefulSet` (`whenDeleted: Delete`).
+//! - **Owner.** Every object names the build Namespace as its owner ([`owner`]), so Kubernetes
+//!   garbage collection deletes the daemon and its cache when the Namespace is deleted.
 //! - **Isolation.** `hostUsers: false` runs the privileged daemon in a user namespace (Kubernetes
 //!   1.33 or later); `runtimeClassName` can move it into a sandbox such as Kata or gVisor where the
 //!   cluster has one. Neither is a substitute for the other.
@@ -41,7 +42,7 @@ use k8s_openapi::api::networking::v1::{
     NetworkPolicySpec,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube_quantity::ParsedQuantity;
 use zeabur_builder_api::labels;
@@ -95,11 +96,41 @@ pub fn cache_claim(namespace: &str) -> String {
     format!("{CACHE}-{}", daemon::pod(namespace))
 }
 
+/// The build Namespace `namespace`, with UID `uid`, as the owner of its daemon's objects.
+///
+/// A namespaced object may have a cluster-scoped owner ([owners and dependents]).
+/// `blockOwnerDeletion` stays false: setting it needs `update` on `namespaces/finalizers`.
+///
+/// [owners and dependents]: https://kubernetes.io/docs/concepts/overview/working-with-objects/owners-dependents/
+#[must_use]
+pub fn owner(namespace: &str, uid: &str) -> OwnerReference {
+    OwnerReference {
+        api_version: "v1".to_owned(),
+        kind: "Namespace".to_owned(),
+        name: namespace.to_owned(),
+        uid: uid.to_owned(),
+        block_owner_deletion: Some(false),
+        controller: None,
+    }
+}
+
+/// Whether `meta` names a Namespace other than the one with UID `uid` as its owner: the object
+/// belongs to a deleted Namespace of the same name and waits for garbage collection.
+#[must_use]
+pub fn of_deleted_namespace(meta: &ObjectMeta, uid: &str) -> bool {
+    meta.owner_references
+        .iter()
+        .flatten()
+        .any(|o| o.kind == "Namespace" && o.api_version == "v1" && o.uid != uid)
+}
+
 /// What the controller decided for one namespace's buildkitd.
 #[derive(Debug, Clone, Copy)]
 pub struct DaemonInputs<'a> {
     /// The build namespace it serves.
     pub namespace: &'a str,
+    /// The UID of that namespace, the owner of every object.
+    pub namespace_uid: &'a str,
     /// The builder's namespace, where it runs.
     pub daemon_namespace: &'a str,
     /// `moby/buildkit`, rootful.
@@ -179,6 +210,7 @@ pub fn daemon(inputs: &DaemonInputs<'_>) -> Daemon {
         name: Some(name.clone()),
         namespace: Some(inputs.daemon_namespace.to_owned()),
         labels: Some(object_labels.clone()),
+        owner_references: Some(vec![owner(inputs.namespace, inputs.namespace_uid)]),
         ..ObjectMeta::default()
     };
 
@@ -447,6 +479,7 @@ mod tests {
     fn inputs(resources: &Resources) -> DaemonInputs<'_> {
         DaemonInputs {
             namespace: "team-a",
+            namespace_uid: "0b9c2f4e-team-a",
             daemon_namespace: "builder-system",
             image: "docker.io/moby/buildkit:v0.34.2",
             config_map: "buildkitd",

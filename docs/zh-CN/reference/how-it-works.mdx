@@ -57,6 +57,8 @@ buildkitd 的存储卷会在多次构建之间保留缓存，因此 `RUN --mount
 
 buildkitd 空闲 10 分钟后会缩容到零。
 
+删除 Namespace 时，Kubernetes 的垃圾回收会一起删除它的 buildkitd、缓存和 CA。
+
 修改缓存大小或存储类后，该 Namespace 下次开始构建时，控制器会替换它的 buildkitd 和缓存，替换前会先等正在进行的构建完成。如果 Kubernetes 拒绝新的 buildkitd，旧的会保留，这次构建以 `InfraError` 失败，并附上 Kubernetes 的消息。
 
 ## 构建权限与隔离
