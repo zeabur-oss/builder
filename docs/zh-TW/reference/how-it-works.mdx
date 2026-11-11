@@ -65,6 +65,8 @@ buildkitd 閒置 10 分鐘後會縮到零。
 
 Job 的每個容器要 128 MiB 記憶體，最多能用 512 MiB（chart 的 `jobResources`）。`RUN` 步驟在 buildkitd 裡跑，算在 `buildkitd.resources`。
 
+Namespace 的註解 `builder.zeabur.com/build-memory`（例如 `2Gi`）會同時設定一次建置在 buildkitd 上的記憶體上限，和 Job 每個容器的上限。Job 的容器記憶體不夠時，建置會以 `OutOfMemory` 失敗。
+
 ## 自訂資源
 
 Zeabur Builder 使用 `Build`、`BuildRun` 與 `ClusterBuilder` 三種自訂資源，API 版本為 `v1alpha1`。

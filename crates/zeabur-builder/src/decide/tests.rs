@@ -543,10 +543,17 @@ fn namespace_annotations_change_one_build_and_the_count() {
             .collect::<BTreeMap<_, _>>()
     };
     assert_eq!(
-        limits(&BTreeMap::new(), 1, &defaults, &Ceiling::default()),
+        limits(
+            &BTreeMap::new(),
+            1,
+            &defaults,
+            &job_memory(),
+            &Ceiling::default()
+        ),
         Limits {
             concurrent: 1,
             resources: defaults.clone(),
+            job_memory: job_memory(),
             clamped: Vec::new()
         }
     );
@@ -558,12 +565,15 @@ fn namespace_annotations_change_one_build_and_the_count() {
         ]),
         1,
         &defaults,
+        &job_memory(),
         &Ceiling::default(),
     );
     assert_eq!(raised.concurrent, 2);
     assert_eq!(raised.resources.cpu_limit.as_deref(), Some("2"));
     assert_eq!(raised.resources.memory_limit.as_deref(), Some("4Gi"));
     assert_eq!(raised.resources.memory_request, defaults.memory_request);
+    assert_eq!(raised.job_memory.limit, "4Gi");
+    assert_eq!(raised.job_memory.request, job_memory().request);
     let bad = limits(
         &set(&[
             (annotations::BUILD_CPU, "lots"),
@@ -571,9 +581,11 @@ fn namespace_annotations_change_one_build_and_the_count() {
         ]),
         1,
         &defaults,
+        &job_memory(),
         &Ceiling::default(),
     );
     assert_eq!(bad.resources, defaults);
+    assert_eq!(bad.job_memory, job_memory());
 }
 
 #[test]
@@ -591,7 +603,7 @@ fn a_ceiling_holds_a_namespace_to_the_cluster_limit_and_says_so() {
         cpu: Some("4".to_owned()),
         memory: Some("4096Mi".to_owned()),
     };
-    let held = limits(&annotations, 1, &defaults, &ceiling);
+    let held = limits(&annotations, 1, &defaults, &job_memory(), &ceiling);
     assert_eq!(held.resources.cpu_limit.as_deref(), Some("4"));
     assert_eq!(held.resources.memory_limit.as_deref(), Some("2Gi"));
     assert_eq!(
@@ -599,7 +611,13 @@ fn a_ceiling_holds_a_namespace_to_the_cluster_limit_and_says_so() {
         ["This build asked for 8 CPU; the cluster allows at most 4 per build, so it gets 4."]
     );
 
-    let open = limits(&annotations, 1, &defaults, &Ceiling::default());
+    let open = limits(
+        &annotations,
+        1,
+        &defaults,
+        &job_memory(),
+        &Ceiling::default(),
+    );
     assert_eq!(open.resources.cpu_limit.as_deref(), Some("8"));
     assert_eq!(open.clamped, Vec::<String>::new());
 }
@@ -622,6 +640,13 @@ fn cluster_builder(generation: i64) -> ClusterBuilder {
     );
     builder.metadata.generation = Some(generation);
     builder
+}
+
+fn job_memory() -> JobMemory {
+    JobMemory {
+        request: "128Mi".to_owned(),
+        limit: "512Mi".to_owned(),
+    }
 }
 
 fn flags() -> Resources {
@@ -700,7 +725,8 @@ fn a_cluster_builder_status_shows_the_ceiling_namespaces_are_held_to() {
     );
     // A namespace that asks for more gets the ceiling the status shows.
     let annotations = BTreeMap::from([(annotations::BUILD_MEMORY.to_owned(), "16Gi".to_owned())]);
-    let held = limits(&annotations, 1, &flags(), &ceiling);
+    let held = limits(&annotations, 1, &flags(), &job_memory(), &ceiling);
+    assert_eq!(held.job_memory.limit, "4Gi");
     assert_eq!(
         held.resources.memory_limit.map(Quantity),
         status.build_ceiling.and_then(|c| c.memory)
@@ -752,6 +778,10 @@ fn a_memory_kill_since_the_run_started_is_out_of_memory() {
     };
     let since = Some("2026-10-22T07:00:00Z".parse().unwrap());
     assert!(oom_killed(&killed("2026-10-22T07:30:00Z"), since));
+    let mut plan = killed("2026-10-22T07:30:00Z");
+    let status = plan.status.as_mut().unwrap();
+    status.init_container_statuses = status.container_statuses.take();
+    assert!(oom_killed(&plan, since), "a build Job's plan container");
     assert!(!oom_killed(&killed("2026-10-22T06:00:00Z"), since));
     assert!(!oom_killed(&pod(Vec::new(), Vec::new()), since));
 }

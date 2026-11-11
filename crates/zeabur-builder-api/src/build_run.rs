@@ -282,7 +282,7 @@ pub enum Reason {
     PlanFailed,
     /// `buildctl` failed, in the build or in the push.
     BuildFailed,
-    /// buildkitd was killed for using more memory than its limit.
+    /// buildkitd or the build Job was killed for using more memory than its limit.
     OutOfMemory,
     /// The Job ran past its deadline.
     Timeout,
