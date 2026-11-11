@@ -9,7 +9,16 @@
         "builder.zeabur.com/namespace": "team-a"
       },
       "name": "buildkitd-team-a",
-      "namespace": "builder-system"
+      "namespace": "builder-system",
+      "ownerReferences": [
+        {
+          "apiVersion": "v1",
+          "blockOwnerDeletion": false,
+          "kind": "Namespace",
+          "name": "team-a",
+          "uid": "0b9c2f4e-team-a"
+        }
+      ]
     },
     "spec": {
       "clusterIP": "None",
@@ -35,7 +44,16 @@
         "builder.zeabur.com/namespace": "team-a"
       },
       "name": "buildkitd-team-a",
-      "namespace": "builder-system"
+      "namespace": "builder-system",
+      "ownerReferences": [
+        {
+          "apiVersion": "v1",
+          "blockOwnerDeletion": false,
+          "kind": "Namespace",
+          "name": "team-a",
+          "uid": "0b9c2f4e-team-a"
+        }
+      ]
     },
     "spec": {
       "persistentVolumeClaimRetentionPolicy": {
@@ -206,7 +224,16 @@
         "builder.zeabur.com/namespace": "team-a"
       },
       "name": "buildkitd-team-a",
-      "namespace": "builder-system"
+      "namespace": "builder-system",
+      "ownerReferences": [
+        {
+          "apiVersion": "v1",
+          "blockOwnerDeletion": false,
+          "kind": "Namespace",
+          "name": "team-a",
+          "uid": "0b9c2f4e-team-a"
+        }
+      ]
     },
     "spec": {
       "ingress": [

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::{Method, Request, Response};
@@ -9,8 +10,11 @@ use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{Pod, Toleration};
 use kube::Client;
 use serde_json::{Value, json};
+use zeabur_builder_jobspec::buildkitd::Resources;
+use zeabur_builder_jobspec::{JobMemory, Placement};
 
-use super::{Applied, ready, stateful_set};
+use super::{Applied, Settings, Wake, ready, stateful_set};
+use crate::decide;
 
 const DAEMONS: &str = "builder-system";
 const NAMESPACE: &str = "team-a";
@@ -103,6 +107,7 @@ impl Cluster {
         let (resource, name) = match parts.as_slice() {
             [.., "namespaces", _, resource, name] => (*resource, Some(*name)),
             [.., "namespaces", _, resource] => (*resource, None),
+            ["api", "v1", "namespaces", name] => ("namespaces", Some(*name)),
             _ => return status(404, "NotFound", "unknown path"),
         };
         let key = name.map(|n| format!("{resource}/{n}"));
@@ -122,6 +127,17 @@ impl Cluster {
                 object["metadata"]["name"] = json!(format!("{base}x7k2p"));
                 (201, object)
             }
+            ("POST", None) => {
+                let key = format!(
+                    "{resource}/{}",
+                    body["metadata"]["name"].as_str().unwrap_or("")
+                );
+                if self.objects.contains_key(&key) {
+                    return status(409, "AlreadyExists", "already exists");
+                }
+                (201, self.put(&key, body))
+            }
+            ("PUT", Some(key)) => (200, self.put(&key, body)),
             ("DELETE", Some(key)) => self.delete(&key, &body),
             _ => status(405, "MethodNotAllowed", "not handled by the fake"),
         }
@@ -267,6 +283,138 @@ fn running(class: &str) -> Shared {
 
 async fn wake(cluster: &Shared, class: &str) -> Result<Applied, kube::Error> {
     stateful_set(&client(cluster), DAEMONS, NAMESPACE, &desired(class)).await
+}
+
+fn settings() -> Settings {
+    Settings {
+        namespace: DAEMONS.to_owned(),
+        image: "moby/buildkit".to_owned(),
+        config_map: "buildkitd".to_owned(),
+        cache_size: "20Gi".to_owned(),
+        storage_class: None,
+        runtime_class: None,
+        resources: Resources::default(),
+        idle_after: Duration::from_mins(10),
+        placement: Placement::default(),
+    }
+}
+
+fn limits() -> decide::Limits {
+    decide::Limits {
+        concurrent: 1,
+        resources: Resources::default(),
+        job_memory: JobMemory {
+            request: "128Mi".to_owned(),
+            limit: "512Mi".to_owned(),
+        },
+        clamped: Vec::new(),
+    }
+}
+
+/// A cluster with the namespace `team-a` of UID `uid`.
+fn with_namespace(uid: &str) -> Shared {
+    let mut cluster = Cluster::default();
+    cluster.put(
+        &format!("namespaces/{NAMESPACE}"),
+        json!({"metadata": {"name": NAMESPACE, "uid": uid}}),
+    );
+    Arc::new(Mutex::new(cluster))
+}
+
+fn namespace_owner(uid: &str) -> Value {
+    json!([{
+        "apiVersion": "v1", "kind": "Namespace", "name": NAMESPACE, "uid": uid,
+        "blockOwnerDeletion": false,
+    }])
+}
+
+fn writes(cluster: &Shared) -> Vec<Call> {
+    lock(cluster)
+        .calls
+        .iter()
+        .filter(|c| c.method != Method::GET)
+        .cloned()
+        .collect()
+}
+
+async fn wake_namespace(cluster: &Shared) -> Result<Wake, kube::Error> {
+    super::wake(&client(cluster), &settings(), NAMESPACE, &limits()).await
+}
+
+#[tokio::test]
+async fn the_namespace_owns_every_object_of_its_daemon() {
+    let cluster = with_namespace("ns-1");
+
+    let woken = wake_namespace(&cluster).await;
+
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    for key in [
+        set_key(),
+        format!("services/{NAME}"),
+        format!("networkpolicies/{NAME}"),
+        format!("secrets/{NAME}-tls"),
+    ] {
+        let stored = object(&cluster, &key);
+        assert_eq!(
+            stored["metadata"]["ownerReferences"],
+            namespace_owner("ns-1"),
+            "{key}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_secret_made_before_owners_gets_the_namespace_as_owner() {
+    let cluster = with_namespace("ns-1");
+    lock(&cluster).put(
+        &format!("secrets/{NAME}-tls"),
+        json!({"metadata": {"name": format!("{NAME}-tls")}, "data": {
+            "ca.pem": "Y2E=", "client-cert.pem": "Y2VydA==", "client-key.pem": "a2V5",
+        }}),
+    );
+
+    let woken = wake_namespace(&cluster).await;
+
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    let secret = object(&cluster, &format!("secrets/{NAME}-tls"));
+    assert_eq!(
+        secret["metadata"]["ownerReferences"],
+        namespace_owner("ns-1")
+    );
+    assert_eq!(secret["data"]["ca.pem"], "Y2E=", "the CA stays");
+}
+
+#[tokio::test]
+async fn a_daemon_of_a_deleted_namespace_with_the_same_name_waits_for_garbage_collection() {
+    let cluster = with_namespace("ns-2");
+    for key in [set_key(), format!("secrets/{NAME}-tls")] {
+        lock(&cluster).put(
+            &key,
+            json!({"metadata": {"name": key.split('/').nth(1),
+                                "ownerReferences": namespace_owner("ns-1")}}),
+        );
+    }
+
+    for gone in [set_key(), format!("secrets/{NAME}-tls")] {
+        let woken = wake_namespace(&cluster).await;
+        assert!(
+            matches!(&woken, Ok(Wake::Starting(m)) if m.contains("garbage collection")),
+            "{woken:?}"
+        );
+        assert!(writes(&cluster).is_empty(), "{:?}", writes(&cluster));
+        lock(&cluster).collect(&gone);
+    }
+
+    let woken = wake_namespace(&cluster).await;
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    for key in [set_key(), format!("secrets/{NAME}-tls")] {
+        let stored = object(&cluster, &key);
+        assert_eq!(
+            stored["metadata"]["ownerReferences"],
+            namespace_owner("ns-2"),
+            "{key}"
+        );
+    }
 }
 
 fn set_key() -> String {
