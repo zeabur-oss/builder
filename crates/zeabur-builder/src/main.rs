@@ -153,6 +153,10 @@ struct ControllerArgs {
     /// Builds all namespaces run at once. A run over the limit waits, oldest first.
     #[arg(long, default_value_t = decide::DEFAULT_MAX_CLUSTER_BUILDS)]
     max_cluster_builds: u32,
+    /// Seconds a run waits for memory or CPU for its buildkitd before it gives its cluster slot
+    /// to a run that can start now.
+    #[arg(long, default_value_t = 60)]
+    buildkitd_pending_grace: u64,
     /// Where the buildkitd of each namespace runs. Default: the controller's namespace.
     #[arg(long)]
     buildkitd_namespace: Option<String>,
@@ -276,6 +280,7 @@ impl ControllerArgs {
                 cpu: self.buildkitd_cpu_max,
                 memory: self.buildkitd_memory_max,
             },
+            pending_grace: Duration::from_secs(self.buildkitd_pending_grace),
             default_registry: self.default_registry,
             registry_ca: self.registry_ca.filter(|ca| !ca.trim().is_empty()),
             registry_http: self.registry_http,
