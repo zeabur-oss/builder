@@ -43,9 +43,9 @@ With both values empty, builds run wherever the scheduler puts them. The control
 
 ## The first build after a change
 
-The controller doesn't move a namespace's buildkitd while it's building. When a build starts and the node selector changed, the controller waits for the running builds to finish, then deletes the buildkitd with its cache and creates it again on the build node.
+A running buildkitd keeps the settings it started with. After a namespace has been idle for 10 minutes, its buildkitd scales to zero. The next build there deletes it with its cache and creates it again with the new node selector and tolerations.
 
-So each namespace's first build after the change starts with an empty cache. The same happens when you change the cache size (`--buildkitd-cache-size`), a namespace's build limits, or upgrade to a builder version that changes buildkitd.
+So each namespace's first build after it has been idle starts with an empty cache. The same happens when you change the cache size (`--buildkitd-cache-size`), the storage class, a namespace's build limits, or upgrade to a builder version that changes buildkitd. A namespace that keeps building uses the old settings until it has been idle.
 
 ## Check where builds run
 

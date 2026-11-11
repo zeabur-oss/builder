@@ -64,10 +64,6 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
     verbs: [get, create, patch]
-  # Whether a replaced buildkitd's cache claim is gone.
-  - apiGroups: [""]
-    resources: [persistentvolumeclaims]
-    verbs: [get]
   # The grants, and one record per Build. `create` and `list` cannot be limited to names.
   - apiGroups: [""]
     resources: [configmaps]

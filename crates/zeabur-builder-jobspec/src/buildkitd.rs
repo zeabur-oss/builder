@@ -15,6 +15,8 @@
 //!   Retain`) and deleted with the `StatefulSet` (`whenDeleted: Delete`).
 //! - **Owner.** Every object names the build Namespace as its owner ([`owner`]), so Kubernetes
 //!   garbage collection deletes the daemon and its cache when the Namespace is deleted.
+//! - **Spec hash.** The `StatefulSet` carries the SHA-256 of its spec ([`annotations::SPEC_HASH`]),
+//!   so the controller sees a changed setting without comparing fields the API server defaults.
 //! - **Isolation.** `hostUsers: false` runs the privileged daemon in a user namespace (Kubernetes
 //!   1.33 or later); `runtimeClassName` can move it into a sandbox such as Kata or gVisor where the
 //!   cluster has one. Neither is a substitute for the other.
@@ -45,7 +47,8 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube_quantity::ParsedQuantity;
-use zeabur_builder_api::labels;
+use zeabur_builder_api::{annotations, labels};
+use zeabur_builder_core::archive::sha256;
 use zeabur_builder_core::daemon;
 
 use crate::Placement;
@@ -231,50 +234,55 @@ pub fn daemon(inputs: &DaemonInputs<'_>) -> Daemon {
 
     let network_policy = network_policy(inputs.namespace, meta.clone(), selector.clone());
 
+    let spec = StatefulSetSpec {
+        service_name: Some(name),
+        replicas: Some(inputs.replicas),
+        pod_management_policy: Some("Parallel".to_owned()),
+        persistent_volume_claim_retention_policy: Some(
+            StatefulSetPersistentVolumeClaimRetentionPolicy {
+                when_scaled: Some("Retain".to_owned()),
+                when_deleted: Some("Delete".to_owned()),
+            },
+        ),
+        selector: LabelSelector {
+            match_labels: Some(selector),
+            ..LabelSelector::default()
+        },
+        template: PodTemplateSpec {
+            metadata: Some(ObjectMeta {
+                labels: Some(object_labels),
+                ..ObjectMeta::default()
+            }),
+            spec: Some(pod(inputs)),
+        },
+        volume_claim_templates: Some(vec![PersistentVolumeClaim {
+            metadata: ObjectMeta {
+                name: Some(CACHE.to_owned()),
+                ..ObjectMeta::default()
+            },
+            spec: Some(PersistentVolumeClaimSpec {
+                access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+                storage_class_name: inputs.storage_class.map(str::to_owned),
+                resources: Some(VolumeResourceRequirements {
+                    requests: Some(BTreeMap::from([(
+                        "storage".to_owned(),
+                        Quantity(inputs.cache_size.to_owned()),
+                    )])),
+                    ..VolumeResourceRequirements::default()
+                }),
+                ..PersistentVolumeClaimSpec::default()
+            }),
+            status: None,
+        }]),
+        ..StatefulSetSpec::default()
+    };
+    let hash = sha256(&serde_json::to_vec(&spec).unwrap_or_default());
     let stateful_set = StatefulSet {
-        metadata: meta,
-        spec: Some(StatefulSetSpec {
-            service_name: Some(name),
-            replicas: Some(inputs.replicas),
-            pod_management_policy: Some("Parallel".to_owned()),
-            persistent_volume_claim_retention_policy: Some(
-                StatefulSetPersistentVolumeClaimRetentionPolicy {
-                    when_scaled: Some("Retain".to_owned()),
-                    when_deleted: Some("Delete".to_owned()),
-                },
-            ),
-            selector: LabelSelector {
-                match_labels: Some(selector),
-                ..LabelSelector::default()
-            },
-            template: PodTemplateSpec {
-                metadata: Some(ObjectMeta {
-                    labels: Some(object_labels),
-                    ..ObjectMeta::default()
-                }),
-                spec: Some(pod(inputs)),
-            },
-            volume_claim_templates: Some(vec![PersistentVolumeClaim {
-                metadata: ObjectMeta {
-                    name: Some(CACHE.to_owned()),
-                    ..ObjectMeta::default()
-                },
-                spec: Some(PersistentVolumeClaimSpec {
-                    access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-                    storage_class_name: inputs.storage_class.map(str::to_owned),
-                    resources: Some(VolumeResourceRequirements {
-                        requests: Some(BTreeMap::from([(
-                            "storage".to_owned(),
-                            Quantity(inputs.cache_size.to_owned()),
-                        )])),
-                        ..VolumeResourceRequirements::default()
-                    }),
-                    ..PersistentVolumeClaimSpec::default()
-                }),
-                status: None,
-            }]),
-            ..StatefulSetSpec::default()
-        }),
+        metadata: ObjectMeta {
+            annotations: Some(BTreeMap::from([(annotations::SPEC_HASH.to_owned(), hash)])),
+            ..meta
+        },
+        spec: Some(spec),
         status: None,
     };
 

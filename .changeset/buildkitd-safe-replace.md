@@ -2,6 +2,6 @@
 default: patch
 ---
 
-# buildkitd is replaced only when the new one is valid and no build uses the old one
+# A changed buildkitd setting takes effect once the daemon has been idle
 
-When a change to the cache size or storage class cannot be applied to a Namespace's buildkitd StatefulSet, the controller first checks the new StatefulSet with a dry-run create. If Kubernetes rejects it, the old daemon and its cache stay and the run fails with `InfraError` and the API server's message. Otherwise the controller waits for the Namespace's running builds, deletes the old StatefulSet only if it is still the object it read (`uid` and `resourceVersion` preconditions), and creates the new one after the old Pod and cache claim are gone, so the new storage class takes effect. The chart's Role gains `get` on PersistentVolumeClaims in the controller's Namespace.
+buildkitd is a cache, so a running daemon keeps the settings it started with. When the cache size, storage class, build nodes, a namespace's build limits or the buildkitd spec of a new Builder version change, the first build after that namespace's buildkitd has scaled to zero (after `--buildkitd-idle`, 600 seconds by default) deletes it with its cache and creates it again with the new settings. A namespace that keeps building uses the old settings until then. The StatefulSet carries the SHA-256 of its spec in the annotation `builder.zeabur.com/spec-hash`. If Kubernetes rejects the new StatefulSet, the run fails with `InfraError` and the API server's message.

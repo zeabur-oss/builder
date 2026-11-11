@@ -43,9 +43,9 @@ builds:
 
 ## 变更后的第一次构建
 
-Namespace 的 buildkitd 正在构建时，控制器不会移动它。构建开始时如果节点选择器变了，控制器会等运行中的构建结束，再把 buildkitd 连同缓存一起删除，并由控制器在构建节点上重新创建它。
+运行中的 buildkitd 会沿用启动时的设置。Namespace 空闲 10 分钟后，它的 buildkitd 会缩容到零；那里的下一次构建会把 buildkitd 连同缓存一起删除，再用新的节点选择器和容忍度重新创建。
 
-所以变更后，每个 Namespace 的第一次构建都从空的缓存开始。修改缓存大小（`--buildkitd-cache-size`）、Namespace 的构建资源上限，或升级的 Zeabur Builder 版本改动了 buildkitd 时，也是这样。
+所以空闲之后，每个 Namespace 的第一次构建都从空的缓存开始。修改缓存大小（`--buildkitd-cache-size`）、存储类、Namespace 的构建资源上限，或升级的 Zeabur Builder 版本改动了 buildkitd 时，也是这样。一直在构建的 Namespace 会使用旧设置，空闲之后才更换。
 
 ## 确认构建在哪里运行
 

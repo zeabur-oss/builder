@@ -1352,6 +1352,40 @@ fn still_released(run: &BuildRun, reason: Reason) -> Reason {
     }
 }
 
+/// The run's ready daemon, or what the run does while there is none.
+async fn daemon_for(
+    ctx: &Context,
+    run: &BuildRun,
+    status: BuildRunStatus,
+    limits: &decide::Limits,
+) -> Result<Result<daemon::Woken, Action>, Error> {
+    let namespace = run.namespace().unwrap_or_default();
+    let action = match daemon::wake(&ctx.client, &ctx.settings.daemon, &namespace, limits).await {
+        Ok(daemon::Wake::Ready(woken)) => return Ok(Ok(woken)),
+        Ok(daemon::Wake::Starting(message)) => {
+            pending(ctx, run, status, Reason::BuildkitdStarting, message).await?
+        }
+        Ok(daemon::Wake::Short { pod, since }) => {
+            short_of_resources(ctx, run, status, &pod, since).await?
+        }
+        // The controller's settings make a buildkitd the API server refuses.
+        Err(kube::Error::Api(e)) if e.code == 422 => {
+            let failed = BuildRunStatus {
+                phase: Some(Phase::Failed),
+                reason: Some(Reason::InfraError),
+                message: Some(format!(
+                    "the buildkitd StatefulSet is invalid: {}",
+                    e.message
+                )),
+                ..BuildRunStatus::default()
+            };
+            finish(ctx, run, failed).await?
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Err(action))
+}
+
 async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Result<Action, Error> {
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
@@ -1399,15 +1433,9 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
             return pending(ctx, run, status, reason, message).await;
         }
     };
-    let woken = match daemon::wake(&ctx.client, &settings.daemon, &namespace, &limits).await? {
-        daemon::Wake::Ready(woken) => woken,
-        daemon::Wake::Starting(message) => {
-            return pending(ctx, run, status, Reason::BuildkitdStarting, message).await;
-        }
-        daemon::Wake::Short { pod, since } => {
-            return short_of_resources(ctx, run, status, &pod, since).await;
-        }
-        daemon::Wake::Invalid(message) => return finish(ctx, run, fail(message)).await,
+    let woken = match daemon_for(ctx, run, status.clone(), &limits).await? {
+        Ok(woken) => woken,
+        Err(action) => return Ok(action),
     };
     if build.spec.source.github_app.is_some() {
         // Minted only now, so a run waiting for a slot does not mint a token every retry.

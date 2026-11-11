@@ -59,7 +59,7 @@ buildkitd 空闲 10 分钟后会缩容到零。
 
 删除 Namespace 时，Kubernetes 的垃圾回收会一起删除它的 buildkitd、缓存和 CA。
 
-修改缓存大小或存储类后，该 Namespace 下次开始构建时，控制器会替换它的 buildkitd 和缓存，替换前会先等正在进行的构建完成。如果 Kubernetes 拒绝新的 buildkitd，旧的会保留，这次构建以 `InfraError` 失败，并附上 Kubernetes 的消息。
+运行中的 buildkitd 会沿用原来的设置。修改缓存大小、存储类、构建节点或 Namespace 的构建资源上限后，等该 Namespace 的 buildkitd 缩容到零，下一次构建会把它连同缓存一起删除，再用新设置重新创建。如果 Kubernetes 拒绝新的 buildkitd，这次构建以 `InfraError` 失败，并附上 Kubernetes 的消息。
 
 ## 构建权限与隔离
 

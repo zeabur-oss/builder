@@ -59,7 +59,7 @@ buildkitd 閒置 10 分鐘後會縮到零。
 
 刪除 Namespace 時，Kubernetes 的垃圾回收會一起刪掉它的 buildkitd、快取和 CA。
 
-改了快取大小或儲存類別後，該 Namespace 下次開始建置時，控制器會換掉它的 buildkitd 和快取，換之前會先等進行中的建置跑完。如果 Kubernetes 拒絕新的 buildkitd，舊的會保留，這次建置以 `InfraError` 失敗，並附上 Kubernetes 的訊息。
+執行中的 buildkitd 會沿用原本的設定。改了快取大小、儲存類別、建置節點或 Namespace 的建置資源上限後，等該 Namespace 的 buildkitd 縮到零，下一次建置會把它連同快取一起刪除，再用新設定重新建立。如果 Kubernetes 拒絕新的 buildkitd，這次建置以 `InfraError` 失敗，並附上 Kubernetes 的訊息。
 
 ## 建置權限與隔離
 
