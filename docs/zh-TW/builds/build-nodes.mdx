@@ -1,7 +1,6 @@
 ---
 title: 在建置節點上建置
 description: 用標籤和 taint 留一個節點專門建置，讓建置不佔用執行應用程式的節點。
-source: "8020f5686ed0"
 ---
 
 預設每次建置最多使用 1 個 CPU 和 1 GiB 記憶體（`buildkitd.resources.limits`）。在節點都不大的叢集上，這些 CPU 和記憶體會分走應用程式能用的部分。如果有一台空出來的機器，可以把它設成建置節點：每個 Namespace 的 buildkitd 和每個建置 Job 都在這台機器上執行，其他工作負載不會排到這裡。建置不再佔用應用程式的 CPU 和記憶體，每個 Namespace 的建置快取也都留在這台機器的磁碟上。
