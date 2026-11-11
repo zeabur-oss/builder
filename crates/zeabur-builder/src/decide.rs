@@ -19,6 +19,9 @@ use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome};
 use zeabur_builder_core::tag::{self, TagError, TagInputs};
 use zeabur_builder_jobspec::buildkitd::Resources;
 
+/// Selects the `BuildRun`s that are not finished, by the selectable field `status.phase`.
+pub(crate) const UNFINISHED: &str =
+    "status.phase!=Succeeded,status.phase!=Failed,status.phase!=Cancelled";
 /// Polling interval for plain Git when the `Build` sets none.
 pub(crate) const DEFAULT_POLL: Duration = Duration::from_mins(1);
 /// Polling interval for a GitHub App source whose push events reach the controller: only a safety

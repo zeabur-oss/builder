@@ -57,6 +57,8 @@ buildkitd 的磁碟區會保留快取，供後續建置使用，因此 `RUN --mo
 
 buildkitd 閒置 10 分鐘後會縮到零。
 
+改了快取大小或儲存類別後，該 Namespace 下次開始建置時，控制器會換掉它的 buildkitd 和快取，換之前會先等進行中的建置跑完。如果 Kubernetes 拒絕新的 buildkitd，舊的會保留，這次建置以 `InfraError` 失敗，並附上 Kubernetes 的訊息。
+
 ## 建置權限與隔離
 
 每次建置都有一個 Job。Job 會執行 `buildctl`，不需要特權。
