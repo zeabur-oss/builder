@@ -518,12 +518,15 @@ async fn new_tolerations_wait_for_running_builds_and_then_apply() {
 #[test]
 fn only_a_ready_pod_of_the_current_statefulset_is_ready() {
     let set: StatefulSet = serde_json::from_value(json!({
-        "metadata": {"name": NAME, "uid": "new"}, "spec": {"selector": {}, "template": {}}
+        "metadata": {"name": NAME, "uid": "new", "generation": 2},
+        "spec": {"selector": {}, "template": {}},
+        "status": {"observedGeneration": 2, "updateRevision": "r2"},
     }))
     .unwrap_or_default();
-    let pod = |owner: &str, deleting: bool, ready: &str| -> Pod {
+    let pod = |owner: &str, deleting: bool, ready: &str, revision: &str| -> Pod {
         let mut pod = json!({
-            "metadata": {"name": POD, "ownerReferences": [{
+            "metadata": {"name": POD, "labels": {"controller-revision-hash": revision},
+                         "ownerReferences": [{
                 "apiVersion": "apps/v1", "kind": "StatefulSet", "name": NAME,
                 "uid": owner, "controller": true,
             }]},
@@ -535,12 +538,23 @@ fn only_a_ready_pod_of_the_current_statefulset_is_ready() {
         serde_json::from_value(pod).unwrap_or_default()
     };
     let cases = [
-        ("ready, current set", pod("new", false, "True"), true),
-        ("ready, deleted set", pod("old", false, "True"), false),
-        ("ready, terminating", pod("new", true, "True"), false),
-        ("not ready", pod("new", false, "False"), false),
+        ("ready, current set", pod("new", false, "True", "r2"), true),
+        ("ready, deleted set", pod("old", false, "True", "r2"), false),
+        ("ready, terminating", pod("new", true, "True", "r2"), false),
+        ("not ready", pod("new", false, "False", "r2"), false),
+        (
+            "ready, old revision",
+            pod("new", false, "True", "r1"),
+            false,
+        ),
     ];
     for (case, pod, want) in cases {
         assert_eq!(ready(&pod, &set), want, "{case}");
     }
+    let mut unseen = set;
+    unseen.metadata.generation = Some(3);
+    assert!(
+        !ready(&pod("new", false, "True", "r2"), &unseen),
+        "the update is not observed yet"
+    );
 }

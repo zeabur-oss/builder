@@ -8,4 +8,4 @@ The chart values `builds.nodeSelector` and `builds.tolerations` decide which nod
 
 When the node selector changes, the controller waits for the running builds of a namespace to finish. It then replaces that namespace's buildkitd and its cache, through the same path as other changes that an update cannot make. The namespace's next build starts with an empty cache.
 
-A change to the tolerations waits for the running builds of a namespace in the same way, and then restarts its buildkitd without deleting the cache.
+A change to the tolerations waits for the running builds of a namespace in the same way, and then restarts its buildkitd without deleting the cache. A daemon counts as ready only when its Pod is of the revision the StatefulSet rolls out, so a build does not start on a Pod that the update is about to replace.

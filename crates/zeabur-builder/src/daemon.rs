@@ -171,14 +171,21 @@ pub(crate) async fn wake(
     }))
 }
 
-/// Whether `pod` is ready and belongs to `set`, not to a `StatefulSet` of the same name that was
-/// deleted.
+/// Whether `pod` is ready, belongs to `set` and not to a `StatefulSet` of the same name that was
+/// deleted, and is of the revision that `set` rolls out. A Pod of the old revision is about to be
+/// replaced.
 fn ready(pod: &Pod, set: &StatefulSet) -> bool {
     let owned = pod
         .owner_references()
         .iter()
         .any(|o| o.controller == Some(true) && Some(&o.uid) == set.metadata.uid.as_ref());
+    let status = set.status.as_ref();
+    let seen = status.and_then(|s| s.observed_generation) == set.metadata.generation;
+    let revision = status.and_then(|s| s.update_revision.as_ref());
+    let current = revision.is_some() && pod.labels().get("controller-revision-hash") == revision;
     owned
+        && seen
+        && current
         && pod.metadata.deletion_timestamp.is_none()
         && pod
             .status
