@@ -55,7 +55,7 @@ job builder-system | check fail "a build Job in the controller's namespace"
 job builder-registry | check fail "a build Job in the registry's namespace"
 job "$a" | jq "$privileged" | check fail "a privileged Job in $a"
 job kube-system | jq "$privileged" | check fail "a privileged Job in kube-system"
-job "$a" | jq '.spec.template.spec.containers[0].image = "docker.io/library/busybox:1.37.0"' |
+job "$a" | jq '.spec.template.spec.containers[0].image = "docker.io/library/busybox:1.38.0"' |
   check fail "a Job with another image"
 job "$a" | jq '.spec.template.spec.volumes += [{name: "host", hostPath: {path: "/"}}]' |
   check fail "a Job with a hostPath volume"
@@ -74,7 +74,7 @@ buildkitd() { # $A's buildkitd StatefulSet under another name
       labels: .metadata.labels}'
 }
 buildkitd | check pass "a buildkitd StatefulSet"
-buildkitd | jq '.spec.template.spec.containers[0].image = "docker.io/library/busybox:1.37.0"' |
+buildkitd | jq '.spec.template.spec.containers[0].image = "docker.io/library/busybox:1.38.0"' |
   check fail "a privileged StatefulSet with another image"
 buildkitd | jq '.spec.template.spec.volumes += [{name: "host", hostPath: {path: "/"}}]' |
   check fail "a StatefulSet with a hostPath volume"

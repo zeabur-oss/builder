@@ -28,7 +28,7 @@ railpackImage:
 railpackFrontend: ghcr.io/railwayapp/railpack-frontend:v0.43.0
 
 # Each namespace's buildkitd, rootful. The admission policy below allows only this image.
-buildkitdImage: docker.io/moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+buildkitdImage: docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
 # A ValidatingAdmissionPolicy that limits what the controller's ServiceAccount may create: Jobs
 # only in the shape of a build Job, and StatefulSets only with buildkitdImage, in this namespace.

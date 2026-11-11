@@ -53,7 +53,7 @@ spec:
   hostNetwork: true
   containers:
     - name: metadata
-      image: docker.io/library/busybox:1.37.0
+      image: docker.io/library/busybox:1.38.0
       command: [sh, -c, "ip addr add 169.254.169.254/32 dev lo; mkdir -p /www; echo instance-metadata > /www/index.html; exec httpd -f -p 169.254.169.254:8169 -h /www"]
       securityContext: {privileged: true}
 ---
@@ -63,7 +63,7 @@ metadata: {name: target, namespace: isolation-target, labels: {app: target}}
 spec:
   containers:
     - name: target
-      image: docker.io/library/busybox:1.37.0
+      image: docker.io/library/busybox:1.38.0
       command: [sh, -c, "mkdir -p /www; echo cluster-service > /www/index.html; exec httpd -f -p 8080 -h /www"]
 ---
 apiVersion: v1
@@ -154,15 +154,15 @@ build_in() {
 build() { build_in "$a" "$@"; }
 echo "== registry"
 check pass "a token for $a/probe pushes to $registry/$a/probe" \
-  build "--output type=image,name=$registry/$a/probe:isolation,push=true" "FROM busybox:1.37.0"
+  build "--output type=image,name=$registry/$a/probe:isolation,push=true" "FROM busybox:1.38.0"
 check fail "a token for $a/probe cannot push to $registry/$b/probe" \
-  build "--output type=image,name=$registry/$b/probe:isolation,push=true" "FROM busybox:1.37.0"
+  build "--output type=image,name=$registry/$b/probe:isolation,push=true" "FROM busybox:1.38.0"
 check fail "a push without a token is refused" \
-  build_in "$b" "--output type=image,name=$registry/$b/probe:isolation,push=true" "FROM busybox:1.37.0"
+  build_in "$b" "--output type=image,name=$registry/$b/probe:isolation,push=true" "FROM busybox:1.38.0"
 
 echo "== RUN network"
 reach() { echo "wget -S -T 10 -O /dev/null $1 2>&1 | grep -q HTTP/"; }
-run_step() { build "" "FROM busybox:1.37.0
+run_step() { build "" "FROM busybox:1.38.0
 RUN ip -4 addr show eth0 | grep inet; $1"; }
 LINES_SHOWN=2 check pass "RUN has its own network namespace and reaches the internet" \
   run_step "$(reach https://example.com)"
@@ -176,11 +176,11 @@ check fail "RUN cannot reach 169.254.169.254" \
   run_step "$(reach http://169.254.169.254:8169/)"
 check fail "RUN --network=host is refused" \
   build "" "# syntax=docker/dockerfile:1
-FROM busybox:1.37.0
+FROM busybox:1.38.0
 RUN --network=host true"
 check fail "a gateway frontend outside allowedRepositories is refused" \
   build "" "# syntax=docker.io/tonistiigi/dockerfile:latest
-FROM busybox:1.37.0"
+FROM busybox:1.38.0"
 
 echo "== the same targets from an ordinary Pod in $a, for comparison"
 check pass "a Pod reaches a Service in another namespace" \

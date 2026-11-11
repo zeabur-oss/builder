@@ -448,7 +448,7 @@ mod tests {
         DaemonInputs {
             namespace: "team-a",
             daemon_namespace: "builder-system",
-            image: "docker.io/moby/buildkit:v0.34.1",
+            image: "docker.io/moby/buildkit:v0.34.2",
             config_map: "buildkitd",
             replicas: 1,
             cache_size: "20Gi",

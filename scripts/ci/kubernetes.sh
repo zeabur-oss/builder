@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-k3s_image="${K3S_IMAGE:-rancher/k3s:v1.36.5-k3s1}"
+k3s_image="${K3S_IMAGE:-rancher/k3s:v1.37.2-k3s1}"
 
 artifacts="${CI_ARTIFACTS:-$PWD/target/ci/artifacts}"
 mkdir -p "$artifacts"
