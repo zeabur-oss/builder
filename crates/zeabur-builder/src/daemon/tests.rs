@@ -39,6 +39,8 @@ struct Cluster {
     serial: u64,
     /// The answer to every apply of a `StatefulSet` instead of the normal handling.
     apply: Option<(u16, &'static str, &'static str)>,
+    /// Another wake scales the `StatefulSet` up just before the next delete reaches it.
+    scale_up_before_delete: bool,
     calls: Vec<Call>,
 }
 
@@ -150,6 +152,12 @@ impl Cluster {
     }
 
     fn delete(&mut self, key: &str, body: &Value) -> (u16, Value) {
+        if std::mem::take(&mut self.scale_up_before_delete)
+            && let Some(mut object) = self.objects.get(key).cloned()
+        {
+            object["spec"]["replicas"] = json!(1);
+            self.put(key, object);
+        }
         let Some(object) = self.objects.get(key).cloned() else {
             return status(404, "NotFound", "not found");
         };
@@ -399,6 +407,19 @@ async fn a_daemon_scaled_to_zero_with_old_settings_is_replaced() {
     assert_ne!(new["metadata"]["uid"].as_str(), old.as_deref());
     assert_eq!(new["spec"]["replicas"], 1);
     assert!(new["spec"]["volumeClaimTemplates"][0]["spec"]["storageClassName"].is_null());
+}
+
+#[tokio::test]
+async fn a_daemon_scaled_up_while_being_replaced_keeps_running() {
+    let cluster = daemon_at(0, true).await;
+    lock(&cluster).scale_up_before_delete = true;
+
+    let woken = wake_namespace(&cluster).await;
+
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    let set = object(&cluster, &set_key());
+    assert!(set["metadata"]["deletionTimestamp"].is_null(), "{set}");
+    assert_eq!(set["spec"]["replicas"], 1);
 }
 
 #[tokio::test]

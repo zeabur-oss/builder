@@ -244,8 +244,8 @@ fn spec_hash(set: &StatefulSet) -> Option<&String> {
 /// Deletes the daemon's `StatefulSet` in the foreground: it stays, with a `deletionTimestamp`,
 /// until its Pod and cache claim are gone, since the `StatefulSet` controller makes itself their
 /// owner with `blockOwnerDeletion` ([`updateClaimOwnerRefForSetAndPod`]). Until then a new one of
-/// the same name would take over the old claim. The `uid` precondition spares a `StatefulSet`
-/// created after the read.
+/// the same name would take over the old claim. The `uid` and `resourceVersion` preconditions
+/// spare a `StatefulSet` created or scaled up after the read.
 ///
 /// [`updateClaimOwnerRefForSetAndPod`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/controller/statefulset/stateful_set_utils.go#L305-L350
 async fn replace(sets: &Api<StatefulSet>, old: &StatefulSet) -> Result<(), kube::Error> {
@@ -253,7 +253,7 @@ async fn replace(sets: &Api<StatefulSet>, old: &StatefulSet) -> Result<(), kube:
     let delete = DeleteParams {
         preconditions: Some(Preconditions {
             uid: old.metadata.uid.clone(),
-            resource_version: None,
+            resource_version: old.metadata.resource_version.clone(),
         }),
         ..DeleteParams::foreground()
     };
