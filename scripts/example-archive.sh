@@ -56,7 +56,7 @@ push=$(k -n "$a" run archive-push --rm -i --quiet --restart Never \
 cd /tmp && mkdir -p app/static
 printf 'hello from an archive\n' > app/static/hello.txt
 ln -s static/hello.txt app/hello.txt
-printf 'FROM busybox:1.37.0\nCOPY hello.txt /hello.txt\nCMD ["cat", "/hello.txt"]\n' > app/Dockerfile
+printf 'FROM busybox:1.38.0\nCOPY hello.txt /hello.txt\nCMD ["cat", "/hello.txt"]\n' > app/Dockerfile
 tar -czf app.tar.gz -C app .
 printf '{}' > config.json
 blob() { # $1 = file; prints its digest
