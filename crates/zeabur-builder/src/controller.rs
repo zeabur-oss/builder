@@ -878,6 +878,16 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
                 ..*result
             };
             if finished.phase == Some(Phase::Failed)
+                && pod.as_ref().is_some_and(|p| decide::oom_killed(p, None))
+            {
+                finished.reason = Some(Reason::OutOfMemory);
+                finished.message = Some(
+                    "the build Job was killed for using more memory than its limit; raise \
+                     builder.zeabur.com/build-memory on the namespace or the controller's \
+                     --job-memory-limit"
+                        .to_owned(),
+                );
+            } else if finished.phase == Some(Phase::Failed)
                 && matches!(
                     finished.reason,
                     Some(Reason::BuildFailed | Reason::InfraError)
@@ -1147,6 +1157,7 @@ async fn namespace_limits(ctx: &Context, namespace: &str) -> Result<decide::Limi
         &annotations,
         ctx.settings.max_concurrent,
         &ctx.settings.daemon.resources,
+        &ctx.settings.job_memory,
         &ctx.settings.ceiling,
     ))
 }
@@ -1434,7 +1445,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         deadline_seconds: settings.job_deadline_seconds,
         ttl_seconds: settings.job_ttl_seconds,
         placement: &settings.daemon.placement,
-        memory: &settings.job_memory,
+        memory: &limits.job_memory,
     }) {
         Ok(job) => job,
         Err(e) => return finish(ctx, run, fail(e.to_string())).await,

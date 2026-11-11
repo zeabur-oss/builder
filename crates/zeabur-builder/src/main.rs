@@ -215,7 +215,8 @@ struct ControllerArgs {
     /// The memory request of each container of a build Job.
     #[arg(long, default_value = "128Mi", value_parser = quantity)]
     job_memory_request: String,
-    /// The memory limit of each container of a build Job.
+    /// The memory limit of each container of a build Job; the Namespace annotation
+    /// `builder.zeabur.com/build-memory` overrides it.
     #[arg(long, default_value = "512Mi", value_parser = quantity)]
     job_memory_limit: String,
     /// How long a build may run, in seconds.

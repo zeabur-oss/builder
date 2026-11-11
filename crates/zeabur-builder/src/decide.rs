@@ -22,6 +22,7 @@ use zeabur_builder_api::common::{Condition, ConditionStatus};
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome, Step};
 use zeabur_builder_core::tag::{self, TagError, TagInputs};
+use zeabur_builder_jobspec::JobMemory;
 use zeabur_builder_jobspec::buildkitd::Resources;
 
 /// Selects the `BuildRun`s that are not finished, by the selectable field `status.phase`.
@@ -541,13 +542,15 @@ pub(crate) fn concurrency_limit(annotation: Option<&str>, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-/// What one namespace's buildkitd may use.
+/// What one namespace's builds may use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Limits {
     /// Builds it runs at once.
     pub(crate) concurrent: u32,
-    /// The resources of one build.
+    /// The resources of one build on buildkitd.
     pub(crate) resources: Resources,
+    /// The memory of each container of a build Job.
+    pub(crate) job_memory: JobMemory,
     /// What the cluster's ceiling took away, for the person who asked for more.
     pub(crate) clamped: Vec<String>,
 }
@@ -608,20 +611,21 @@ pub(crate) fn cluster_builder_status(
 }
 
 /// A namespace's [`Limits`]: the controller's, with each value its annotations set to a valid one
-/// replaced, and CPU and memory held to the `ceiling`.
+/// replaced, and CPU and memory held to the `ceiling`. `builder.zeabur.com/build-memory` also
+/// sets the build Job's memory limit.
 pub(crate) fn limits(
     annotations: &BTreeMap<String, String>,
     concurrent: u32,
     resources: &Resources,
+    job: &JobMemory,
     ceiling: &Ceiling,
 ) -> Limits {
-    let quantity = |key: &str, default: &Option<String>| {
+    let asked = |key: &str| {
         annotations
             .get(key)
             .map(|q| q.trim())
             .filter(|q| zeabur_builder_jobspec::buildkitd::times(q, 1).is_some())
             .map(str::to_owned)
-            .or_else(|| default.clone())
     };
     let mut clamped = Vec::new();
     let mut clamp = |what: &str, value: Option<String>, ceiling: &Option<String>| {
@@ -638,14 +642,19 @@ pub(crate) fn limits(
     };
     let cpu_limit = clamp(
         "CPU",
-        quantity(annotations::BUILD_CPU, &resources.cpu_limit),
+        asked(annotations::BUILD_CPU).or_else(|| resources.cpu_limit.clone()),
         &ceiling.cpu,
     );
+    let memory = asked(annotations::BUILD_MEMORY);
     let memory_limit = clamp(
         "memory",
-        quantity(annotations::BUILD_MEMORY, &resources.memory_limit),
+        memory.clone().or_else(|| resources.memory_limit.clone()),
         &ceiling.memory,
     );
+    let mut job_memory = job.clone();
+    if let (Some(_), Some(limit)) = (&memory, &memory_limit) {
+        job_memory.limit.clone_from(limit);
+    }
     Limits {
         concurrent: concurrency_limit(
             annotations
@@ -658,6 +667,7 @@ pub(crate) fn limits(
             memory_limit,
             ..resources.clone()
         },
+        job_memory,
         clamped,
     }
 }
@@ -882,12 +892,14 @@ pub(crate) fn previous_running(jobs: &[Job], pods: &[Pod], run: &str) -> Option<
     job.or(pod)
 }
 
-/// Whether the container of `pod` was killed for its memory after `since`.
+/// Whether a container of `pod` was killed for its memory after `since`.
 pub(crate) fn oom_killed(pod: &Pod, since: Option<Timestamp>) -> bool {
-    pod.status
-        .as_ref()
+    let status = pod.status.as_ref();
+    let init = status.and_then(|s| s.init_container_statuses.as_ref());
+    status
         .and_then(|s| s.container_statuses.as_ref())
         .into_iter()
+        .chain(init)
         .flatten()
         .flat_map(|c| [c.state.as_ref(), c.last_state.as_ref()])
         .flatten()

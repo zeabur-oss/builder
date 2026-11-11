@@ -65,6 +65,8 @@ Each build has one Job. The Job runs `buildctl` and doesn't need privileges.
 
 Each container of the Job requests 128 MiB of memory and may use up to 512 MiB (chart value `jobResources`). `RUN` steps run in buildkitd and count against `buildkitd.resources` instead.
 
+The Namespace annotation `builder.zeabur.com/build-memory`, such as `2Gi`, sets the memory limit of one build on buildkitd and of each container of the Job. If a container of the Job runs out of memory, the build fails with `OutOfMemory`.
+
 ## Custom resources
 
 Zeabur Builder uses three custom resources: `Build`, `BuildRun`, and `ClusterBuilder`. Their API version is `v1alpha1`.
