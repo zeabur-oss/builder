@@ -683,11 +683,12 @@ fn queued(run: &BuildRun) -> bool {
         })
 }
 
-/// Whether `run` gave its slot back because its daemon could not be scheduled.
+/// Whether `run` gave its slot back because its daemon could not be scheduled. A run that still
+/// holds its slot while it waits for resources has not given it back.
 fn released(run: &BuildRun) -> bool {
     run.status
         .as_ref()
-        .is_some_and(|s| s.reason == Some(Reason::InsufficientResources))
+        .is_some_and(|s| s.reason == Some(Reason::InsufficientResources) && !admitted(s))
 }
 
 /// The order in which queued runs get a slot: oldest first, but a run that gave its slot back

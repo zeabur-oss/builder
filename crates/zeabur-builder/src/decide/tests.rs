@@ -1731,6 +1731,25 @@ fn a_run_that_gave_its_slot_back_does_not_take_it_again() {
 }
 
 #[test]
+fn a_run_that_keeps_its_slot_while_it_waits_for_resources_keeps_its_place() {
+    let mut waiting_for_memory = holding("team-c", "c", "2026-10-22T07:50:00Z");
+    if let Some(status) = waiting_for_memory.status.as_mut() {
+        status.reason = Some(Reason::InsufficientResources);
+    }
+    let newer = waiting("team-a", "a", "2026-10-22T07:55:00Z");
+    assert!(
+        admission(
+            &[newer, waiting_for_memory.clone()],
+            &waiting_for_memory,
+            1,
+            1
+        )
+        .is_ok(),
+        "the newer run does not come before it"
+    );
+}
+
+#[test]
 fn a_run_gives_its_slot_only_to_a_run_that_comes_before_it_afterwards() {
     let grace = Duration::from_mins(1);
     let since: Timestamp = "2026-10-22T07:58:30Z".parse().unwrap();
