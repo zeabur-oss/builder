@@ -1750,23 +1750,40 @@ fn a_run_that_keeps_its_slot_while_it_waits_for_resources_keeps_its_place() {
 }
 
 #[test]
-fn a_run_gives_its_slot_only_to_a_run_that_comes_before_it_afterwards() {
+fn a_run_gives_its_slot_to_a_run_that_comes_before_it_afterwards() {
     let grace = Duration::from_mins(1);
     let since: Timestamp = "2026-10-22T07:58:30Z".parse().unwrap();
     let mine = holding("team-c", "c", "2026-10-22T07:50:00Z");
     let ready = BTreeMap::from([("team-a".to_owned(), 1)]);
     let newer = given_back("team-a", "a", "2026-10-22T07:55:00Z");
     assert!(
-        !release_slot(&[&mine, &newer], &mine, &ready, since, now(), grace),
-        "it would take the slot back"
+        release_slot(&[&mine, &newer], &mine, &ready, since, now(), grace),
+        "a run that gave its slot back earlier comes first, even if it is newer"
     );
-    let older = given_back("team-a", "a", "2026-10-22T07:45:00Z");
-    assert!(release_slot(
-        &[&mine, &older],
-        &mine,
-        &ready,
-        since,
-        now(),
-        grace
-    ));
+}
+
+#[test]
+fn runs_that_gave_their_slots_back_take_turns() {
+    let released_at = |mut run: BuildRun, at: &str| {
+        if let Some(status) = run.status.as_mut() {
+            status.slot_released_at = Some(at.to_owned());
+        }
+        run
+    };
+    let early = released_at(
+        given_back("team-a", "a", "2026-10-22T07:55:00Z"),
+        "2026-10-22T07:40:00Z",
+    );
+    let late = released_at(
+        given_back("team-c", "c", "2026-10-22T07:50:00Z"),
+        "2026-10-22T07:58:00Z",
+    );
+    assert!(
+        admission(std::slice::from_ref(&late), &early, 1, 1).is_ok(),
+        "the run that gave its slot back earlier goes first"
+    );
+    assert!(
+        admission(std::slice::from_ref(&early), &late, 1, 1).is_err(),
+        "the other run is older but gave its slot back later"
+    );
 }

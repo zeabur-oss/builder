@@ -1323,6 +1323,12 @@
                     "nullable": true,
                     "type": "string"
                   },
+                  "slotReleasedAt": {
+                    "description": "When the run last gave its cluster slot back to a run that could start. The queue puts a\nrun that gave its slot back behind every run that did so earlier.",
+                    "format": "date-time",
+                    "nullable": true,
+                    "type": "string"
+                  },
                   "startTime": {
                     "description": "When the Job was created.",
                     "format": "date-time",

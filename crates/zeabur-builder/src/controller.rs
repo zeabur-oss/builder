@@ -1321,6 +1321,7 @@ async fn short_of_resources(
     }
     if decide::release_slot(&runs, run, &ready, since, now(), ctx.settings.pending_grace) {
         status.buildkitd_instance = None;
+        status.slot_released_at = Some(now().to_string());
         let message = format!("{message}. Its slot went to a run that can start now");
         return pending(ctx, run, status, Reason::InsufficientResources, message).await;
     }

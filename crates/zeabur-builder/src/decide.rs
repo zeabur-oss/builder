@@ -691,11 +691,26 @@ fn released(run: &BuildRun) -> bool {
         .is_some_and(|s| s.reason == Some(Reason::InsufficientResources) && !admitted(s))
 }
 
+/// When `run` gave its slot back, if it has and does not hold one now.
+fn released_at(run: &BuildRun) -> Option<Timestamp> {
+    if !released(run) {
+        return None;
+    }
+    run.status
+        .as_ref()
+        .and_then(|s| s.slot_released_at.as_deref())
+        .and_then(|t| t.parse().ok())
+}
+
+type QueueKey<'a> = (bool, Option<Timestamp>, Option<Timestamp>, Option<&'a str>);
+
 /// The order in which queued runs get a slot: oldest first, but a run that gave its slot back
-/// comes after every run that did not, so it cannot take back the slot it gave.
-fn queue_key(run: &BuildRun) -> (bool, Option<Timestamp>, Option<&str>) {
+/// comes after every run that did not, and after every run that gave its slot back earlier. So
+/// the runs that cannot start take turns, and none takes back the slot it just gave.
+fn queue_key(run: &BuildRun) -> QueueKey<'_> {
     (
         released(run),
+        released_at(run),
         run.metadata.creation_timestamp.as_ref().map(|t| t.0),
         run.metadata.name.as_deref(),
     )
@@ -779,8 +794,8 @@ pub(crate) fn release_slot(
         run.metadata.namespace.as_deref(),
         run.metadata.name.as_deref(),
     );
-    let (_, created, name) = queue_key(run);
-    let given_back = (true, created, name);
+    let (_, _, created, name) = queue_key(run);
+    let given_back: QueueKey<'_> = (true, Some(now), created, name);
     for other in runs {
         let namespace = other.metadata.namespace.as_deref();
         if (namespace, other.metadata.name.as_deref()) == me || !queued(other) {

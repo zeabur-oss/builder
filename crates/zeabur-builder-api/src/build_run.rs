@@ -163,6 +163,11 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("format" = "date-time"))]
     pub completion_time: Option<String>,
+    /// When the run last gave its cluster slot back to a run that could start. The queue puts a
+    /// run that gave its slot back behind every run that did so earlier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("format" = "date-time"))]
+    pub slot_released_at: Option<String>,
     /// When the `Build`'s notify targets were sent this run's image, whatever they answered.
     /// Set once; a run with it is not sent again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
