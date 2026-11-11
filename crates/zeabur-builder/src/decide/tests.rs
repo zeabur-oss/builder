@@ -641,10 +641,8 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
     assert_eq!(
         json["buildDefaults"],
         serde_json::json!({
-            "cpuRequest": "100m",
-            "memoryRequest": "256Mi",
-            "cpuLimit": "1",
-            "memoryLimit": "1Gi",
+            "requests": {"cpu": "100m", "memory": "256Mi"},
+            "limits": {"cpu": "1", "memory": "1Gi"},
         })
     );
     assert_eq!(json["defaultConcurrentBuilds"], 3);
@@ -669,7 +667,24 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
         now(),
     ))
     .unwrap();
-    assert!(json["buildDefaults"].get("cpuLimit").is_none(), "{json}");
+    assert_eq!(
+        json["buildDefaults"]["limits"],
+        serde_json::json!({"memory": "1Gi"})
+    );
+    let none = Resources {
+        cpu_limit: None,
+        memory_limit: None,
+        ..flags()
+    };
+    let json = serde_json::to_value(cluster_builder_status(
+        &cluster_builder(1),
+        &none,
+        &Ceiling::default(),
+        3,
+        now(),
+    ))
+    .unwrap();
+    assert!(json["buildDefaults"].get("limits").is_none(), "{json}");
 }
 
 #[test]

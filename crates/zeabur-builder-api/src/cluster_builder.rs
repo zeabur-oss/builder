@@ -91,26 +91,31 @@ pub struct ClusterBuilderStatus {
     pub conditions: Vec<Condition>,
 }
 
-/// One build's CPU and memory by default. A missing value means the controller sets none.
+/// One build's CPU and memory by default, laid out as Kubernetes writes `resources`. A missing
+/// value means the controller sets none.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildDefaults {
-    /// `--buildkitd-cpu-request`.
+    /// `--buildkitd-cpu-request` and `--buildkitd-memory-request`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests: Option<BuildQuantities>,
+    /// `--buildkitd-cpu-limit` and `--buildkitd-memory-limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<BuildQuantities>,
+}
+
+/// A CPU and a memory quantity.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildQuantities {
+    /// CPU, such as `100m` or `1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
-    pub cpu_request: Option<Quantity>,
-    /// `--buildkitd-memory-request`.
+    pub cpu: Option<Quantity>,
+    /// Memory, such as `256Mi`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
-    pub memory_request: Option<Quantity>,
-    /// `--buildkitd-cpu-limit`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
-    pub cpu_limit: Option<Quantity>,
-    /// `--buildkitd-memory-limit`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
-    pub memory_limit: Option<Quantity>,
+    pub memory: Option<Quantity>,
 }
 
 /// The most CPU and memory one build may get.

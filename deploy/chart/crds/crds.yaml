@@ -205,29 +205,43 @@
                     "description": "What one build gets on its namespace's buildkitd when the Namespace annotations\n`builder.zeabur.com/build-cpu` and `builder.zeabur.com/build-memory` do not say otherwise.",
                     "nullable": true,
                     "properties": {
-                      "cpuLimit": {
-                        "description": "`--buildkitd-cpu-limit`.",
-                        "maxLength": 64,
+                      "limits": {
+                        "description": "`--buildkitd-cpu-limit` and `--buildkitd-memory-limit`.",
                         "nullable": true,
-                        "type": "string"
+                        "properties": {
+                          "cpu": {
+                            "description": "CPU, such as `100m` or `1`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "memory": {
+                            "description": "Memory, such as `256Mi`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
                       },
-                      "cpuRequest": {
-                        "description": "`--buildkitd-cpu-request`.",
-                        "maxLength": 64,
+                      "requests": {
+                        "description": "`--buildkitd-cpu-request` and `--buildkitd-memory-request`.",
                         "nullable": true,
-                        "type": "string"
-                      },
-                      "memoryLimit": {
-                        "description": "`--buildkitd-memory-limit`.",
-                        "maxLength": 64,
-                        "nullable": true,
-                        "type": "string"
-                      },
-                      "memoryRequest": {
-                        "description": "`--buildkitd-memory-request`.",
-                        "maxLength": 64,
-                        "nullable": true,
-                        "type": "string"
+                        "properties": {
+                          "cpu": {
+                            "description": "CPU, such as `100m` or `1`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "memory": {
+                            "description": "Memory, such as `256Mi`.",
+                            "maxLength": 64,
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
                       }
                     },
                     "type": "object"

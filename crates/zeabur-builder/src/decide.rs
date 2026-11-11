@@ -15,7 +15,7 @@ use zeabur_builder_api::build_run::{
     BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, Trigger,
 };
 use zeabur_builder_api::cluster_builder::{
-    BuildCeiling, BuildDefaults, ClusterBuilder, ClusterBuilderStatus,
+    BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderStatus,
 };
 use zeabur_builder_api::common::{Condition, ConditionStatus};
 use zeabur_builder_api::{annotations, labels};
@@ -485,6 +485,9 @@ pub(crate) fn cluster_builder_status(
     now: Timestamp,
 ) -> ClusterBuilderStatus {
     let quantity = |value: &Option<String>| value.clone().map(Quantity);
+    let non_empty = |quantities: BuildQuantities| {
+        (quantities != BuildQuantities::default()).then_some(quantities)
+    };
     let build_ceiling = BuildCeiling {
         cpu: quantity(&ceiling.cpu),
         memory: quantity(&ceiling.memory),
@@ -504,10 +507,14 @@ pub(crate) fn cluster_builder_status(
     );
     ClusterBuilderStatus {
         build_defaults: Some(BuildDefaults {
-            cpu_request: quantity(&defaults.cpu_request),
-            memory_request: quantity(&defaults.memory_request),
-            cpu_limit: quantity(&defaults.cpu_limit),
-            memory_limit: quantity(&defaults.memory_limit),
+            requests: non_empty(BuildQuantities {
+                cpu: quantity(&defaults.cpu_request),
+                memory: quantity(&defaults.memory_request),
+            }),
+            limits: non_empty(BuildQuantities {
+                cpu: quantity(&defaults.cpu_limit),
+                memory: quantity(&defaults.memory_limit),
+            }),
         }),
         build_ceiling: (build_ceiling != BuildCeiling::default()).then_some(build_ceiling),
         default_concurrent_builds: Some(concurrent),
