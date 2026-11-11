@@ -47,6 +47,8 @@ use kube_quantity::ParsedQuantity;
 use zeabur_builder_api::labels;
 use zeabur_builder_core::daemon;
 
+use crate::Placement;
+
 /// The port build Jobs dial.
 pub const PORT: i32 = 1234;
 /// `app.kubernetes.io/name` of every buildkitd Pod, which the egress policy selects.
@@ -117,6 +119,8 @@ pub struct DaemonInputs<'a> {
     /// Builds the daemon runs at once. The container's requests and limits are `resources` times
     /// this, since BuildKit has no limit per build.
     pub builds: u32,
+    /// The nodes the daemon runs on.
+    pub placement: &'a Placement,
 }
 
 /// The resources of one build on the daemon.
@@ -354,6 +358,8 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
     PodSpec {
         host_users: Some(false),
         runtime_class_name: inputs.runtime_class.map(str::to_owned),
+        node_selector: inputs.placement.node_selector(),
+        tolerations: inputs.placement.tolerations(),
         automount_service_account_token: Some(false),
         enable_service_links: Some(false),
         containers: vec![Container {
@@ -450,8 +456,14 @@ mod tests {
             runtime_class: None,
             resources,
             builds: 1,
+            placement: &NOWHERE,
         }
     }
+
+    static NOWHERE: Placement = Placement {
+        node_selector: BTreeMap::new(),
+        tolerations: Vec::new(),
+    };
 
     #[test]
     fn golden() {
@@ -567,5 +579,22 @@ mod tests {
         let pod = set.template.spec.unwrap();
         assert_eq!(pod.runtime_class_name.as_deref(), Some("kata"));
         assert_eq!(pod.host_users, Some(false));
+    }
+
+    #[test]
+    fn daemons_run_on_the_build_node() {
+        let resources = Resources::default();
+        let placement = crate::tests::build_node();
+        let mut inputs = inputs(&resources);
+        inputs.placement = &placement;
+        let pod = daemon(&inputs)
+            .stateful_set
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap();
+        assert_eq!(pod.node_selector, Some(placement.node_selector));
+        assert_eq!(pod.tolerations, Some(placement.tolerations));
     }
 }

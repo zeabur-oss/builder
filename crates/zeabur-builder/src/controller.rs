@@ -1321,6 +1321,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         registry_auth_secret: &registry_secret,
         deadline_seconds: settings.job_deadline_seconds,
         ttl_seconds: settings.job_ttl_seconds,
+        placement: &settings.daemon.placement,
     });
     let job = match job {
         Ok(job) => job,

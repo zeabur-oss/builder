@@ -21,6 +21,7 @@ use kube::{Client, ResourceExt as _};
 use zeabur_builder_api::build_run::BuildRun;
 use zeabur_builder_api::labels;
 use zeabur_builder_core::daemon;
+use zeabur_builder_jobspec::Placement;
 use zeabur_builder_jobspec::buildkitd::{self, DaemonInputs, Resources};
 
 use crate::decide;
@@ -52,6 +53,8 @@ pub(crate) struct Settings {
     pub(crate) resources: Resources,
     /// How long a namespace goes without builds before its daemon scales to zero.
     pub(crate) idle_after: Duration,
+    /// The nodes the daemons and build Jobs run on.
+    pub(crate) placement: Placement,
 }
 
 /// A namespace's ready daemon.
@@ -80,6 +83,7 @@ fn inputs<'a>(
         storage_class: settings.storage_class.as_deref(),
         runtime_class: settings.runtime_class.as_deref(),
         resources: &limits.resources,
+        placement: &settings.placement,
         builds: limits.concurrent,
     }
 }
@@ -207,6 +211,9 @@ enum Applied {
 /// - The new `StatefulSet` is created only after the old one, its Pod and its cache claim are gone.
 ///   The `StatefulSet` controller reuses any claim of the same name that is not being deleted
 ///   ([`createPersistentVolumeClaims`]), so a new storage class would not take effect.
+/// - A changed node selector counts as a refused update: the cache claim is bound to the node its
+///   Pod first ran on, so a Pod on another node would wait for it forever. The old `StatefulSet` is
+///   replaced the same way, without the apply.
 /// - Any other apply error, a `409 Conflict` included, is returned without a delete.
 ///
 /// [Dry-run]: https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run
@@ -222,13 +229,14 @@ async fn stateful_set(
 ) -> Result<Applied, kube::Error> {
     let sets: Api<StatefulSet> = Api::namespaced(client.clone(), daemon_namespace);
     let name = desired.name_any();
+    let mut moved = false;
     match sets.get_opt(&name).await? {
         Some(old) if old.metadata.deletion_timestamp.is_some() => {
             return Ok(Applied::Waiting(format!(
                 "waiting for the old {name} to be deleted"
             )));
         }
-        Some(_) => {}
+        Some(old) => moved = node_selector(&old) != node_selector(desired),
         None => {
             if let Some(left) = leftover(client, daemon_namespace, namespace).await? {
                 return Ok(Applied::Waiting(format!(
@@ -237,10 +245,14 @@ async fn stateful_set(
             }
         }
     }
-    let refused = match apply(client, daemon_namespace, desired).await {
-        Ok(set) => return Ok(Applied::Set(Box::new(set))),
-        Err(kube::Error::Api(status)) if status.code == 422 => status.message,
-        Err(e) => return Err(e),
+    let refused = if moved {
+        "the build node selector changed".to_owned()
+    } else {
+        match apply(client, daemon_namespace, desired).await {
+            Ok(set) => return Ok(Applied::Set(Box::new(set))),
+            Err(kube::Error::Api(status)) if status.code == 422 => status.message,
+            Err(e) => return Err(e),
+        }
     };
 
     let mut probe = desired.clone();
@@ -294,6 +306,17 @@ async fn stateful_set(
         ),
         Err(e) => Err(e),
     }
+}
+
+/// The node labels the Pods of `set` require.
+fn node_selector(set: &StatefulSet) -> Option<&BTreeMap<String, String>> {
+    set.spec
+        .as_ref()?
+        .template
+        .spec
+        .as_ref()?
+        .node_selector
+        .as_ref()
 }
 
 /// What is left of a deleted daemon of `namespace`: its Pod, or a cache claim that is being

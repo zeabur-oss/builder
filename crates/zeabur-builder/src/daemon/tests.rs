@@ -439,6 +439,42 @@ async fn a_replacement_waits_for_running_builds() {
     assert_eq!(lock(&cluster).deletes().len(), 1);
 }
 
+#[tokio::test]
+async fn a_new_build_node_replaces_the_daemon_only_when_no_build_runs() {
+    let cluster = running("standard");
+    let mut moved = desired("standard");
+    if let Some(pod) = moved.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+        pod.node_selector = Some(BTreeMap::from([(
+            "builder.zeabur.com/builds".to_owned(),
+            "true".to_owned(),
+        )]));
+    }
+    let old = lock(&cluster).uid(&set_key());
+    lock(&cluster).put(
+        "buildruns/web-1",
+        json!({"metadata": {"name": "web-1", "namespace": NAMESPACE},
+               "spec": {"buildRef": "web", "revision": "abc"},
+               "status": {"phase": "Building", "jobRef": "web-1"}}),
+    );
+
+    let client = client(&cluster);
+    let waiting = stateful_set(&client, DAEMONS, NAMESPACE, &moved).await;
+    assert!(
+        matches!(&waiting, Ok(Applied::Waiting(m)) if m.contains("1 running build")),
+        "{waiting:?}"
+    );
+    assert!(lock(&cluster).deletes().is_empty());
+    assert_eq!(lock(&cluster).uid(&set_key()), old);
+
+    lock(&cluster).collect("buildruns/web-1");
+    let replacing = stateful_set(&client, DAEMONS, NAMESPACE, &moved).await;
+    assert!(
+        matches!(&replacing, Ok(Applied::Waiting(m)) if m.contains("node selector")),
+        "{replacing:?}"
+    );
+    assert_eq!(lock(&cluster).deletes().len(), 1);
+}
+
 #[test]
 fn only_a_ready_pod_of_the_current_statefulset_is_ready() {
     let set: StatefulSet = serde_json::from_value(json!({
