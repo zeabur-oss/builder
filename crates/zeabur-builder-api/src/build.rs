@@ -488,6 +488,8 @@ pub enum ConditionReason {
     Failed,
     /// `Ready`: the latest finished run failed or was cancelled for [`Reason::QuotaExceeded`].
     QuotaExceeded,
+    /// `Ready`: [`Reason::InsufficientResources`].
+    InsufficientResources,
     /// `Ready`: [`Reason::BuildkitdStarting`].
     BuildkitdStarting,
     /// `Ready`: [`Reason::RegistryCredentialsMissing`].
@@ -520,6 +522,7 @@ impl From<Reason> for ConditionReason {
     fn from(reason: Reason) -> Self {
         match reason {
             Reason::QuotaExceeded => Self::QuotaExceeded,
+            Reason::InsufficientResources => Self::InsufficientResources,
             Reason::BuildkitdStarting => Self::BuildkitdStarting,
             Reason::RegistryCredentialsMissing => Self::RegistryCredentialsMissing,
             Reason::SourceFailed => Self::SourceFailed,

@@ -1308,6 +1308,7 @@
                     "description": "Why a `BuildRun` waits or failed.",
                     "enum": [
                       "QuotaExceeded",
+                      "InsufficientResources",
                       "BuildkitdStarting",
                       "RegistryCredentialsMissing",
                       "SourceFailed",

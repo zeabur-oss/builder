@@ -262,6 +262,10 @@ pub enum Reason {
     /// The namespace or the cluster runs as many builds as it may, or the `Build`'s previous run
     /// has not stopped yet.
     QuotaExceeded,
+    /// The cluster has no free memory or CPU for the namespace's buildkitd. The controller
+    /// frees an idle buildkitd in another namespace, and the run gives its slot back to another
+    /// that can start now.
+    InsufficientResources,
     /// The namespace's buildkitd is starting, from zero replicas or after a restart.
     BuildkitdStarting,
     /// The Secret of `spec.output.pushSecretRef` is missing or unusable, or the registry token

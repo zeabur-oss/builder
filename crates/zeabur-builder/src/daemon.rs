@@ -120,6 +120,8 @@ pub(crate) enum Wake {
     Ready(Woken),
     /// The daemon is starting or being replaced; why the run waits.
     Starting(String),
+    /// The daemon's Pod cannot be scheduled for want of memory or CPU, since the given time.
+    Short { pod: String, since: Timestamp },
     /// The API server rejects the new `StatefulSet` itself. The old one stays.
     Invalid(String),
 }
@@ -159,7 +161,13 @@ pub(crate) async fn wake(
     let pod = Api::<Pod>::namespaced(client.clone(), &settings.namespace)
         .get_opt(&pod_name)
         .await?;
-    if !pod.is_some_and(|p| ready(&p, &set)) {
+    if !pod.as_ref().is_some_and(|p| ready(p, &set)) {
+        if let Some(since) = pod.as_ref().and_then(decide::short_of_resources) {
+            return Ok(Wake::Short {
+                pod: pod_name,
+                since,
+            });
+        }
         return Ok(Wake::Starting(format!(
             "waiting for {pod_name} to be ready"
         )));
@@ -183,10 +191,11 @@ fn ready(pod: &Pod, set: &StatefulSet) -> bool {
     let seen = status.and_then(|s| s.observed_generation) == set.metadata.generation;
     let revision = status.and_then(|s| s.update_revision.as_ref());
     let current = revision.is_some() && pod.labels().get("controller-revision-hash") == revision;
-    owned
-        && seen
-        && current
-        && pod.metadata.deletion_timestamp.is_none()
+    owned && seen && current && pod_ready(pod)
+}
+
+fn pod_ready(pod: &Pod) -> bool {
+    pod.metadata.deletion_timestamp.is_none()
         && pod
             .status
             .as_ref()
@@ -395,6 +404,87 @@ async fn building(client: &Client, namespace: &str) -> Result<usize, kube::Error
     }
 }
 
+fn selector() -> String {
+    format!(
+        "{}={},app.kubernetes.io/name={}",
+        labels::MANAGED_BY,
+        labels::MANAGER,
+        buildkitd::APP
+    )
+}
+
+async fn scale_to_zero(
+    client: &Client,
+    settings: &Settings,
+    set: &StatefulSet,
+) -> Result<(), kube::Error> {
+    Api::<StatefulSet>::namespaced(client.clone(), &settings.namespace)
+        .patch_scale(
+            &set.name_any(),
+            &PatchParams::default(),
+            &Patch::Merge(serde_json::json!({"spec": {"replicas": 0}})),
+        )
+        .await
+        .map(drop)
+}
+
+/// Scales to zero the daemon of the namespace that has been idle longest, other than `mine`, and
+/// returns the namespace, unless a live list shows it has an admitted run. Called while `mine`
+/// waits for memory or CPU.
+pub(crate) async fn free_one(
+    client: &Client,
+    settings: &Settings,
+    runs: &[&BuildRun],
+    mine: &str,
+    quiet: Duration,
+) -> Result<Option<String>, kube::Error> {
+    let sets: Api<StatefulSet> = Api::namespaced(client.clone(), &settings.namespace);
+    let sets = sets
+        .list(&ListParams::default().labels(&selector()))
+        .await?;
+    let mut up = Vec::new();
+    for set in &sets.items {
+        let replicas = set.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+        if let (true, Some(namespace)) = (replicas > 0, set.labels().get(labels::NAMESPACE)) {
+            up.push(namespace.clone());
+        }
+    }
+    let Some(namespace) = decide::idlest(&up, runs, mine, Timestamp::now(), quiet) else {
+        return Ok(None);
+    };
+    let live = Api::<BuildRun>::namespaced(client.clone(), namespace)
+        .list(&ListParams::default())
+        .await?;
+    if live.items.iter().any(decide::holds_slot) {
+        return Ok(None);
+    }
+    for set in &sets.items {
+        if set.labels().get(labels::NAMESPACE).map(String::as_str) == Some(namespace) {
+            scale_to_zero(client, settings, set).await?;
+            tracing::info!(%namespace, waiting = %mine, "buildkitd scaled to zero to free memory");
+        }
+    }
+    Ok(Some(namespace.to_owned()))
+}
+
+/// The namespaces whose daemon Pod is ready.
+pub(crate) async fn ready_namespaces(
+    client: &Client,
+    settings: &Settings,
+) -> Result<BTreeSet<String>, kube::Error> {
+    let pods: Api<Pod> = Api::namespaced(client.clone(), &settings.namespace);
+    let pods = pods
+        .list(&ListParams::default().labels(&selector()))
+        .await?;
+    let mut ready = BTreeSet::new();
+    for pod in &pods.items {
+        if let (true, Some(namespace)) = (pod_ready(pod), pod.labels().get(labels::NAMESPACE)) {
+            ready.insert(namespace.clone());
+        }
+    }
+    Ok(ready)
+}
+
 async fn remove(
     client: &Client,
     settings: &Settings,
@@ -456,13 +546,9 @@ async fn sweep(
     runs: &Store<BuildRun>,
 ) -> Result<(), kube::Error> {
     let sets: Api<StatefulSet> = Api::namespaced(client.clone(), &settings.namespace);
-    let selector = format!(
-        "{}={},app.kubernetes.io/name={}",
-        labels::MANAGED_BY,
-        labels::MANAGER,
-        buildkitd::APP
-    );
-    let sets = sets.list(&ListParams::default().labels(&selector)).await?;
+    let sets = sets
+        .list(&ListParams::default().labels(&selector()))
+        .await?;
     if sets.items.is_empty() {
         return Ok(());
     }
@@ -489,13 +575,7 @@ async fn sweep(
             .get(namespace)
             .map_or(&[][..], Vec::as_slice);
         if replicas > 0 && decide::idle(runs.iter().map(AsRef::as_ref), now, settings.idle_after) {
-            Api::<StatefulSet>::namespaced(client.clone(), &settings.namespace)
-                .patch_scale(
-                    &set.name_any(),
-                    &PatchParams::default(),
-                    &Patch::Merge(serde_json::json!({"spec": {"replicas": 0}})),
-                )
-                .await?;
+            scale_to_zero(client, settings, set).await?;
             tracing::info!(%namespace, statefulset = %set.name_any(), "idle; buildkitd scaled to zero");
         }
     }
