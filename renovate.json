@@ -1,12 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "The shared preset of zeabur-oss, plus Cargo crates, Nix and the release scripts' package.json. Lock file maintenance also updates flake.lock, and with it the Rust nightly.",
+  "description": "The shared preset of zeabur-oss, plus Cargo crates, Nix and the release scripts' package.json, and the k3s test image of scripts/ci/kubernetes.sh, which follows K3s's stable channel (the k3s preset). Lock file maintenance also updates flake.lock, and with it the Rust nightly.",
   "extends": [
-    "github>zeabur-oss/.github"
+    "github>zeabur-oss/.github",
+    "github>zeabur-oss/.github:k3s"
   ],
   "enabledManagers": [
     "bun",
     "cargo",
+    "custom.regex",
     "github-actions",
     "nix"
   ]
