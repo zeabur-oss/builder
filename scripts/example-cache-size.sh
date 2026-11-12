@@ -31,6 +31,11 @@ helm --kube-context "$context" -n builder-system upgrade builder "$root/deploy/c
   --reuse-values --set-json "extraArgs=$args" >/dev/null
 k -n builder-system rollout status deployment/zeabur-builder --timeout 120s
 
+# A daemon that is up keeps its settings until it has been idle and the next build wakes it. Scaling
+# it to zero is what the idle sweep does, without waiting for --buildkitd-idle.
+k -n builder-system scale statefulset "buildkitd-$ns" --replicas 0 >/dev/null
+k -n builder-system wait --for=delete "pod/buildkitd-$ns-0" --timeout 120s >/dev/null
+
 k apply -f - >/dev/null <<EOF
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build

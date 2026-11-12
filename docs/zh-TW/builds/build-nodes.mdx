@@ -43,9 +43,9 @@ builds:
 
 ## 變更後的第一次建置
 
-Namespace 的 buildkitd 正在建置時，控制器不會移動它。建置開始時如果節點選擇器變了，控制器會等執行中的建置結束，再把 buildkitd 連同快取一起刪除，並由控制器在建置節點上重新建立它。
+執行中的 buildkitd 會沿用啟動時的設定。Namespace 閒置 10 分鐘後，它的 buildkitd 會縮到零；那裡的下一次建置會把 buildkitd 連同快取一起刪除，再用新的節點選擇器和容忍度重新建立。
 
-所以變更後，每個 Namespace 的第一次建置都從空的快取開始。變更快取大小（`--buildkitd-cache-size`）、Namespace 的建置資源上限，或升級的 Zeabur Builder 版本改動了 buildkitd 時，也是一樣。
+所以閒置過後，每個 Namespace 的第一次建置都從空的快取開始。變更快取大小（`--buildkitd-cache-size`）、儲存類別、Namespace 的建置資源上限，或升級的 Zeabur Builder 版本改動了 buildkitd 時，也是一樣。一直在建置的 Namespace 會用舊設定，等閒置過後才換。
 
 ## 確認建置在哪裡執行
 

@@ -2,11 +2,11 @@
 //! namespace has been idle a while. Its objects name the namespace as their owner, so Kubernetes
 //! garbage collection deletes them with the namespace.
 //!
-//! The objects are [`zeabur_builder_jobspec::buildkitd`]'s, applied with server-side apply, so a
-//! changed setting reaches each daemon the next time it is woken. Scaling down goes through the
-//! `scale` subresource; the next apply takes `replicas` back. A change apply cannot make, such as
-//! the cache volume's size or storage class, replaces the `StatefulSet` and its cache once no
-//! build uses the daemon ([`stateful_set`]).
+//! The objects are [`zeabur_builder_jobspec::buildkitd`]'s, applied with server-side apply.
+//! Scaling down goes through the `scale` subresource; the next apply takes `replicas` back. The
+//! daemon is a cache: a running `StatefulSet` whose spec differs from the one wanted, such as a new
+//! cache size, storage class, build node or build limits, keeps running as it is. Once it has
+//! scaled to zero, the next wake deletes it with its cache and creates it again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -14,12 +14,12 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{Namespace, PersistentVolumeClaim, Pod, Toleration};
-use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, Preconditions};
+use k8s_openapi::api::core::v1::{Namespace, Pod};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, Preconditions};
 use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt as _};
 use zeabur_builder_api::build_run::BuildRun;
-use zeabur_builder_api::labels;
+use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::daemon;
 use zeabur_builder_jobspec::Placement;
 use zeabur_builder_jobspec::buildkitd::{self, DaemonInputs, Resources};
@@ -31,8 +31,6 @@ use crate::tls::{self, Pems};
 const MANAGER: &str = "zeabur-builder";
 /// How often idle daemons are looked for.
 const SWEEP: Duration = Duration::from_secs(30);
-/// Objects read per page of a LIST.
-const PAGE: u32 = 500;
 
 /// How every namespace's buildkitd runs, from the command line.
 #[derive(Debug, Clone)]
@@ -122,8 +120,6 @@ pub(crate) enum Wake {
     Starting(String),
     /// The daemon's Pod cannot be scheduled for want of memory or CPU, since the given time.
     Short { pod: String, since: Timestamp },
-    /// The API server rejects the new `StatefulSet` itself. The old one stays.
-    Invalid(String),
 }
 
 /// Makes the namespace's certificates and applies its daemon with one replica.
@@ -144,10 +140,12 @@ pub(crate) async fn wake(
             "waiting for garbage collection to delete {name} of a deleted namespace with the same name"
         )))
     };
-    let old = Api::<StatefulSet>::namespaced(client.clone(), &settings.namespace)
-        .get_metadata_opt(&name)
-        .await?;
-    if old.is_some_and(|o| buildkitd::of_deleted_namespace(&o.metadata, &uid)) {
+    let sets: Api<StatefulSet> = Api::namespaced(client.clone(), &settings.namespace);
+    let old = sets.get_opt(&name).await?;
+    if old
+        .as_ref()
+        .is_some_and(|o| buildkitd::of_deleted_namespace(&o.metadata, &uid))
+    {
         return gone();
     }
     let Some(client_pems) = tls::ensure(
@@ -164,17 +162,34 @@ pub(crate) async fn wake(
     let objects = buildkitd::daemon(&inputs(settings, namespace, &uid, limits));
     apply(client, &settings.namespace, &objects.network_policy).await?;
     apply(client, &settings.namespace, &objects.service).await?;
-    let set = match stateful_set(
-        client,
-        &settings.namespace,
-        namespace,
-        &objects.stateful_set,
-    )
-    .await?
-    {
-        Applied::Set(set) => set,
-        Applied::Waiting(message) => return Ok(Wake::Starting(message)),
-        Applied::Invalid(message) => return Ok(Wake::Invalid(message)),
+    let desired = &objects.stateful_set;
+    let set = match old {
+        Some(old) if old.metadata.deletion_timestamp.is_some() => {
+            return Ok(Wake::Starting(format!(
+                "waiting for the old {name} to be deleted"
+            )));
+        }
+        Some(old) if spec_hash(&old) != spec_hash(desired) => {
+            let replicas = old.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+            if replicas > 0 {
+                old
+            } else {
+                replace(&sets, &old).await?;
+                return Ok(Wake::Starting(format!(
+                    "{name} is being replaced with the new settings"
+                )));
+            }
+        }
+        _ => match apply(client, &settings.namespace, desired).await {
+            Ok(set) => set,
+            Err(kube::Error::Api(status)) if status.code == 409 => {
+                return Ok(Wake::Starting(format!(
+                    "{name} changed while being applied: {}",
+                    status.message
+                )));
+            }
+            Err(e) => return Err(e),
+        },
     };
     let pod_name = daemon::pod(namespace);
     let pod = Api::<Pod>::namespaced(client.clone(), &settings.namespace)
@@ -222,122 +237,19 @@ fn pod_ready(pod: &Pod) -> bool {
             .is_some_and(|c| c.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
 }
 
-/// The outcome of applying a daemon's `StatefulSet`.
-#[derive(Debug)]
-enum Applied {
-    /// The `StatefulSet` as the API server holds it.
-    Set(Box<StatefulSet>),
-    /// Not applied yet; why.
-    Waiting(String),
-    /// The API server rejects `desired` as a new object; the message says why.
-    Invalid(String),
+fn spec_hash(set: &StatefulSet) -> Option<&String> {
+    set.annotations().get(annotations::SPEC_HASH)
 }
 
-/// Applies `desired`, the daemon of `namespace` in `daemon_namespace`, and replaces the
-/// `StatefulSet` when an update cannot make the change.
+/// Deletes the daemon's `StatefulSet` in the foreground: it stays, with a `deletionTimestamp`,
+/// until its Pod and cache claim are gone, since the `StatefulSet` controller makes itself their
+/// owner with `blockOwnerDeletion` ([`updateClaimOwnerRefForSetAndPod`]). Until then a new one of
+/// the same name would take over the old claim. The `uid` and `resourceVersion` preconditions
+/// spare a `StatefulSet` created or scaled up after the read.
 ///
-/// - An update the API server refuses with `422 Unprocessable Entity`, such as a change to
-///   `volumeClaimTemplates`, is checked with a dry-run create under a generated name ([Dry-run]).
-///   If the dry run is also refused with 422, `desired` is invalid and the old `StatefulSet` stays.
-///   Any other dry-run error is returned as it is.
-/// - Otherwise the old `StatefulSet` is read again and deleted with its `uid` and `resourceVersion`
-///   as preconditions ([`Preconditions`]), so an object that changed or was replaced after the read
-///   survives: the API server answers `409 Conflict` ([`InterpretDeleteError`]). Deletion is
-///   foreground ([Foreground cascading deletion]).
-/// - A replacement waits while a build of the namespace has a Job on the daemon.
-/// - The new `StatefulSet` is created only after the old one, its Pod and its cache claim are gone.
-///   The `StatefulSet` controller reuses any claim of the same name that is not being deleted
-///   ([`createPersistentVolumeClaims`]), so a new storage class would not take effect.
-/// - A changed node selector counts as a refused update: the cache claim is bound to the node its
-///   Pod first ran on, so a Pod on another node would wait for it forever. The old `StatefulSet` is
-///   replaced the same way, without the apply.
-/// - A changed toleration is applied, but not while a build uses the daemon: the update restarts
-///   the Pod.
-/// - Any other apply error, a `409 Conflict` included, is returned without a delete.
-///
-/// [Dry-run]: https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run
-/// [`Preconditions`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/staging/src/k8s.io/apiserver/pkg/storage/interfaces.go#L137-L162
-/// [`InterpretDeleteError`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/staging/src/k8s.io/apiserver/pkg/storage/errors/storage.go#L97-L112
-/// [Foreground cascading deletion]: https://kubernetes.io/docs/concepts/architecture/garbage-collection/#foreground-deletion
-/// [`createPersistentVolumeClaims`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/controller/statefulset/stateful_pod_control.go#L337-L366
-async fn stateful_set(
-    client: &Client,
-    daemon_namespace: &str,
-    namespace: &str,
-    desired: &StatefulSet,
-) -> Result<Applied, kube::Error> {
-    let sets: Api<StatefulSet> = Api::namespaced(client.clone(), daemon_namespace);
-    let name = desired.name_any();
-    let mut moved = false;
-    let mut retaint = false;
-    match sets.get_opt(&name).await? {
-        Some(old) if old.metadata.deletion_timestamp.is_some() => {
-            return Ok(Applied::Waiting(format!(
-                "waiting for the old {name} to be deleted"
-            )));
-        }
-        Some(old) => {
-            moved = node_selector(&old) != node_selector(desired);
-            retaint = tolerations(&old) != tolerations(desired);
-        }
-        None => {
-            if let Some(left) = leftover(client, daemon_namespace, namespace).await? {
-                return Ok(Applied::Waiting(format!(
-                    "waiting for the old {name}'s {left} to be deleted"
-                )));
-            }
-        }
-    }
-    if retaint && !moved {
-        let building = building(client, namespace).await?;
-        if building > 0 {
-            return Ok(Applied::Waiting(format!(
-                "waiting for {building} running build(s) to finish before the tolerations of {name} change"
-            )));
-        }
-    }
-    let refused = if moved {
-        "the build node selector changed".to_owned()
-    } else {
-        match apply(client, daemon_namespace, desired).await {
-            Ok(set) => return Ok(Applied::Set(Box::new(set))),
-            Err(kube::Error::Api(status)) if status.code == 422 => status.message,
-            Err(e) => return Err(e),
-        }
-    };
-
-    let mut probe = desired.clone();
-    probe.metadata.name = None;
-    probe.metadata.generate_name = Some(format!("{name}-"));
-    let dry_run = PostParams {
-        dry_run: true,
-        field_manager: Some(MANAGER.to_owned()),
-    };
-    match sets.create(&dry_run, &probe).await {
-        Ok(_) => {}
-        Err(kube::Error::Api(status)) if status.code == 422 => {
-            return Ok(Applied::Invalid(format!(
-                "the buildkitd StatefulSet is invalid: {}",
-                status.message
-            )));
-        }
-        Err(e) => return Err(e),
-    }
-
-    let building = building(client, namespace).await?;
-    if building > 0 {
-        return Ok(Applied::Waiting(format!(
-            "waiting for {building} running build(s) to finish before {name} is replaced"
-        )));
-    }
-    let Some(old) = sets.get_opt(&name).await? else {
-        return Ok(Applied::Waiting(format!("{name} is being replaced")));
-    };
-    if old.metadata.deletion_timestamp.is_some() {
-        return Ok(Applied::Waiting(format!(
-            "waiting for the old {name} to be deleted"
-        )));
-    }
+/// [`updateClaimOwnerRefForSetAndPod`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/controller/statefulset/stateful_set_utils.go#L305-L350
+async fn replace(sets: &Api<StatefulSet>, old: &StatefulSet) -> Result<(), kube::Error> {
+    let name = old.name_any();
     let delete = DeleteParams {
         preconditions: Some(Preconditions {
             uid: old.metadata.uid.clone(),
@@ -347,79 +259,11 @@ async fn stateful_set(
     };
     match sets.delete(&name, &delete).await {
         Ok(_) => {
-            tracing::info!(%namespace, statefulset = %name, reason = %refused, "buildkitd replaced");
-            Ok(Applied::Waiting(format!(
-                "{name} is being replaced: {refused}"
-            )))
+            tracing::info!(statefulset = %name, "buildkitd replaced with new settings");
+            Ok(())
         }
-        Err(kube::Error::Api(status)) if status.code == 404 || status.code == 409 => Ok(
-            Applied::Waiting(format!("{name} changed while being replaced")),
-        ),
+        Err(kube::Error::Api(status)) if status.code == 404 || status.code == 409 => Ok(()),
         Err(e) => Err(e),
-    }
-}
-
-/// The node labels the Pods of `set` require.
-fn node_selector(set: &StatefulSet) -> Option<&BTreeMap<String, String>> {
-    set.spec
-        .as_ref()?
-        .template
-        .spec
-        .as_ref()?
-        .node_selector
-        .as_ref()
-}
-
-/// The tolerations of the Pods of `set`.
-fn tolerations(set: &StatefulSet) -> Option<&Vec<Toleration>> {
-    set.spec
-        .as_ref()?
-        .template
-        .spec
-        .as_ref()?
-        .tolerations
-        .as_ref()
-}
-
-/// What is left of a deleted daemon of `namespace`: its Pod, or a cache claim that is being
-/// deleted or still names a `StatefulSet` as its owner.
-async fn leftover(
-    client: &Client,
-    daemon_namespace: &str,
-    namespace: &str,
-) -> Result<Option<&'static str>, kube::Error> {
-    let pod = Api::<Pod>::namespaced(client.clone(), daemon_namespace)
-        .get_opt(&daemon::pod(namespace))
-        .await?;
-    if pod.is_some() {
-        return Ok(Some("Pod"));
-    }
-    let claim = Api::<PersistentVolumeClaim>::namespaced(client.clone(), daemon_namespace)
-        .get_opt(&buildkitd::cache_claim(namespace))
-        .await?;
-    let old = claim.is_some_and(|c| {
-        c.metadata.deletion_timestamp.is_some()
-            || c.owner_references().iter().any(|o| o.kind == "StatefulSet")
-    });
-    Ok(old.then_some("cache volume"))
-}
-
-/// The runs of `namespace` whose Job uses the daemon: unfinished, with a Job.
-async fn building(client: &Client, namespace: &str) -> Result<usize, kube::Error> {
-    let runs: Api<BuildRun> = Api::namespaced(client.clone(), namespace);
-    let mut params = ListParams::default().fields(decide::UNFINISHED).limit(PAGE);
-    let mut count = 0;
-    loop {
-        let page = runs.list(&params).await?;
-        count += page
-            .items
-            .iter()
-            .filter(|r| r.status.as_ref().is_some_and(|s| s.job_ref.is_some()))
-            .count();
-        match page.metadata.continue_ {
-            Some(token) if !token.is_empty() => params = params.continue_token(&token),
-            _ => return Ok(count),
-        }
     }
 }
 

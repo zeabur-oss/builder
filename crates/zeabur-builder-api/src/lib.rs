@@ -69,6 +69,8 @@ pub mod annotations {
     /// On a `Build` with an archive source: a new value asks for an upload token
     /// (`status.uploadToken`).
     pub const UPLOAD_TOKEN_REQUEST: &str = "builder.zeabur.com/upload-token-request";
+    /// On a buildkitd `StatefulSet`: the SHA-256 of the spec the controller applied.
+    pub const SPEC_HASH: &str = "builder.zeabur.com/spec-hash";
 }
 
 /// Every custom resource definition, in a stable order.
