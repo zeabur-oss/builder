@@ -31,6 +31,11 @@ helm --kube-context "$context" -n builder-system upgrade builder "$root/deploy/c
   --reuse-values --set-json "extraArgs=$args" >/dev/null
 k -n builder-system rollout status deployment/zeabur-builder --timeout 120s
 
+# A daemon that is up keeps its settings until it has been idle and the next build wakes it. Scaling
+# it to zero is what the idle sweep does, without waiting for --buildkitd-idle.
+k -n builder-system scale statefulset "buildkitd-$ns" --replicas 0 >/dev/null
+k -n builder-system wait --for=delete "pod/buildkitd-$ns-0" --timeout 120s >/dev/null
+
 k apply -f - >/dev/null <<EOF
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
@@ -55,15 +60,9 @@ until [[ -n $(k -n "$ns" get build resized -o jsonpath='{.status.latestImage}') 
   sleep 5
 done
 
-# A busy daemon is replaced once it is idle, so a build that began on the old daemon ends before the
-# new one exists.
-deadline=$(($(date +%s) + timeout))
-until [[ $(k -n builder-system get pvc "$pvc" -o jsonpath='{.spec.resources.requests.storage}') == "$size" ]]; do
-  if (($(date +%s) > deadline)); then
-    after=$(k -n builder-system get pvc "$pvc" -o jsonpath='{.spec.resources.requests.storage}')
-    echo "$pvc is $after after the build, not $size" >&2
-    exit 1
-  fi
-  sleep 5
-done
+after=$(k -n builder-system get pvc "$pvc" -o jsonpath='{.spec.resources.requests.storage}')
+if [[ $after != "$size" ]]; then
+  echo "$pvc is $after after the build, not $size" >&2
+  exit 1
+fi
 echo "ok    $ns built again after the cache went from $before to $size"
