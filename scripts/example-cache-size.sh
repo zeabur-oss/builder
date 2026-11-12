@@ -55,9 +55,15 @@ until [[ -n $(k -n "$ns" get build resized -o jsonpath='{.status.latestImage}') 
   sleep 5
 done
 
-after=$(k -n builder-system get pvc "$pvc" -o jsonpath='{.spec.resources.requests.storage}')
-if [[ $after != "$size" ]]; then
-  echo "$pvc is $after after the build, not $size" >&2
-  exit 1
-fi
+# A busy daemon is replaced once it is idle, so a build that began on the old daemon ends before the
+# new one exists.
+deadline=$(($(date +%s) + timeout))
+until [[ $(k -n builder-system get pvc "$pvc" -o jsonpath='{.spec.resources.requests.storage}') == "$size" ]]; do
+  if (($(date +%s) > deadline)); then
+    after=$(k -n builder-system get pvc "$pvc" -o jsonpath='{.spec.resources.requests.storage}')
+    echo "$pvc is $after after the build, not $size" >&2
+    exit 1
+  fi
+  sleep 5
+done
 echo "ok    $ns built again after the cache went from $before to $size"
