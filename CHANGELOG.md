@@ -2,6 +2,62 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.2.2 (2026-11-13)
+
+### Features
+
+#### A cluster-wide ceiling for each build's CPU and memory
+
+`--buildkitd-cpu-max` and `--buildkitd-memory-max`, or the chart values `buildkitd.resources.max.cpu` and `buildkitd.resources.max.memory`, cap what a Namespace's `builder.zeabur.com/build-cpu` and `build-memory` can ask for. If unset, there is no ceiling. A build that asks for more runs at the ceiling, and its BuildRun gets a `BuildLimited` Event that says so.
+
+#### Builds can run on a build node set aside by a taint
+
+The chart values `builds.nodeSelector` and `builds.tolerations` decide which nodes run every namespace's buildkitd and every build Job; see docs/builds/build-nodes.mdx. With both empty, builds go wherever the scheduler puts them, as before.
+
+A change to the node selector or tolerations reaches a namespace's buildkitd the way every other buildkitd setting does: once it has been idle and scaled to zero, the next build replaces it and its cache. A daemon counts as ready only when its Pod is of the revision the StatefulSet rolls out.
+
+#### BuildRuns record their steps, the failed step, kstatus conditions and the rebuild request they answer
+
+A finished BuildRun has `status.steps` (the last 20 BuildKit steps, each with `name`, `state`, `cached`, `startTime`, `completionTime` and an error `message`, with names and messages cut to 120 characters), `omittedSteps` (how many earlier steps were left out) and `failedStep` (the step that failed, also when `steps` leaves it out; `fetch` or `plan` when the run stopped there). The Job's termination message stays within 4096 bytes: it drops the oldest steps first, then base images, exposed ports, extra tags, the message and the phase times, and always keeps the result, reason, digest and failed step.
+
+Every BuildRun has `Reconciling` (True while Pending, Planning or Building), `Stalled` (True on Failed or Cancelled, with the run's reason) and `Ready` (True on Succeeded, otherwise False) conditions, so `kubectl wait --for=condition=Ready buildrun/<name>` works. `status.observedRebuild` shows the run's own `builder.zeabur.com/rebuild` value.
+
+#### ClusterBuilders show the controller's build settings in their status
+
+Each `ClusterBuilder` has a status with `buildDefaults` (`requests` and `limits` of one build, each with `cpu` and `memory`), `buildCeiling` (`cpu` and `memory` from `--buildkitd-cpu-max` and `--buildkitd-memory-max`; a missing value means no ceiling), `defaultConcurrentBuilds` and a `Ready` condition. The controller writes it when it takes the lease and when a `ClusterBuilder` is created or changed. The chart's ClusterRole can now patch `clusterbuilders/status`.
+
+#### The controller frees idle buildkitd when a run lacks memory or CPU, and hands its slot to a run that can start
+
+When a run's buildkitd does not fit for lack of memory or CPU, the controller scales idle buildkitd in other namespaces to zero, one per check and longest idle first, until it fits. While it waits, the run's reason is `InsufficientResources`. After `--buildkitd-pending-grace` seconds (default 60), the run gives its cluster slot back if another queued run's namespace already has a ready buildkitd, so that run starts first. It then waits behind the other queued runs.
+
+#### builder.zeabur.com/build-memory sets the build Job's memory limit too
+
+A Namespace's `builder.zeabur.com/build-memory` now also sets the memory limit of each container of its build Jobs, held to `--buildkitd-memory-max` like buildkitd's. A build Job container killed for its memory fails the run with `OutOfMemory` and a message that names the annotation, where it failed with `PlanFailed`, `BuildFailed` or `InfraError` before.
+
+#### Build Jobs have a memory limit
+
+Each container of a build Job requests 128 MiB of memory and may use up to 512 MiB, so a build Job can no longer use up a small node's memory. Change it with the chart value `jobResources` or the controller flags `--job-memory-request` and `--job-memory-limit`. `RUN` steps run in buildkitd and keep `buildkitd.resources`.
+
+#### Build logs are NDJSON events with step durations
+
+The build container writes one JSON event per line: `started`, `log` (with `stream` `stdout` or `stderr`), `done` and `error` (with `seconds`), `cached`, and `message` for buildctl's own output. Every event carries its step name, and step numbers continue across Railpack's two `buildctl` runs. `kubectl logs` shows JSON; `jq -r '.text // .message // .name'` reads it as text. The `fetch` and `plan` steps keep their text output.
+
+#### A `BuildRun` phase or reason that a reader does not know decodes as `Unknown`
+
+`Phase` and `Reason` in `zeabur-builder-api` gain an `Unknown` value for readers built before a later value existed, and the `Build` condition reasons are typed as `ConditionReason`. The strings on the wire do not change, and the CRDs list `Unknown` for `phase` and `reason`. A reader released before this change still fails on a new value.
+
+### Fixes
+
+#### A changed buildkitd setting takes effect once the daemon has been idle
+
+buildkitd is a cache, so a running daemon keeps the settings it started with. When the cache size, storage class, build nodes, a namespace's build limits or the buildkitd spec of a new Builder version change, the first build after that namespace's buildkitd has scaled to zero (after `--buildkitd-idle`, 600 seconds by default) deletes it with its cache and creates it again with the new settings. A namespace that keeps building uses the old settings until then. The StatefulSet carries the SHA-256 of its spec in the annotation `builder.zeabur.com/spec-hash`. If Kubernetes rejects the new StatefulSet, the run fails with `InfraError` and the API server's message.
+
+#### A Namespace's buildkitd goes when the Namespace is deleted
+
+The buildkitd StatefulSet, Service, NetworkPolicy and TLS Secret of a Namespace name that Namespace as their owner, so Kubernetes garbage collection deletes them, and with the StatefulSet the cache, as soon as the Namespace is gone. The controller no longer lists Namespaces every 30 seconds to find them, and the chart's ClusterRole no longer grants `list` on Namespaces; the Role in the controller's Namespace no longer grants `delete` on Services and NetworkPolicies. When a Namespace is deleted and created again with the same name, its next build waits until garbage collection has deleted the old daemon, then gets a new one with a new CA.
+
+A daemon made by an earlier version gets its owner the next time its Namespace builds. To clean up after a Namespace that was deleted before that, delete its objects by hand: `kubectl -n <controller namespace> delete statefulset,service,networkpolicy,secret -l builder.zeabur.com/namespace=<namespace>`.
+
 ## 0.2.1 (2026-11-07)
 
 ### Fixes
