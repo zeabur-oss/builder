@@ -3,6 +3,8 @@ name: Benchmark
 # Run by hand: runs the CI jobs that can run on Instabox on each runner in `runners`, `repetitions`
 # times, and writes the wait and run time of each job and runner to the run's summary
 # (scripts/benchmark-report.sh). Run it on main.
+# instabox-large is only a comparison: a CI job uses it only when its run there is shorter than on
+# the GitHub runner.
 on:
   workflow_dispatch:
     inputs:
