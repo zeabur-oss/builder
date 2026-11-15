@@ -24,10 +24,6 @@ pub const MAX_QUANTITY: usize = 64;
 
 /// A way to build. Every builder reduces to the same shape: an optional planner that writes files
 /// into `/workspace/plan`, then a `BuildKit` frontend with options that reads them.
-#[expect(
-    clippy::duplicated_attributes,
-    reason = "repeated printcolumn arguments such as `type_ = \"string\"` are distinct columns"
-)]
 #[derive(CustomResource, KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[kube(
     group = "builder.zeabur.com",

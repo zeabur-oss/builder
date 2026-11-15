@@ -56,10 +56,6 @@ pub const RELATIVE_PATH_PATTERN: &str =
 ///   source: {git: {url: https://github.com/acme/api, ref: main}}
 ///   builderRef: railpack
 /// ```
-#[expect(
-    clippy::duplicated_attributes,
-    reason = "repeated printcolumn arguments such as `type_ = \"string\"` are distinct columns"
-)]
 #[derive(CustomResource, KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[kube(
     group = "builder.zeabur.com",
