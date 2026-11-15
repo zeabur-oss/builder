@@ -22,10 +22,6 @@ pub const MAX_STEP_TEXT: usize = 120;
 pub const MAX_OBSERVED_REBUILD: usize = 1024;
 
 /// One build of one commit or archive. The spec is immutable: to build again, create another.
-#[expect(
-    clippy::duplicated_attributes,
-    reason = "repeated printcolumn arguments such as `type_ = \"string\"` are distinct columns"
-)]
 #[derive(CustomResource, KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[kube(
     group = "builder.zeabur.com",
