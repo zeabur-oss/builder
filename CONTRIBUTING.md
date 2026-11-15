@@ -68,6 +68,7 @@ Shared with [Zeabur Identity](https://github.com/zeabur-oss/identity):
   has no manager for the nightly date. To move it, set `channel` to a newer `nightly-YYYY-MM-DD`, run
   `nix flake update rust-overlay` if the locked rust-overlay does not have that date yet, and fix any new
   clippy lints on that pull request.
+  The date is the same in every zeabur-oss Rust repository; bump them together.
 - Lints are set once in `Cargo.toml`. All are `warn`, and `cargo lint` turns them into errors.
   Suppress with `#[expect(lint, reason = "…")]`. Only the binary's `output` module writes to
   stdout or stderr.
