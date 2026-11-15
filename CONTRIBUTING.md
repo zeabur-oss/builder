@@ -64,11 +64,8 @@ functions of their inputs, so they are tested without a cluster.
 Shared with [Zeabur Identity](https://github.com/zeabur-oss/identity):
 
 - `rust-toolchain.toml` sets the compiler: the nightly (by date), components and targets. `nix develop`
-  builds exactly that toolchain, and rustup, which reads the same file, installs it outside Nix. Renovate
-  has no manager for the nightly date. To move it, set `channel` to a newer `nightly-YYYY-MM-DD`, run
-  `nix flake update rust-overlay` if the locked rust-overlay does not have that date yet, and fix any new
-  clippy lints on that pull request.
-  The date is the same in every zeabur-oss Rust repository; bump them together.
+  builds exactly that toolchain, and rustup, which reads the same file, installs it outside Nix. Renovate proposes the new nightly date in `rust-toolchain.toml` (its `rust-toolchain` manager, after the preset's seven-day wait). On that pull request, check that `nix flake update rust-overlay` resolves the date and fix any new clippy lints.
+  The date is the same in every zeabur-oss Rust repository, so the four bump pull requests merge together.
 - Lints are set once in `Cargo.toml`. All are `warn`, and `cargo lint` turns them into errors.
   Suppress with `#[expect(lint, reason = "…")]`. Only the binary's `output` module writes to
   stdout or stderr.
