@@ -58,6 +58,8 @@
               cargo-auditable
               cargo-deny
               cargo-nextest
+              # Workflow checks: actionlint's and zizmor's rules in one tool.
+              jactionlint
 
               # Kubernetes and BuildKit integration tests
               kind

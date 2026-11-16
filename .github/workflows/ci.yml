@@ -24,37 +24,38 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-26.04-arm
+    runs-on: instabox-small
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@3efa9e88a66e5a355574fe708fd4ed4106e87fcd # main
-        with:
-          rust-cache: true
-      - run: nix develop -c scripts/ci/lint.sh
+      - uses: ./.github/actions/setup
+      - parallel:
+          - name: Static checks
+            run: nix develop -c scripts/ci/lint.sh static
+          - name: Cargo checks
+            run: nix develop -c scripts/ci/lint.sh cargo
 
   test:
-    runs-on: ubuntu-26.04-arm
+    runs-on: instabox-small
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@3efa9e88a66e5a355574fe708fd4ed4106e87fcd # main
-        with:
-          rust-cache: true
+      - uses: ./.github/actions/setup
       - run: nix develop -c scripts/ci/test.sh
 
   kubernetes:
     if: github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref_type == 'branch')
-    runs-on: ubuntu-26.04-arm
+    runs-on: instabox-large
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@3efa9e88a66e5a355574fe708fd4ed4106e87fcd # main
-        with:
-          rust-cache: true
+      - uses: ./.github/actions/setup
       - run: nix develop -c scripts/ci/kubernetes.sh
         env:
           CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
@@ -66,18 +67,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  zizmor:
-    uses: zeabur-oss/.github/.github/workflows/zizmor.yml@3efa9e88a66e5a355574fe708fd4ed4106e87fcd # main
-
   # The check rulesets require.
   ok:
     name: ci / ok
     if: always()
-    needs: [lint, test, kubernetes, zizmor]
+    needs: [lint, test, kubernetes]
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
 
+  # Every commit of a pull request carries `Signed-off-by:` with its author's name and email.
   dco:
-    uses: zeabur-oss/.github/.github/workflows/dco.yml@3efa9e88a66e5a355574fe708fd4ed4106e87fcd # main
+    name: DCO
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status=0
+          for sha in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            author=$(git log -1 --format='%an <%ae>' "$sha")
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha" | grep -qxF "$author"; then
+              echo "::error::commit $sha has no 'Signed-off-by: $author' (git commit -s)"
+              status=1
+            fi
+          done
+          exit $status

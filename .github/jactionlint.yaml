@@ -1,0 +1,6 @@
+# The Instabox runners.
+self-hosted-runner:
+  labels:
+    - instabox-small
+    - instabox-medium
+    - instabox-large
