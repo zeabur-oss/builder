@@ -147,3 +147,10 @@ verbose_file_reads = "warn"
 codegen-units = 1
 lto = "thin"
 strip = true
+
+# The images the cluster job builds (scripts/build-images.sh with ZEABUR_BUILDER_PROFILE=ci): the
+# release build without its slowest steps. Releases use `release`.
+[profile.ci]
+inherits = "release"
+codegen-units = 16
+lto = false

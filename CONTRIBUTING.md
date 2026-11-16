@@ -73,13 +73,12 @@ Shared with [Zeabur Identity](https://github.com/zeabur-oss/identity):
   the only cryptographic backend, no advisories.
 - Cargo does not pick a release younger than seven days (`.cargo/config.toml`).
 
-## Compiler cache (optional)
+## Compiler cache
 
-The repository sets up no compiler cache. To share compiled crates between checkouts and
-worktrees on your machine, install [kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp)
-and set `RUSTC_WRAPPER=kache` in your shell profile; `nix develop` keeps it. The C code that build
-scripts compile (aws-lc-sys) goes through kache too, with no further setup.
-`scripts/build-images.sh` unsets `RUSTC_WRAPPER`, so image binaries are always compiled.
+`nix develop` sets `RUSTC_WRAPPER` to [kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp),
+so checkouts and worktrees on your machine share compiled crates. The C code that build scripts
+compile (aws-lc-sys) goes through kache too. CI keeps the same cache in S3. `scripts/build-images.sh`
+unsets `RUSTC_WRAPPER`, so image binaries are always compiled.
 
 ## Tests against a cluster
 

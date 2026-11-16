@@ -1,12 +1,20 @@
 name: Setup
-description: Installs Nix and restores Cargo's build output for the dev shell's Rust toolchain.
+description: Installs Nix and points kache at the S3 bucket, when the repository has one.
 runs:
   using: composite
   steps:
     - uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
-    # rust-cache keys on `rustc -vV`, so use the dev shell's toolchain.
-    - shell: bash
-      run: dirname "$(nix develop --command bash -c 'command -v rustc')" >> "$GITHUB_PATH" # zizmor: ignore[github-env]
-    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      with:
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+    # kache starts its own daemon, which drops KACHE_S3_* from the environment, so the remote goes
+    # in the config file. Without a bucket kache caches locally only.
+    - if: env.KACHE_S3_BUCKET != ''
+      shell: bash
+      run: |
+        mkdir -p ~/.config/kache
+        {
+          echo '[cache.remote]'
+          echo 'type = "s3"'
+          echo "bucket = \"$KACHE_S3_BUCKET\""
+          echo "region = \"${KACHE_S3_REGION:-us-east-1}\""
+          echo 'prefix = "kache"'
+          [[ -z "${KACHE_S3_ENDPOINT:-}" ]] || echo "endpoint = \"$KACHE_S3_ENDPOINT\""
+        } > ~/.config/kache/config.toml

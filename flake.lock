@@ -37,6 +37,22 @@
         "type": "github"
       }
     },
+    "nixpkgs-kache": {
+      "locked": {
+        "lastModified": 1794644783,
+        "narHash": "sha256-3GnIGIy15bMduoS9RnWqKTmsJLWThla42UFtm0S7+us=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "5d2b81a7a3be3e2f832879028e4d60abbf58e9a0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "oss": {
       "inputs": {
         "nix-bun": "nix-bun",
@@ -61,6 +77,7 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "nixpkgs-kache": "nixpkgs-kache",
         "oss": "oss",
         "rust-overlay": "rust-overlay"
       }

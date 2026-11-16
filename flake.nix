@@ -8,6 +8,9 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # kache 2.1.1 (with kache-engine) as a prebuilt package. Drop this input when nixpkgs above
+    # locks a revision that has it.
+    nixpkgs-kache.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     # The base shell of every zeabur-oss repository: Bun, the release tools and the shared linters.
     oss = {
       url = "github:zeabur-oss/.github";
@@ -60,6 +63,7 @@
               cargo-nextest
               # Workflow checks: actionlint's and zizmor's rules in one tool.
               jactionlint
+              inputs.nixpkgs-kache.legacyPackages.${system}.kache
 
               # Kubernetes and BuildKit integration tests
               kind
@@ -70,6 +74,9 @@
             ];
 
             env = {
+              # Every rustc call goes through kache, here and in CI. Without a remote in
+              # ~/.config/kache/config.toml it caches on this machine only.
+              RUSTC_WRAPPER = "${inputs.nixpkgs-kache.legacyPackages.${system}.kache}/bin/kache";
               # Required by rust-analyzer
               RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
               # Mozilla's CA bundle (MPL-2.0), copied into the controller image for HTTPS to Git
