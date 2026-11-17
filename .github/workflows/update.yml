@@ -1,7 +1,7 @@
 name: Update
 
-# Moves every pin of zeabur-oss/.github to its main and copies the shared skills again from
-# that commit, in one pull request: Monday 02:30 in Asia/Taipei, or by hand.
+# Moves every pin of zeabur-oss/.github to its main in one pull request: Monday 02:30 in
+# Asia/Taipei, or by hand.
 on:
   schedule:
     - cron: "30 18 * * 0"
@@ -12,6 +12,6 @@ permissions:
 
 jobs:
   update:
-    uses: zeabur-oss/.github/.github/workflows/update.yml@3efa9e88a66e5a355574fe708fd4ed4106e87fcd # main
+    uses: zeabur-oss/.github/.github/workflows/update.yml@b3c4f65ae9d5a247760345474a52da9bd2391296 # main
     secrets:
       private-key: ${{ secrets.ZEABUR_OSS_BOT_PRIVATE_KEY }}

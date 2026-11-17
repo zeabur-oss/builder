@@ -44,19 +44,6 @@
       overlays.default = final: prev: {
         # The nightly, components and targets of rust-toolchain.toml, the same file rustup reads.
         rustToolchain = final.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-        # Newer than nixpkgs; its tests need the network and a .git directory. Drop this when
-        # nixpkgs has 2.6.0 or later.
-        jactionlint = prev.jactionlint.overrideAttrs (old: rec {
-          version = "2.6.0";
-          src = final.fetchFromGitHub {
-            owner = "jdx";
-            repo = "jactionlint";
-            tag = "v${version}";
-            hash = "sha256-ikUVmurWrKP18XMth0lhnsvF0JT4gVoiNGTN+5AAL3U=";
-          };
-          vendorHash = "sha256-jf7hKPnaSl4iTYT0mtRRAEmgLKAA/lj0vSVoO9+iOvw=";
-          doCheck = false;
-        });
       };
 
       devShells = forEachSupportedSystem (
@@ -71,8 +58,6 @@
               cargo-auditable
               cargo-deny
               cargo-nextest
-              # Workflow checks: actionlint's and zizmor's rules in one tool.
-              jactionlint
 
               # Kubernetes and BuildKit integration tests
               kind
