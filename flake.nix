@@ -8,9 +8,6 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # kache 2.1.1 (with kache-engine) as a prebuilt package. Drop this input when nixpkgs above
-    # locks a revision that has it.
-    nixpkgs-kache.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     # The base shell of every zeabur-oss repository: Bun, the release tools and the shared linters.
     oss = {
       url = "github:zeabur-oss/.github";
@@ -76,7 +73,6 @@
               cargo-nextest
               # Workflow checks: actionlint's and zizmor's rules in one tool.
               jactionlint
-              inputs.nixpkgs-kache.legacyPackages.${system}.kache
 
               # Kubernetes and BuildKit integration tests
               kind
