@@ -31,7 +31,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: zeabur-oss/.github/actions/ci-setup@d2e64295ccfa414182c1e43d565042f0a9e78c12 # ci/ci-setup-kache
+        with:
+          rust-cache: true
       - parallel:
           - name: Static checks
             run: nix develop -c scripts/ci/lint.sh static
@@ -45,7 +47,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: zeabur-oss/.github/actions/ci-setup@d2e64295ccfa414182c1e43d565042f0a9e78c12 # ci/ci-setup-kache
+        with:
+          rust-cache: true
       - run: nix develop -c scripts/ci/test.sh
 
   kubernetes:
@@ -56,7 +60,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - uses: zeabur-oss/.github/actions/ci-setup@d2e64295ccfa414182c1e43d565042f0a9e78c12 # ci/ci-setup-kache
+        with:
+          rust-cache: true
       - run: nix develop -c scripts/ci/kubernetes.sh
         env:
           CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
