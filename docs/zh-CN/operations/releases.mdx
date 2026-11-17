@@ -7,7 +7,7 @@ description: 了解发行流程会生成的镜像、chart 和 Sigstore 签名，
 
 ## 发行流程
 
-`v<version>` 标签（tag）会触发发行流程，由 [zeabur-oss/.github](https://github.com/zeabur-oss/.github) 的共享发行流程执行：
+`v<version>` 标签（tag）会触发本仓库的发行流程 `.github/workflows/release.yml`：
 
 - 构建 `linux/amd64` 和 `linux/arm64` 的镜像，并在 k3s 集群上运行冒烟测试。
 - 按 digest 将 `ghcr.io/zeabur-oss/builder`、`builder-job` 和 `builder-railpack` 发布到镜像仓库（registry）。
@@ -31,7 +31,7 @@ chart  ghcr.io/zeabur-oss/charts/zeabur-builder@sha256:...
 ```sh
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/builder/\.github/workflows/release\.yml@' \
   --certificate-github-workflow-repository zeabur-oss/builder \
   --certificate-github-workflow-ref refs/tags/v<version>
 sha256sum --check SHA256SUMS
@@ -39,12 +39,12 @@ sha256sum --check SHA256SUMS
 
 ## 验证镜像
 
-签名记录的是签署它的流程，即 `zeabur-oss/.github` 的共享 `release.yml`，以及它为哪个仓库、哪个标签运行。安装前，将 `<digest>` 换成镜像的 digest，并将 `<version>` 换成对应的版本，执行：
+签名记录的是签署它的流程，即本仓库的 `release.yml`，以及它为哪个标签运行。v0.2.2 及以前的发行版由 `zeabur-oss/.github` 的 `release.yml` 签署，验证时请把身份中的路径换成 `zeabur-oss/\.github/\.github`，signer workflow 换成 `zeabur-oss/.github/.github`。安装前，将 `<digest>` 换成镜像的 digest，并将 `<version>` 换成对应的版本，执行：
 
 ```sh
 cosign verify ghcr.io/zeabur-oss/builder@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/builder/\.github/workflows/release\.yml@' \
   --certificate-github-workflow-repository zeabur-oss/builder \
   --certificate-github-workflow-ref refs/tags/v<version>
 ```
@@ -54,5 +54,5 @@ cosign verify ghcr.io/zeabur-oss/builder@sha256:<digest> \
 ```sh
 gh attestation verify oci://ghcr.io/zeabur-oss/builder@sha256:<digest> \
   --repo zeabur-oss/builder \
-  --signer-workflow zeabur-oss/.github/.github/workflows/release.yml
+  --signer-workflow zeabur-oss/builder/.github/workflows/release.yml
 ```

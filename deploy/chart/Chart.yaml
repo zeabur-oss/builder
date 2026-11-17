@@ -5,7 +5,6 @@ description: >-
   buildkitd config and egress policy, and the dockerfile and railpack ClusterBuilders.
 type: application
 version: 0.2.2
-appVersion: "0.2.2"
 home: https://github.com/zeabur-oss/builder
 icon: https://oss.zeabur.com/favicon.svg
 sources:

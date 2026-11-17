@@ -5,7 +5,7 @@
 set -euo pipefail
 
 chart="$(dirname "$0")/../deploy/chart"
-version=$(helm show chart "$chart" | sed -n 's/^appVersion: "*\([^"]*\)"*$/\1/p')
+version=$(helm show chart "$chart" | sed -n 's/^version: *\(.*\)$/\1/p')
 version=${version//./\\.}
 base=(--set registry.host=registry.example:5000 --set registry.tokenKey.namespace=zot
   --set registry.tokenKey.secret=zot-token-signer)

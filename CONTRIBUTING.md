@@ -19,8 +19,7 @@ Each job in `.github/workflows/ci.yml` runs `nix develop -c scripts/ci/<job>.sh`
 `test`; the merge queue also runs `kubernetes` on the commit that is about to land. Or run what CI runs, inside `nix develop`:
 
 ```sh
-cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && actionlint
-bun install --frozen-lockfile && bun fmt --check scripts/release.ts && bun check scripts/
+cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && jactionlint
 cargo lint                                   # clippy, all targets and features, -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 cargo nextest run --workspace
@@ -117,8 +116,9 @@ k3d cluster delete zeabur-builder
 
 ## Releases
 
-The release workflow is the shared one of [zeabur-oss/.github](https://github.com/zeabur-oss/.github);
-its stages are `bun scripts/release.ts check|build|publish|assets|verify`.
+The Release workflow, `.github/workflows/release.yml`, builds and smokes the images on both
+architectures, then pushes, signs and attests them and the chart with `zeabur-oss-release` of
+[zeabur-oss/.github](https://github.com/zeabur-oss/.github).
 
 A pull request that changes what users of the controller, the images or the chart see adds a change
 file. `nix develop -c knope document-change` asks for its level and summary and writes it to
@@ -142,11 +142,13 @@ becomes the release body as it is.
 To release:
 
 1. Run the Release pull request workflow, with `prerelease: rc` for a release candidate. knope
-   turns the change files into the next `CHANGELOG.md` section and sets `Cargo.toml`;
-   `bun scripts/release.ts bump` sets `Cargo.lock` and the chart's `version` and `appVersion`, and
-   zeabur-oss-bot opens `chore(release): vX.Y.Z`. Edit `CHANGELOG.md` on that branch if the section
-   should read differently.
+   turns the change files into the next `CHANGELOG.md` section and sets the version in
+   `Cargo.toml`, `Cargo.lock` and the chart's `Chart.yaml`, and zeabur-oss-bot opens
+   `chore(release): vX.Y.Z`. Edit `CHANGELOG.md` on that branch if the section should read
+   differently.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
-3. Merge the release pull request. zeabur-oss-bot tags the merge commit, and the Release workflow
-   leaves a draft release; check it and publish it. If its verify job fails because of the check itself, fix the check and run `verify` again from a checkout, as zeabur-oss/.github's README shows.
+3. Merge the release pull request. zeabur-oss-bot tags the merge commit and creates a draft
+   release, and the Release workflow adds the assets to it and verifies them; check it and publish
+   it. If the verify job fails because of the check itself, fix the check and run the failed jobs
+   again.

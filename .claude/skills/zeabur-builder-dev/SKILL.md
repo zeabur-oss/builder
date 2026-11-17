@@ -1,23 +1,26 @@
 ---
 name: zeabur-builder-dev
-description: Development loop for the Zeabur Builder repository — the checks CI runs and the engineering standards for comments, commits, tests, design and scale. Use before changing any Rust, chart, Nix or CI file in this repo.
+description: What is special about Zeabur Builder — its extra checks, how the images are compiled, and its Kubernetes scale rules. Use before changing any Rust, chart, Nix or CI file in this repo.
 ---
 
-# Zeabur Builder development loop
+# Zeabur Builder
 
-Follow the shared skills (copied from zeabur-oss/.github by the Update workflow): `zeabur-oss-rust`
-(Nix toolchain, workspace, lints, common checks), `zeabur-oss-standards` (with
-[`STANDARDS.md`](STANDARDS.md) here), `zeabur-oss-dependencies`, `zeabur-oss-workflow`,
-`zeabur-oss-cluster-tests`. Crate levels, generated files and the cluster job are in
-`CONTRIBUTING.md`.
+`CONTRIBUTING.md` has the crate levels, the generated files and the cluster job.
 
-## Checks (what CI runs, beyond `zeabur-oss-rust`'s)
+## Checks CI runs beyond fmt, clippy, tests and `cargo deny`
+
 ```sh
 nix develop -c ./scripts/check-levels.sh
 nix develop -c ./scripts/check-chart.sh
 ```
 
-## Comments
-A comment says only what the code cannot: a quirk and its cause, a workaround, or the
-specification or upstream source behind behaviour that must not change, cited in rustdoc.
-Usually one line; no design rationale, history or measurements.
+## Images
+
+`scripts/build-images.sh` compiles the image binaries itself, never through kache. CI builds them
+with `ZEABUR_BUILDER_PROFILE=ci`; a release uses `release`. The controller image ships the CA
+bundle of `ZEABUR_BUILDER_CA_BUNDLE`, so `webpki-roots` stays banned in `deny.toml`.
+
+## Scale
+
+- Watch with kube-rs `watcher`, `reflector` or `Controller`.
+- One LIST of the namespace, selected by label, replaces a GET per object.

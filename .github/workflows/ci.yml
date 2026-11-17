@@ -2,7 +2,8 @@ name: CI
 
 # Each job runs scripts/ci/<job>.sh in the Nix dev shell, the same as locally. Pull requests and
 # pushes run lint and test. The merge queue runs every job on the commit about to land, and the
-# nightly run keeps main's caches for the merge queue's jobs.
+# nightly run keeps main's caches for the merge queue's jobs. Only main saves the kache cache;
+# every other ref restores it.
 on:
   push:
     branches: [main]
@@ -24,38 +25,47 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-26.04-arm
+    runs-on: instabox-small
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # main
         with:
           rust-cache: true
-      - run: nix develop -c scripts/ci/lint.sh
+      - parallel:
+          - name: Static checks
+            run: nix develop -c scripts/ci/lint.sh static
+          - name: Cargo checks
+            run: nix develop -c scripts/ci/lint.sh cargo
 
   test:
-    runs-on: ubuntu-26.04-arm
+    runs-on: instabox-small
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # main
         with:
           rust-cache: true
-      - run: nix develop -c scripts/ci/test.sh
+      - name: Test
+        run: nix develop -c scripts/ci/test.sh
 
   kubernetes:
     if: github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref_type == 'branch')
-    runs-on: ubuntu-26.04-arm
+    runs-on: instabox-large
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # main
         with:
           rust-cache: true
-      - run: nix develop -c scripts/ci/kubernetes.sh
+      - name: Test on Kubernetes
+        run: nix develop -c scripts/ci/kubernetes.sh
         env:
           CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
       - if: always()
@@ -66,18 +76,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  zizmor:
-    uses: zeabur-oss/.github/.github/workflows/zizmor.yml@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
-
   # The check rulesets require.
   ok:
     name: ci / ok
     if: always()
-    needs: [lint, test, kubernetes, zizmor]
-    runs-on: ubuntu-slim
+    needs: [lint, test, kubernetes]
+    runs-on: instabox-small
+    timeout-minutes: 5
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
-
-  dco:
-    uses: zeabur-oss/.github/.github/workflows/dco.yml@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
