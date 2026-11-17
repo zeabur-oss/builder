@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
         with:
           rust-cache: true
       - run: nix develop -c scripts/ci/lint.sh
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
         with:
           rust-cache: true
       - run: nix develop -c scripts/ci/test.sh
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
         with:
           rust-cache: true
       - run: nix develop -c scripts/ci/kubernetes.sh
@@ -67,7 +67,7 @@ jobs:
           retention-days: 14
 
   zizmor:
-    uses: zeabur-oss/.github/.github/workflows/zizmor.yml@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+    uses: zeabur-oss/.github/.github/workflows/zizmor.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
 
   # The check rulesets require.
   ok:
@@ -80,4 +80,4 @@ jobs:
         run: exit 1
 
   dco:
-    uses: zeabur-oss/.github/.github/workflows/dco.yml@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+    uses: zeabur-oss/.github/.github/workflows/dco.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0

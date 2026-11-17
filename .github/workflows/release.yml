@@ -2,7 +2,7 @@ name: Release
 
 # Tag vX.Y.Z or vX.Y.Z-<pre-release> on main: the shared release builds, publishes and signs the
 # images and chart, then
-# leaves a draft. Manual run: rehearse.
+# leaves the assets on the draft the tag job made. Manual run: rehearse.
 on:
   push:
     tags: ['v[0-9]*']
@@ -20,14 +20,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build:
+    uses: zeabur-oss/.github/.github/workflows/release-build.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
+    permissions:
+      contents: read
+    with:
+      version: ${{ inputs.version }}
   release:
-    uses: zeabur-oss/.github/.github/workflows/release.yml@cb333d6e0f4250e3b2ca3625dffca106d5ea2713 # main
+    if: github.event_name == 'push' # a rehearsal never publishes
+    needs: build
+    uses: zeabur-oss/.github/.github/workflows/release.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
     permissions:
       contents: write
       packages: write
       id-token: write
       attestations: write
     with:
-      name: Zeabur Builder
-      docs: https://oss.zeabur.com/docs/builder/
-      version: ${{ inputs.version }}
+      version: ${{ needs.build.outputs.version }}
+      platforms: ${{ needs.build.outputs.platforms }}
