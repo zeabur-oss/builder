@@ -1,5 +1,5 @@
 name: Setup
-description: Installs Nix with its store cache and restores the kache cache of the job, the newest one saved on main.
+description: Installs Nix with its store cache and kache with its cache, which only main saves.
 runs:
   using: composite
   steps:
@@ -7,10 +7,8 @@ runs:
     - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
       with:
         use-flakehub: false
-    - shell: bash
-      run: echo "KACHE_CACHE_DIR=$HOME/.cache/kache" >> "$GITHUB_ENV"
-    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
       with:
-        path: ~/.cache/kache
-        key: kache-${{ github.job }}-${{ github.sha }}
-        restore-keys: kache-${{ github.job }}-
+        cache-key-prefix: kache-${{ github.job }}
+        save-cache: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+        pr-comment: false
