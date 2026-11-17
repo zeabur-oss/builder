@@ -120,11 +120,13 @@ async function publish(version: string, artifacts: string, out: string) {
   $.env({ ...process.env, ...env });
   await mkdir(out, { recursive: true });
 
-  if (
-    (await $`gh release view ${version} --repo ${repository}`.nothrow().quiet())
-      .exitCode === 0
-  )
-    fail(`release ${version} already exists; inspect it before trying again`);
+  // The tag job of the Release pull request leaves a draft; only a published release stops here.
+  const existing =
+    await $`gh release view ${version} --repo ${repository} --json isDraft --jq .isDraft`
+      .nothrow()
+      .quiet();
+  if (existing.exitCode === 0 && existing.text().trim() !== "true")
+    fail(`release ${version} is published; inspect it before trying again`);
   await $`crane auth login ghcr.io --username ${actor} --password-stdin < ${new Response(token)}`;
   // Every tag is refused before the first push, so a release never stops halfway on a tag that was
   // there from the start.
