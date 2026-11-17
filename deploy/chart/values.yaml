@@ -5,7 +5,7 @@
 image:
   # Published for linux/amd64 and linux/arm64 by the release workflow, signed.
   repository: ghcr.io/zeabur-oss/builder
-  # Defaults to the chart's appVersion. Ignored when digest is set.
+  # Defaults to the chart's version. Ignored when digest is set.
   tag: ""
   # The image by content: sha256:<64 hex digits>. A released chart sets it to the image index
   # published with it.

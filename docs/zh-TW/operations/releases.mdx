@@ -7,7 +7,7 @@ description: 了解發行流程會產出的映像檔、chart 與 Sigstore 簽章
 
 ## 發行流程
 
-`v<version>` tag 會觸發發行流程，由 [zeabur-oss/.github](https://github.com/zeabur-oss/.github) 的共用發行流程執行：
+`v<version>` tag 會觸發本儲存庫的發行流程 `.github/workflows/release.yml`：
 
 - 建置 `linux/amd64` 與 `linux/arm64` 的映像檔，並在 k3s 叢集上執行煙霧測試。
 - 依 digest 將 `ghcr.io/zeabur-oss/builder`、`builder-job` 與 `builder-railpack` 發布到 registry。
@@ -31,7 +31,7 @@ chart  ghcr.io/zeabur-oss/charts/zeabur-builder@sha256:...
 ```sh
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/builder/\.github/workflows/release\.yml@' \
   --certificate-github-workflow-repository zeabur-oss/builder \
   --certificate-github-workflow-ref refs/tags/v<version>
 sha256sum --check SHA256SUMS
@@ -39,12 +39,12 @@ sha256sum --check SHA256SUMS
 
 ## 驗證映像檔
 
-簽章記載的是簽署它的流程，也就是 `zeabur-oss/.github` 的共用 `release.yml`，以及它為哪個儲存庫、哪個 tag 執行。安裝前，先將 `<digest>` 換成映像檔的 digest，並將 `<version>` 換成對應的版本，再執行以下指令：
+簽章記載的是簽署它的流程，也就是本儲存庫的 `release.yml`，以及它為哪個 tag 執行。v0.2.2 以前的發行版由 `zeabur-oss/.github` 的 `release.yml` 簽署，驗證時請把身分裡的路徑換成 `zeabur-oss/\.github/\.github`，signer workflow 換成 `zeabur-oss/.github/.github`。安裝前，先將 `<digest>` 換成映像檔的 digest，並將 `<version>` 換成對應的版本，再執行以下指令：
 
 ```sh
 cosign verify ghcr.io/zeabur-oss/builder@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/zeabur-oss/\.github/\.github/workflows/release\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/zeabur-oss/builder/\.github/workflows/release\.yml@' \
   --certificate-github-workflow-repository zeabur-oss/builder \
   --certificate-github-workflow-ref refs/tags/v<version>
 ```
@@ -54,5 +54,5 @@ cosign verify ghcr.io/zeabur-oss/builder@sha256:<digest> \
 ```sh
 gh attestation verify oci://ghcr.io/zeabur-oss/builder@sha256:<digest> \
   --repo zeabur-oss/builder \
-  --signer-workflow zeabur-oss/.github/.github/workflows/release.yml
+  --signer-workflow zeabur-oss/builder/.github/workflows/release.yml
 ```

@@ -137,7 +137,7 @@ cluster_failure_context() {
 
 tag="${ZEABUR_CI_IMAGE_TAG:-ci}"
 start_cluster
-[[ -n "${ZEABUR_CI_IMAGE_TAG:-}" ]] || ./scripts/build-images.sh zeabur-builder ci
+[[ -n "${ZEABUR_CI_IMAGE_TAG:-}" ]] || ZEABUR_BUILDER_PROFILE=ci ./scripts/build-images.sh zeabur-builder ci
 start_collecting
 if ! {
   TAG="$tag" K3D_CLUSTER=zeabur-builder ./scripts/deploy-example.sh k3d-zeabur-builder \
