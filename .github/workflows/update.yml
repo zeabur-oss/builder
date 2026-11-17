@@ -1,8 +1,7 @@
 name: Update
 
-# Moves every pin of zeabur-oss/.github to the commit flake.lock locks (the v0.2.0 tag) and
-# copies the shared skills again from that commit, in one pull request: Monday 02:30 in
-# Asia/Taipei, or by hand.
+# Moves every pin of zeabur-oss/.github to the head of its main in one pull request: Monday 02:30
+# in Asia/Taipei, or by hand.
 on:
   schedule:
     - cron: "30 18 * * 0"
@@ -13,6 +12,6 @@ permissions:
 
 jobs:
   update:
-    uses: zeabur-oss/.github/.github/workflows/update.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
+    uses: zeabur-oss/.github/.github/workflows/update.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # main
     secrets:
       private-key: ${{ secrets.ZEABUR_OSS_BOT_PRIVATE_KEY }}

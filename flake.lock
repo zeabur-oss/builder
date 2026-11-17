@@ -54,7 +54,6 @@
       },
       "original": {
         "owner": "zeabur-oss",
-        "ref": "v0.2.0",
         "repo": ".github",
         "type": "github"
       }
