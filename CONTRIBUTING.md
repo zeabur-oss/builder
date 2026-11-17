@@ -148,5 +148,6 @@ To release:
    should read differently.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
-3. Merge the release pull request. zeabur-oss-bot tags the merge commit, and the Release workflow
-   leaves a draft release; check it and publish it. If its verify job fails because of the check itself, fix the check and run `verify` again from a checkout, as zeabur-oss/.github's README shows.
+3. Merge the release pull request. zeabur-oss-bot tags the merge commit and creates a draft
+   release, and the Release workflow adds the assets to it; check it and publish it. A tag pushed
+   by hand needs `gh release create <tag> --draft` first. If its verify job fails because of the check itself, fix the check and run `verify` again from a checkout, as zeabur-oss/.github's README shows.
