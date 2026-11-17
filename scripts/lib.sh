@@ -1,5 +1,9 @@
 # shellcheck shell=bash
-# Sourced by the scripts: every `cargo` goes through kache.
+# Sourced by the scripts: `cargo` goes through kache when the shell has it.
 cargo() {
-  kache cargo -- "$@"
+  if command -v kache >/dev/null; then
+    kache cargo -- "$@"
+  else
+    command cargo "$@"
+  fi
 }

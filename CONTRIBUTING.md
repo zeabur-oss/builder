@@ -75,8 +75,8 @@ Shared with [Zeabur Identity](https://github.com/zeabur-oss/identity):
 
 ## Compiler cache
 
-The scripts in `scripts/` run every `cargo` through [kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp)
-(`scripts/lib.sh`), so checkouts and worktrees on your machine share compiled crates. Run
+The scripts in `scripts/` run `cargo` through [kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp)
+(`scripts/lib.sh`) when the shell has it, so checkouts and worktrees on your machine share compiled crates. Run
 `kache cargo -- <command>` for the same by hand. CI restores the cache with kache-action and main
 saves it. `scripts/build-images.sh` never uses kache, so image binaries are always compiled.
 
