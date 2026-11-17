@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 cargo fmt --all --check
 nixfmt --check flake.nix
 shellcheck scripts/*.sh scripts/ci/*.sh
-actionlint
+jactionlint
 bun install --frozen-lockfile
 bun fmt --check scripts/release.ts
 bun check scripts/

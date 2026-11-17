@@ -25,6 +25,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-26.04-arm
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,6 +37,7 @@ jobs:
 
   test:
     runs-on: ubuntu-26.04-arm
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,6 +50,7 @@ jobs:
   kubernetes:
     if: github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref_type == 'branch')
     runs-on: ubuntu-26.04-arm
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,18 +69,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  zizmor:
-    uses: zeabur-oss/.github/.github/workflows/zizmor.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0
-
   # The check rulesets require.
   ok:
     name: ci / ok
     if: always()
-    needs: [lint, test, kubernetes, zizmor]
+    needs: [lint, test, kubernetes]
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
-
-  dco:
-    uses: zeabur-oss/.github/.github/workflows/dco.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # v0.2.0

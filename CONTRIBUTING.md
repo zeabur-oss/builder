@@ -19,7 +19,7 @@ Each job in `.github/workflows/ci.yml` runs `nix develop -c scripts/ci/<job>.sh`
 `test`; the merge queue also runs `kubernetes` on the commit that is about to land. Or run what CI runs, inside `nix develop`:
 
 ```sh
-cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && actionlint
+cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && jactionlint
 bun install --frozen-lockfile && bun fmt --check scripts/release.ts && bun check scripts/
 cargo lint                                   # clippy, all targets and features, -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
