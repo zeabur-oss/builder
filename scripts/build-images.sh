@@ -12,6 +12,9 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 arch="$(uname -m | sed -e 's/^arm64$/aarch64/')"
 target="$arch-unknown-linux-musl"
 profile="${ZEABUR_BUILDER_PROFILE:-release}"
+# Cargo writes the dev profile to target/<target>/debug.
+dir="$profile"
+[[ $profile == dev ]] && dir=debug
 out="$root/target/image"
 # Image binaries are always compiled, never taken from a compiler cache (CONTRIBUTING.md).
 # cargo-auditable records the dependency tree in each binary for scanners.
@@ -20,7 +23,7 @@ unset RUSTC_WRAPPER
 if [[ $(uname -s) == Linux ]]; then
   cargo auditable build --profile "$profile" --locked --target "$target" -p zeabur-builder -p zeabur-builder-job \
     --manifest-path "$root/Cargo.toml"
-  bin="$root/target/$target/$profile"
+  bin="$root/target/$target/$dir"
 else
   # Named volumes keep the Nix store, the Cargo registry and the build cache between runs.
   docker run --rm --platform "linux/$(uname -m | sed -e 's/^x86_64$/amd64/')" \
@@ -32,7 +35,7 @@ else
       unset RUSTC_WRAPPER
       cargo auditable build --profile $profile --locked --target $target -p zeabur-builder -p zeabur-builder-job
       mkdir -p /src/target/linux
-      cp /target/$target/$profile/zeabur-builder /target/$target/$profile/zeabur-builder-job /src/target/linux/"
+      cp /target/$target/$dir/zeabur-builder /target/$target/$dir/zeabur-builder-job /src/target/linux/"
   bin="$root/target/linux"
 fi
 
