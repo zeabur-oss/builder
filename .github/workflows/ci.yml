@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@d2e64295ccfa414182c1e43d565042f0a9e78c12 # ci/ci-setup-kache
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
         with:
           rust-cache: true
       - parallel:
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@d2e64295ccfa414182c1e43d565042f0a9e78c12 # ci/ci-setup-kache
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
         with:
           rust-cache: true
       - run: nix develop -c scripts/ci/test.sh
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@d2e64295ccfa414182c1e43d565042f0a9e78c12 # ci/ci-setup-kache
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
         with:
           rust-cache: true
       - run: nix develop -c scripts/ci/kubernetes.sh
