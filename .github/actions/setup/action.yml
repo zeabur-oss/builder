@@ -9,6 +9,5 @@ runs:
         use-flakehub: false
     - uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
       with:
-        cache-key-prefix: kache-${{ github.job }}
         save-cache: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') }}
         pr-comment: false
