@@ -50,7 +50,8 @@ jobs:
       - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
         with:
           rust-cache: true
-      - run: nix develop -c scripts/ci/test.sh
+      - name: Test
+        run: nix develop -c scripts/ci/test.sh
 
   kubernetes:
     if: github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref_type == 'branch')
@@ -63,7 +64,8 @@ jobs:
       - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
         with:
           rust-cache: true
-      - run: nix develop -c scripts/ci/kubernetes.sh
+      - name: Test on Kubernetes
+        run: nix develop -c scripts/ci/kubernetes.sh
         env:
           CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
       - if: always()
