@@ -20,7 +20,6 @@ Each job in `.github/workflows/ci.yml` runs `nix develop -c scripts/ci/<job>.sh`
 
 ```sh
 cargo fmt --all --check && nixfmt --check flake.nix && shellcheck scripts/*.sh && jactionlint
-bun install --frozen-lockfile && bun fmt --check scripts/release.ts && bun check scripts/
 cargo lint                                   # clippy, all targets and features, -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 cargo nextest run --workspace
@@ -117,8 +116,9 @@ k3d cluster delete zeabur-builder
 
 ## Releases
 
-The release workflow is the shared one of [zeabur-oss/.github](https://github.com/zeabur-oss/.github);
-its stages are `bun scripts/release.ts check|build|publish|assets|verify`.
+The Release workflow, `.github/workflows/release.yml`, builds and smokes the images on both
+architectures, then pushes, signs and attests them and the chart with `zeabur-oss-release` of
+[zeabur-oss/.github](https://github.com/zeabur-oss/.github).
 
 A pull request that changes what users of the controller, the images or the chart see adds a change
 file. `nix develop -c knope document-change` asks for its level and summary and writes it to

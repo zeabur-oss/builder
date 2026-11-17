@@ -1,33 +1,247 @@
 name: Release
 
-# Tag vX.Y.Z or vX.Y.Z-<pre-release> on main: the shared release builds, publishes and signs the
-# images and chart, then
-# leaves a draft. Manual run: rehearse.
+# Tag vX.Y.Z or vX.Y.Z-<pre-release> on main: build and smoke the images on both architectures, push
+# them and the chart by digest, sign and attest them, add the assets to the draft release that the
+# Release pull request workflow left when it tagged, and verify the draft. A maintainer publishes
+# the draft. Manual run: rehearse, which builds and smokes and publishes nothing.
 on:
   push:
-    tags: ['v[0-9]*']
+    tags: ["v[0-9]*"]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to rehearse, as in Cargo.toml (v0.1.1); a rehearsal never publishes'
+        description: "Version to rehearse, as in Cargo.toml (v0.1.1); a rehearsal never publishes"
         required: true
 
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.version || github.ref_name }}
+
 jobs:
-  release:
-    uses: zeabur-oss/.github/.github/workflows/release.yml@b3c4f65ae9d5a247760345474a52da9bd2391296 # main
+  check:
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
+      - run: nix develop --command bun install --frozen-lockfile
+      - name: The version is the crate's and the chart's, with a CHANGELOG.md section, on main
+        run: |
+          # The manifests take only SemVer; an image tag cannot hold the + of build metadata.
+          [[ "$VERSION" == v* && "$VERSION" != *+* ]] ||
+            { echo "::error::$VERSION is not v and SemVer without build metadata"; exit 1; }
+          crate=$(nix develop --command cargo metadata --locked --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "zeabur-builder") | .version')
+          chart=$(sed -n 's/^version: *//p' deploy/chart/Chart.yaml)
+          [[ "$VERSION" == "v$crate" && "$VERSION" == "v$chart" ]] ||
+            { echo "::error::$VERSION is not v$crate, the crate's version, and v$chart, the chart's"; exit 1; }
+          nix develop --command bun x zeabur-oss-release notes CHANGELOG.md "$VERSION" >/dev/null
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            git merge-base --is-ancestor HEAD origin/main ||
+              { echo "::error::$VERSION is not on main"; exit 1; }
+          fi
+
+  build:
+    name: build (${{ matrix.arch }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-26.04 }
+          - { arch: arm64, runner: ubuntu-26.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
+      - name: Build the three images
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # mkShell sets SOURCE_DATE_EPOCH to 1980; the commit's time replaces it.
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
+          export SOURCE_DATE_EPOCH
+          nix develop --command scripts/build-images.sh zeabur-builder "release-$ARCH"
+          mkdir dist
+          for image in builder builder-job builder-railpack; do
+            docker image save --output "dist/$image.tar" "zeabur-builder/$image:release-$ARCH"
+          done
+      - name: Smoke the images, with the chart of this commit, on k3s
+        env:
+          ZEABUR_CI_IMAGE_TAG: release-${{ matrix.arch }}
+          CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
+        run: nix develop --command scripts/ci/kubernetes.sh
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: logs-build-${{ matrix.arch }}
+          path: ${{ runner.temp }}/ci-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
+      packages: write # images and the chart on ghcr.io
+      id-token: write # keyless signatures
+    outputs:
+      subjects: ${{ steps.publish.outputs.subjects }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
+      - run: nix develop --command bun install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: images-*
+          path: images
+      - id: publish
+        name: Push the images and the chart by digest and sign them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          plain=${VERSION#v}
+          release() { nix develop --command bun x zeabur-oss-release "$@"; }
+          if gh release view "$VERSION" --json isDraft --jq '.isDraft' | grep -qx false; then
+            echo "::error::release $VERSION is already published"; exit 1
+          fi
+          nix develop --command crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<<"$GH_TOKEN"
+          # Every tag is refused before the first push, so a release never stops halfway on a tag
+          # that was there from the start.
+          release absent "ghcr.io/$owner/builder:$plain" "ghcr.io/$owner/builder-job:$plain" \
+            "ghcr.io/$owner/builder-railpack:$plain" "ghcr.io/$owner/charts/zeabur-builder:$plain"
+          cp -r deploy/chart chart
+          for pair in builder:image builder-job:jobImage builder-railpack:railpackImage; do
+            image=${pair%%:*}
+            index=$(release push-image --out published --label "$image" "ghcr.io/$owner/$image:$plain" \
+              "linux/amd64=images/images-amd64/$image.tar" "linux/arm64=images/images-arm64/$image.tar")
+            release pin-digest chart/values.yaml "${pair##*:}" "${index#*@}"
+          done
+          nix develop --command helm lint --strict chart --set registry.host=registry.example:5000
+          nix develop --command helm package chart --destination published
+          release push-chart --out published "oci://ghcr.io/$owner/charts" "published/zeabur-builder-$plain.tgz"
+          echo "subjects=$(jq -c . published/subjects.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published
+          path: published/
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    name: attest (${{ matrix.name }}@${{ matrix.digest }})
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.publish.outputs.subjects) }}
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 15
+    permissions:
       packages: write
       id-token: write
       attestations: write
-    with:
-      name: Zeabur Builder
-      docs: https://oss.zeabur.com/docs/builder/
-      version: ${{ inputs.version }}
+    steps:
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ matrix.name }}
+          subject-digest: ${{ matrix.digest }}
+
+  release:
+    needs: [publish, attest]
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: write # the draft
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
+      - run: nix develop --command bun install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: published
+          path: published
+      - name: Make the release assets and their signed checksums
+        run: |
+          mkdir assets
+          cp "published/zeabur-builder-${VERSION#v}.tgz" published/digests.txt assets/
+          nix develop --command bun x zeabur-oss-release checksums assets
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: assets/SHA256SUMS
+      - name: Add the assets to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$VERSION" assets/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  verify:
+    needs: release
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 30
+    permissions:
+      # GitHub shows a draft release only to a token that can push.
+      contents: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zeabur-oss/.github/actions/ci-setup@3e2ad056ac86367fa15350f105b81621032e91f6 # ci/ci-setup-kache
+      - run: nix develop --command bun install --frozen-lockfile
+      - name: Download the draft's assets and verify the images and the chart
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE_REPOSITORY: ${{ github.repository }}
+          RELEASE_SOURCE_REF: refs/tags/${{ env.VERSION }}
+        run: |
+          release() { nix develop --command bun x zeabur-oss-release "$@"; }
+          gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --dir downloaded
+          release verify-assets downloaded
+          # A fresh, empty registry login: a publisher's login must not hide a private package.
+          export DOCKER_CONFIG=$RUNNER_TEMP/docker HELM_REGISTRY_CONFIG=$RUNNER_TEMP/docker/config.json
+          mkdir -p "$DOCKER_CONFIG"
+          chart=downloaded/zeabur-builder-${VERSION#v}.tgz
+          for pair in builder:image builder-job:jobImage builder-railpack:railpackImage; do
+            index=$(release verify-image --digests downloaded/digests.txt --label "${pair%%:*}" linux/amd64 linux/arm64)
+            # The chart installs this index by default.
+            pinned=$(nix develop --command helm show values "$chart" |
+              KEY=${pair##*:} bun -e "const v = Bun.YAML.parse(await Bun.stdin.text())[process.env.KEY]; console.log(v.repository + '@' + v.digest)")
+            [[ "$pinned" == "$index" ]] ||
+              { echo "::error::the chart's ${pair##*:} is $pinned, not $index"; exit 1; }
+          done
+          release verify-chart --digests downloaded/digests.txt "$chart"
+          nix develop --command helm template builder "$chart" --set registry.host=registry.example:5000 \
+            --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer >/dev/null
