@@ -75,10 +75,11 @@ Shared with [Zeabur Identity](https://github.com/zeabur-oss/identity):
 
 ## Compiler cache
 
-`nix develop` sets `RUSTC_WRAPPER` to [kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp),
-so checkouts and worktrees on your machine share compiled crates. The C code that build scripts
-compile (aws-lc-sys) goes through kache too. CI keeps the same cache in S3. `scripts/build-images.sh`
-unsets `RUSTC_WRAPPER`, so image binaries are always compiled.
+The scripts in `scripts/` run `cargo build`, `check`, `clippy`, `doc`, `test` and `nextest` through
+[kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp) when `nix develop` has it
+(`scripts/lib.sh`), so checkouts and worktrees on your machine share compiled crates. Run
+`kache cargo -- <command>` for the same by hand. CI restores the cache from GitHub Actions and main
+saves it. `scripts/build-images.sh` never uses kache, so image binaries are always compiled.
 
 ## Tests against a cluster
 

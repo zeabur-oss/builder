@@ -1,20 +1,16 @@
 name: Setup
-description: Installs Nix and points kache at the S3 bucket, when the repository has one.
+description: Installs Nix with its store cache and restores the kache cache of the job, the newest one saved on main.
 runs:
   using: composite
   steps:
     - uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
-    # kache starts its own daemon, which drops KACHE_S3_* from the environment, so the remote goes
-    # in the config file. Without a bucket kache caches locally only.
-    - if: env.KACHE_S3_BUCKET != ''
-      shell: bash
-      run: |
-        mkdir -p ~/.config/kache
-        {
-          echo '[cache.remote]'
-          echo 'type = "s3"'
-          echo "bucket = \"$KACHE_S3_BUCKET\""
-          echo "region = \"${KACHE_S3_REGION:-us-east-1}\""
-          echo 'prefix = "kache"'
-          [[ -z "${KACHE_S3_ENDPOINT:-}" ]] || echo "endpoint = \"$KACHE_S3_ENDPOINT\""
-        } > ~/.config/kache/config.toml
+    - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      with:
+        use-flakehub: false
+    - shell: bash
+      run: echo "KACHE_CACHE_DIR=$HOME/.cache/kache" >> "$GITHUB_ENV"
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/kache
+        key: kache-${{ github.job }}-${{ github.sha }}
+        restore-keys: kache-${{ github.job }}-

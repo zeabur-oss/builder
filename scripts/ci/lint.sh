@@ -4,6 +4,7 @@
 # stays in one process because its steps share the target/ lock.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/lib.sh
 
 static() {
   cargo fmt --all --check
