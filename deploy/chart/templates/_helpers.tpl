@@ -12,14 +12,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ .Values.webhooks.path | trimSuffix "/" }}
 {{- end }}
 
-{{- /* An image reference: repository@digest, else repository:tag, else repository:appVersion. */ -}}
+{{- /* An image reference: repository@digest, else repository:tag, else repository:chart version. */ -}}
 {{- define "builder.image" -}}
 {{- $image := index . 0 -}}
 {{- $chart := index . 1 -}}
 {{- if $image.digest -}}
 {{ $image.repository }}@{{ $image.digest }}
 {{- else -}}
-{{ $image.repository }}:{{ $image.tag | default $chart.AppVersion }}
+{{ $image.repository }}:{{ $image.tag | default $chart.Version }}
 {{- end -}}
 {{- end }}
 

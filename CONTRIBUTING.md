@@ -142,10 +142,10 @@ becomes the release body as it is.
 To release:
 
 1. Run the Release pull request workflow, with `prerelease: rc` for a release candidate. knope
-   turns the change files into the next `CHANGELOG.md` section and sets `Cargo.toml`;
-   `bun scripts/release.ts bump` sets `Cargo.lock` and the chart's `version` and `appVersion`, and
-   zeabur-oss-bot opens `chore(release): vX.Y.Z`. Edit `CHANGELOG.md` on that branch if the section
-   should read differently.
+   turns the change files into the next `CHANGELOG.md` section and sets the version in
+   `Cargo.toml`, `Cargo.lock` and the chart's `Chart.yaml`, and zeabur-oss-bot opens
+   `chore(release): vX.Y.Z`. Edit `CHANGELOG.md` on that branch if the section should read
+   differently.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
 3. Merge the release pull request. zeabur-oss-bot tags the merge commit, and the Release workflow
