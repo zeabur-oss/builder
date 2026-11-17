@@ -75,8 +75,7 @@ Shared with [Zeabur Identity](https://github.com/zeabur-oss/identity):
 
 ## Compiler cache
 
-The scripts in `scripts/` run `cargo build`, `check`, `clippy`, `doc`, `test` and `nextest` through
-[kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp) when `nix develop` has it
+The scripts in `scripts/` run every `cargo` through [kache](https://ninja.kunobi.com/docs/kache/getting-started/c-cpp)
 (`scripts/lib.sh`), so checkouts and worktrees on your machine share compiled crates. Run
 `kache cargo -- <command>` for the same by hand. CI restores the cache with kache-action and main
 saves it. `scripts/build-images.sh` never uses kache, so image binaries are always compiled.
