@@ -1,10 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "The shared preset of zeabur-oss, plus Cargo crates, Nix and the release scripts' package.json, and the k3s test image of scripts/ci/kubernetes.sh, which follows K3s's stable channel (the k3s preset). Lock file maintenance updates flake.lock; the Rust nightly date in rust-toolchain.toml moves with the rust-toolchain manager, after the preset's seven-day wait.",
-  "extends": [
-    "github>zeabur-oss/.github",
-    "github>zeabur-oss/.github:k3s"
-  ],
+  "description": "The shared preset of zeabur-oss, plus Cargo crates, Nix and the release scripts' package.json, and the k3s test image of scripts/ci/kubernetes.sh, which follows K3s's stable channel (the k3s preset). The nix manager is in beta and must be enabled; lock file maintenance updates flake.lock. The Rust nightly date in rust-toolchain.toml moves with the rust-toolchain manager, after the preset's seven-day wait.",
+  "extends": ["github>zeabur-oss/.github", "github>zeabur-oss/.github:k3s"],
   "enabledManagers": [
     "bun",
     "cargo",
@@ -12,5 +9,21 @@
     "github-actions",
     "nix",
     "rust-toolchain"
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Trial: Renovate moves the pins of zeabur-oss/.github to the head of its main, all in one pull request and without the seven-day wait.",
+      "matchPackageNames": [
+        "zeabur-oss/.github",
+        "@zeabur-oss/release",
+        "https://github.com/zeabur-oss/.github"
+      ],
+      "enabled": true,
+      "minimumReleaseAge": null,
+      "groupName": "zeabur-oss/.github"
+    }
   ]
 }

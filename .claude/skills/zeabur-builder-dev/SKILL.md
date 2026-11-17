@@ -5,7 +5,7 @@ description: Development loop for the Zeabur Builder repository — the checks C
 
 # Zeabur Builder development loop
 
-Follow the shared skills (copied from zeabur-oss/.github by the Update workflow): `zeabur-oss-rust`
+Follow the shared skills: `zeabur-oss-rust`
 (Nix toolchain, workspace, lints, common checks), `zeabur-oss-standards` (with
 [`STANDARDS.md`](STANDARDS.md) here), `zeabur-oss-dependencies`, `zeabur-oss-workflow`,
 `zeabur-oss-cluster-tests`. Crate levels, generated files and the cluster job are in
