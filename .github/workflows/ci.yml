@@ -55,7 +55,9 @@ jobs:
 
   kubernetes:
     if: github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref_type == 'branch')
-    runs-on: instabox-large
+    # A GitHub runner: Instabox machines do not enforce the NetworkPolicy that the isolation
+    # checks test.
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
