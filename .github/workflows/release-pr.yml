@@ -27,5 +27,7 @@ jobs:
       docs: https://oss.zeabur.com/docs/builder/
       version: ${{ inputs.version }}
       prerelease: ${{ inputs.prerelease }}
+      # The check job of release.yml checks the version; there is no scripts/release.ts.
+      check: false
     secrets:
       private-key: ${{ secrets.ZEABUR_OSS_BOT_PRIVATE_KEY }}
