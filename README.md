@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/cover-dark.avif">
-  <img alt="Zeabur Builder: push a commit, get an image digest; a Build for a Git repository and the status field that holds the image it built" src="docs/images/cover-light.avif">
+  <img alt="Zeabur Builder: push your code to GitHub. It’s packaged, ready to go live. A Dockerfile or Python, PHP, Ruby, Node.js or Go code becomes the image main-1761058800-3e1a9c2, and it is running." src="docs/images/cover-light.avif">
 </picture>
 
 # Zeabur Builder
