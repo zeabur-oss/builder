@@ -148,7 +148,7 @@ To release:
    differently.
 2. Optionally rehearse: run the Release workflow by hand with the version. It builds and smokes
    the images and publishes nothing.
-3. Merge the release pull request. zeabur-oss-bot tags the merge commit and creates a draft
-   release, and the Release workflow adds the assets to it and verifies them; check it and publish
-   it. If the verify job fails because of the check itself, fix the check and run the failed jobs
-   again.
+3. Merge the release pull request. zeabur-oss-bot tags the merge commit, and the Release workflow
+   creates the draft release with its assets and verifies them. When the run has passed, check
+   the draft and publish it. If the verify job fails because of the check itself, fix the check
+   and run the failed jobs again.
