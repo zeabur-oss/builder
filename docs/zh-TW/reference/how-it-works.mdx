@@ -15,7 +15,7 @@ description: 了解 Zeabur Builder 如何從 Git commit 建置映像檔，以及
 
 控制器會使用 Git 的 smart HTTP 或 SSH 協定，找出 `Build` 的 ref 對應的 commit。
 
-省略 `ref` 時，控制器會追蹤儲存庫的預設分支，並將分支名稱寫入 `status.resolvedRef`。
+省略 `ref` 時，控制器會追蹤儲存庫的預設分支，並將完整的 ref 名稱（例如 `refs/heads/main`）寫入 `status.resolvedRef`。
 
 </Step>
 
@@ -83,7 +83,7 @@ kubectl get clusterbuilder dockerfile -o jsonpath='{.status}'
 
 ## 確認結果
 
-檢視各個 Build 的建置器、來源、版本與就緒狀態：
+檢視各個 Build 的建置器、來源、修訂版本與就緒狀態：
 
 ```sh
 kubectl get builds

@@ -44,4 +44,4 @@ spec:
 
 | 界面或结果 | 处理方法 |
 | --- | --- |
-| run 停在 `RegistryCredentialsMissing` 状态等待 | 确认 Build 所在的 Namespace 中有指定的 Secret，且 Secret 带有 `builder.zeabur.com/push-credentials: "true"` 标签。 |
+| run 停在 `RegistryCredentialsMissing` 状态等待 | 确认 Build 所在的 Namespace 中有指定的 Secret，且 Secret 带有 `builder.zeabur.com/push-credentials: "true"` 标签、类型为 `kubernetes.io/dockerconfigjson`，并有内容正确的 `.dockerconfigjson` 键。 |

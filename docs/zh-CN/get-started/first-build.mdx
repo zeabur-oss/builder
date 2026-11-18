@@ -11,16 +11,21 @@ description: 创建指向 Git 仓库的 Build，查看每个新 commit 构建出
 
 ### 创建 Build
 
-在集群中创建以下 `Build`，使用 `dockerfile` 构建器构建 Git 仓库中的 Dockerfile：
+先创建用于构建的 Namespace，再创建以下 `Build`，使用 `dockerfile` 构建器构建 Git 仓库中的 Dockerfile：
 
-```yaml
+```sh
+kubectl create namespace team-a
+kubectl apply -f - <<'EOF'
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: whoami, namespace: team-a}
 spec:
   source: {git: {url: https://github.com/traefik/whoami}}
   builderRef: dockerfile
+EOF
 ```
+
+`kubectl` 会输出 `build.builder.zeabur.com/whoami created`。
 
 示例省略了 `ref`，因此会跟踪仓库的默认分支。你可以从 `status.resolvedRef` 查看控制器解析出的分支。
 
@@ -39,22 +44,36 @@ spec:
 
 ### 查看构建状态和日志
 
-在 `Build` 所在的 Namespace 执行：
+查看 Build 和每次构建：
 
 ```sh
-kubectl get builds
-kubectl get buildruns
+kubectl -n team-a get builds
+kubectl -n team-a get buildruns
 ```
 
 `kubectl get builds` 显示每个 Build 的构建器、来源、修订版本和就绪状态。加上 `-o wide` 可查看镜像：
 
 ```sh
-kubectl get builds -o wide
+kubectl -n team-a get builds -o wide
 ```
 
 `kubectl get buildruns` 显示每次构建的阶段、原因、开始时间和结束时间。
 
-构建日志位于该次构建 Job 的 Pod 日志中。构建步骤每行输出一个 JSON 事件，包含步骤名称、耗时秒数，以及该行来自 stdout 还是 stderr。想当作文本读，运行 `kubectl logs <pod> | jq -r '.text // .message // .name'`。
+等待第一次构建完成。构建缓存为空时，可能需要几分钟：
+
+```sh
+kubectl -n team-a wait --for=condition=Ready build/whoami --timeout=15m
+```
+
+预期输出：
+
+```text
+build.builder.zeabur.com/whoami condition met
+```
+
+超时的话，`kubectl -n team-a get buildruns` 会显示每次构建的阶段和原因。
+
+构建日志位于该次构建 Job 的 Pod 日志中。构建步骤每行输出一个 JSON 事件，包含步骤名称、耗时秒数，以及该行来自 stdout 还是 stderr。想当作文本读，运行 `kubectl -n team-a logs <pod> | jq -r '.text // .message // .name'`。
 
 </Step>
 
@@ -73,6 +92,14 @@ kubectl get builds -o wide
 ```text
 <repository>:<tag>@<digest>
 ```
+
+输出镜像的完整名称：
+
+```sh
+kubectl -n team-a get build whoami -o jsonpath='{.status.latestImage}{"\n"}'
+```
+
+输出类似 `<registry.host>/team-a/whoami:main-1761058800-3e1a9c2@sha256:…`。
 
 每次构建都有自己的标签（tag），由分支、Unix 时间和 commit 组成，例如：
 

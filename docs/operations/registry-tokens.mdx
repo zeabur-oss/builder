@@ -10,7 +10,7 @@ The image registry trusts a single Ed25519 key. Only the controller can read thi
 | Type | Permissions and scope | Lifetime |
 | --- | --- | --- |
 | run | Push and pull from the image repository `<namespace>/<build>`, and pull from the source archive repository `<namespace>/<build>/source`. | The Job's execution deadline plus 10 minutes. |
-| upload | Push to the source archive repository `<namespace>/<build>/source`. | 15 minutes. |
+| upload | Push and pull on the source archive repository `<namespace>/<build>/source`. | 15 minutes. |
 
 If a Build's image is hosted at `registry.host` but its repository path doesn't belong to that Build, the build fails. Images in other registries use a Secret for push credentials. See [Push to external registries](../builds/external-registries.mdx).
 
@@ -28,7 +28,7 @@ If a Build's image is hosted at `registry.host` but its repository path doesn't 
 
 ### Request an upload token
 
-Set the Build's `builder.zeabur.com/upload-token-request` annotation to a new value. The controller creates the Secret `<build>-upload` and reports the request value in `.status.uploadToken.request`.
+The Build must have `spec.source.archive`. Set its `builder.zeabur.com/upload-token-request` annotation to a new value of 1 to 63 characters. The controller creates the Secret `<build>-upload` and reports the request value in `.status.uploadToken.request`.
 
 ```sh
 kubectl -n team-a annotate build/api --overwrite builder.zeabur.com/upload-token-request=u1

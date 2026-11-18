@@ -1,40 +1,55 @@
 ---
 title: 开始使用 Zeabur Builder
-description: 在 Kubernetes 上用 BuildKit 从 Git 构建镜像，并把结果交给你的部署工具。
+description: 代码推到 GitHub 就会构建并部署。在 Zeabur 开源版中使用 Zeabur Builder，或单独用它以 BuildKit 从 Git 构建镜像。
 ---
 
-Zeabur Builder 是一个 Kubernetes operator。你创建一个 `Build`，指向 Git 仓库。Zeabur Builder 会为每个新 commit 构建镜像，推送到镜像仓库，并把 `<repository>:<tag>@<digest>` 写入 `status.latestImage`。
+Zeabur Builder 把 Git 仓库变成可以运行的镜像。它用 [Railpack](https://railpack.com) 识别代码使用的语言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、静态网站和 shell 脚本），或按你的 Dockerfile 构建，之后分支一有更新就会重新构建。
+
+## 我在用 Zeabur 开源版
+
+Zeabur 开源版会帮你安装和运行 Zeabur Builder，不需要自己安装或配置。
+
+- zeabur-installer 默认安装 Zeabur Builder。个人版安装时，在“选择组件”中勾选 **Zeabur Builder**。
+- 集群还没装的话，打开**集群** → **组件**，找到 Zeabur Builder 后点击**安装**，页面会列出需要在服务器上运行的命令，见[查看和安装集群组件](https://oss.zeabur.com/zh-CN/docs/zeabur/cluster/components/)。
+- 要从 Git 部署，在项目中选择**新增** → **从 Git 部署**，见[从 Git 构建并部署服务](https://oss.zeabur.com/zh-CN/docs/zeabur/deploy/git/)。
+
+安装 Zeabur 开源版和管理服务的方法，见 [Zeabur 开源版文档](https://oss.zeabur.com/zh-CN/docs/zeabur/)。
+
+## 我要单独使用 Zeabur Builder
+
+Zeabur Builder 是一个 Kubernetes operator。你创建一个 `Build`，指向 Git 仓库。Zeabur Builder 会为每个新 commit 构建镜像，推送到镜像仓库，并把 `<repository>:<tag>@<digest>` 写入 `status.latestImage`，交给你的部署工具。
 
 Zeabur Builder 只构建镜像。测试、部署和日志存储交给你的 pipeline、部署工具和日志收集工具。
 
 <Callout type="info">
 
-Zeabur Builder 还没有发行版，API 是 `v1alpha1`。这份文档描述 `main` 分支当前的行为。
+API 版本是 `v1alpha1`。升级前请先阅读[更新日志](https://github.com/zeabur-oss/builder/blob/main/CHANGELOG.md)。
 
 </Callout>
 
-## 我想先跑起来
+### 从安装开始
 
-用 Helm chart 装好控制器，再创建第一个 `Build`。
+用 Helm chart 装好控制器，再创建第一个 `Build`。每一步最后都有一条命令，用来确认这一步成功了。
 
 - [安装](get-started/install.mdx)
 - [创建第一个 Build](get-started/first-build.mdx)
 
-## 我想管理 Build
+### 管理 Build
 
 - [触发构建](builds/triggers.mdx)：轮询、push webhook 和手动重新构建。
 - [私有仓库](builds/private-repos.mdx)：用 `credentialsRef` 或 GitHub App。
 - [从上传的文件夹构建](builds/archive-source.mdx)：不经过 Git。
 - [部署构建好的镜像](builds/rollout.mdx)：标签和 Keel 通知。
 - [推送到外部镜像仓库](builds/external-registries.mdx)
+- [在构建节点上构建](builds/build-nodes.mdx)
 
-## 我是集群管理员
+### 管理集群
 
 - [Registry 令牌](operations/registry-tokens.mdx)：令牌、上传、清理和密钥轮换。
 - [控制器的权限](operations/controller-permissions.mdx)：把控制器当作集群管理员。
 - [发行文件与验证](operations/releases.mdx)
 
-## 我想了解它怎么工作
+### 了解工作原理
 
 - [工作原理](reference/how-it-works.mdx)
-- [安全性与信任模型](reference/security.mdx)
+- [安全性与信任模型](reference/security.mdx)：buildkitd 以 privileged 模式运行，让你不信任的人构建之前先读这一页。

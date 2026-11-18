@@ -1,7 +1,13 @@
 ---
 title: 安裝 Zeabur Builder
-description: 用 Helm chart 安裝 Zeabur Builder，並設定 registry 與建置器所需的存取權限。
+description: 用 Helm chart 安裝 Zeabur Builder，設定建置器推送映像檔的 registry，再確認控制器已經就緒。
 ---
+
+<Callout type="info">
+
+使用 Zeabur 開源版的話，不需要看這一頁：zeabur-installer 會安裝 Zeabur Builder，沒有裝時，**叢集** → **元件**會列出安裝指令，見[檢視與安裝叢集元件](https://oss.zeabur.com/zh-TW/docs/zeabur/cluster/components/)。
+
+</Callout>
 
 用 Helm chart 一次裝好控制器、CRD、`dockerfile` 與 `railpack` ClusterBuilder、buildkitd 設定與對外連線政策，以及限制控制器權限的 ValidatingAdmissionPolicy。
 
@@ -13,28 +19,15 @@ description: 用 Helm chart 安裝 Zeabur Builder，並設定 registry 與建置
 - 在節點上為各 Namespace 預留建置快取的磁碟空間，預設為 20 GiB。
 - buildkitd 以 privileged 模式執行，所在的 Namespace 必須允許 Pod Security 層級 `privileged`。
 
-<Steps>
-
-<Step>
-
-### 安裝 chart
-
-Helm 安裝指令如下。安裝前，還需要補上下一步列出的必要 registry 設定。
+確認叢集版本：
 
 ```sh
-helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
-  -n builder-system --create-namespace --set registry.host=<registry>
+kubectl version
 ```
 
-<Callout type="info">
+`Server Version` 這一行要是 `v1.33.0` 或更新的版本。
 
-Zeabur Builder 還沒有發行版，指令裡的 `<version>` 要等第一個版本發行後才有可用的值。目前 `scripts/deploy-example.sh` 會從這份原始程式碼的 `deploy/chart` 安裝 chart。
-
-</Callout>
-
-發行版 chart 會用 digest 固定三個映像檔的版本。驗證方式請參考[發行檔與驗證](../operations/releases.mdx)。
-
-</Step>
+<Steps>
 
 <Step>
 
@@ -53,13 +46,85 @@ Zeabur Builder 還沒有發行版，指令裡的 `<version>` 要等第一個版�
 
 控制器需要連線到 registry 才能刪除儲存庫。registry 所在 Namespace 的 NetworkPolicy 也必須允許這項連線。控制器有哪些權限，請參考[控制器的權限](../operations/controller-permissions.mdx)。
 
+把設定寫進檔案，例如：
+
+```sh
+cat > builder-values.yaml <<'EOF'
+registry:
+  host: registry.example.com
+  tokenKey:
+    namespace: registry
+    secret: registry-token-signer
+EOF
+```
+
+把 `registry` 和 `registry-token-signer` 換成你在 `registry.tokenKey` 填的值，確認存放簽署金鑰的 Secret 存在：
+
+```sh
+kubectl -n registry get secret registry-token-signer
+```
+
+指令會印出一行 Secret 的名稱。出現 `Error from server (NotFound)` 表示找不到這個 Secret，請檢查名稱，或先建立 Secret。
+
 </Step>
 
 <Step>
 
-### 用 Zeabur Catalog 連同 zot 一起安裝
+### 安裝 chart
 
-[Zeabur Catalog](https://github.com/zeabur-oss/catalog) 的 `builds/zeabur-builder` 元件會一起安裝 Zeabur Builder 和 zot，並填好上一步的 registry 設定。zot 只接受用 `zot-token-signer` 簽署的權杖推送映像檔。用 zeabur-installer 移除這個元件時，zot 也會一起移除。`zeaburctl components export builds/zeabur-builder` 會依序印出安裝指令，其中 Builder 的設定如下：
+把 `<version>` 換成 [GitHub Releases](https://github.com/zeabur-oss/builder/releases) 上最新的版本，去掉開頭的 `v`，例如 `0.2.2`：
+
+```sh
+helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  -n builder-system --create-namespace -f builder-values.yaml
+```
+
+Helm 會印出 `STATUS: deployed`。
+
+發行版 chart 會用 digest 固定三個映像檔的版本。驗證方式請參考[發行檔與驗證](../operations/releases.mdx)。
+
+</Step>
+
+<Step>
+
+### 確認安裝結果
+
+等控制器啟動：
+
+```sh
+kubectl -n builder-system rollout status deployment/zeabur-builder --timeout=5m
+```
+
+預期輸出：
+
+```text
+deployment "zeabur-builder" successfully rolled out
+```
+
+接著確認控制器已經接手兩個建置器：
+
+```sh
+kubectl wait --for=condition=Ready clusterbuilder/dockerfile clusterbuilder/railpack --timeout=2m
+```
+
+預期輸出：
+
+```text
+clusterbuilder.builder.zeabur.com/dockerfile condition met
+clusterbuilder.builder.zeabur.com/railpack condition met
+```
+
+任一個指令逾時，就用 `kubectl -n builder-system logs deployment/zeabur-builder` 檢視控制器的日誌。
+
+</Step>
+
+</Steps>
+
+接下來[建立第一個 Build](first-build.mdx)。
+
+## 用 Zeabur Catalog 連同 zot 一起安裝
+
+[Zeabur Catalog](https://github.com/zeabur-oss/catalog) 的 `builds/zeabur-builder` 元件會一起安裝 Zeabur Builder 和 zot，並填好上面的 registry 設定。zot 只接受用 `zot-token-signer` 簽署的權杖推送映像檔。用 zeabur-installer 移除這個元件時，zot 也會一起移除。`zeaburctl components export builds/zeabur-builder --format helm` 會依序印出安裝指令，其中 Builder 的設定如下：
 
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
@@ -70,9 +135,7 @@ helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <v
   --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer
 ```
 
-</Step>
-
-</Steps>
+安裝後，用上面的方式確認安裝結果。
 
 ## 升級 CRD
 
