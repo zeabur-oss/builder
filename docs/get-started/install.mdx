@@ -1,7 +1,13 @@
 ---
 title: Install Zeabur Builder
-description: Install Zeabur Builder with a Helm chart, and configure the registry and access permissions the builders need.
+description: Install Zeabur Builder with a Helm chart, configure the registry the builders push to, and check that the controller is ready.
 ---
+
+<Callout type="info">
+
+If you use Zeabur, you don't need this page: zeabur-installer installs Zeabur Builder, and **Cluster** → **Components** shows the command when it's missing. See [View and install cluster components](https://oss.zeabur.com/docs/zeabur/cluster/components/).
+
+</Callout>
 
 Use the Helm chart to install the controller, CRDs, `dockerfile` and `railpack` ClusterBuilders, buildkitd configuration and egress policies, and a ValidatingAdmissionPolicy that restricts the controller's permissions.
 
@@ -13,28 +19,15 @@ Use the Helm chart to install the controller, CRDs, `dockerfile` and `railpack` 
 - Reserve disk space on the nodes for each Namespace's build cache. The default is 20 GiB.
 - buildkitd runs in privileged mode. Its Namespace must allow the `privileged` Pod Security level.
 
-<Steps>
-
-<Step>
-
-### Install the chart
-
-Use the following Helm command to install the chart. Before you run it, add the required registry settings from the next step.
+Check the cluster version:
 
 ```sh
-helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
-  -n builder-system --create-namespace --set registry.host=<registry>
+kubectl version
 ```
 
-<Callout type="info">
+The `Server Version` line must show `v1.33.0` or later.
 
-Zeabur Builder doesn't have a release yet. A value for `<version>` in this command will be available after the first release. For now, `scripts/deploy-example.sh` installs the chart from `deploy/chart` in this source tree.
-
-</Callout>
-
-The release chart pins its three images by digest. See [Releases and verification](../operations/releases.mdx) for verification instructions.
-
-</Step>
+<Steps>
 
 <Step>
 
@@ -53,13 +46,85 @@ The chart can't install or render if `registry.tokenKey.namespace` or `registry.
 
 The controller also needs to connect to the registry to delete repositories. The NetworkPolicy in the registry's Namespace must permit this connection. See [Controller permissions](../operations/controller-permissions.mdx) for the scope of the controller's permissions.
 
+Write the values to a file, for example:
+
+```sh
+cat > builder-values.yaml <<'EOF'
+registry:
+  host: registry.example.com
+  tokenKey:
+    namespace: registry
+    secret: registry-token-signer
+EOF
+```
+
+Check that the token key Secret exists:
+
+```sh
+kubectl -n registry get secret registry-token-signer
+```
+
+The command prints one row with the Secret's name. `Error from server (NotFound)` means the namespace or name in `registry.tokenKey` is wrong.
+
 </Step>
 
 <Step>
 
-### Install with zot from Zeabur Catalog
+### Install the chart
 
-The `builds/zeabur-builder` component of [Zeabur Catalog](https://github.com/zeabur-oss/catalog) installs Zeabur Builder and zot together, with the registry settings from the previous step filled in. zot only accepts image pushes with tokens signed by `zot-token-signer`. When zeabur-installer removes the component, zot goes with it. `zeaburctl components export builds/zeabur-builder` prints the install commands in order; Builder's settings among them are:
+Replace `<version>` with the latest version on [GitHub Releases](https://github.com/zeabur-oss/builder/releases), without the leading `v`, such as `0.2.2`:
+
+```sh
+helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  -n builder-system --create-namespace -f builder-values.yaml
+```
+
+Helm prints `STATUS: deployed`.
+
+The release chart pins its three images by digest. See [Releases and verification](../operations/releases.mdx) for verification instructions.
+
+</Step>
+
+<Step>
+
+### Check the installation
+
+Wait for the controller to start:
+
+```sh
+kubectl -n builder-system rollout status deployment/zeabur-builder --timeout=5m
+```
+
+Expected output:
+
+```text
+deployment "zeabur-builder" successfully rolled out
+```
+
+Then check that the controller has picked up both builders:
+
+```sh
+kubectl wait --for=condition=Ready clusterbuilder/dockerfile clusterbuilder/railpack --timeout=2m
+```
+
+Expected output:
+
+```text
+clusterbuilder.builder.zeabur.com/dockerfile condition met
+clusterbuilder.builder.zeabur.com/railpack condition met
+```
+
+If either command times out, read the controller's log with `kubectl -n builder-system logs deployment/zeabur-builder`.
+
+</Step>
+
+</Steps>
+
+Next, [create your first Build](first-build.mdx).
+
+## Install with zot from Zeabur Catalog
+
+The `builds/zeabur-builder` component of [Zeabur Catalog](https://github.com/zeabur-oss/catalog) installs Zeabur Builder and zot together, with the registry settings above filled in. zot only accepts image pushes with tokens signed by `zot-token-signer`. When zeabur-installer removes the component, zot goes with it. `zeaburctl components export builds/zeabur-builder` prints the install commands in order; Builder's settings among them are:
 
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
@@ -70,9 +135,7 @@ helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <v
   --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer
 ```
 
-</Step>
-
-</Steps>
+Check the installation the same way as above.
 
 ## Upgrade CRDs
 

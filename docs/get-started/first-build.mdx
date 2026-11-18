@@ -11,16 +11,21 @@ Create a `Build` that points to a Git repository. The controller builds an image
 
 ### Create a Build
 
-Create the following `Build` in your cluster to build the repository's Dockerfile with the `dockerfile` builder:
+Create a Namespace for the build, then the following `Build` to build the repository's Dockerfile with the `dockerfile` builder:
 
-```yaml
+```sh
+kubectl create namespace team-a
+kubectl apply -f - <<'EOF'
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: whoami, namespace: team-a}
 spec:
   source: {git: {url: https://github.com/traefik/whoami}}
   builderRef: dockerfile
+EOF
 ```
+
+`kubectl` prints `build.builder.zeabur.com/whoami created`. If your cluster enforces Pod Security, the Namespace must allow the `privileged` level, because its buildkitd runs there.
 
 This example omits `ref`, so it tracks the repository's default branch. Check `status.resolvedRef` for the branch the controller resolved.
 
@@ -54,6 +59,20 @@ kubectl get builds -o wide
 
 `kubectl get buildruns` shows each build's phase, reason, start time, and end time.
 
+Wait for the first build to finish. With an empty build cache it can take a few minutes:
+
+```sh
+kubectl -n team-a wait --for=condition=Ready build/whoami --timeout=15m
+```
+
+Expected output:
+
+```text
+build.builder.zeabur.com/whoami condition met
+```
+
+If it times out, `kubectl -n team-a get buildruns` shows the phase and reason of each run.
+
 Build logs are in the Pod logs for that build's Job. The build step writes one JSON event per line, with each step's name, how many seconds it took and whether a line is stdout or stderr. To read it as text, run `kubectl logs <pod> | jq -r '.text // .message // .name'`.
 
 </Step>
@@ -73,6 +92,14 @@ After the build completes, the controller pushes the image to the following path
 ```text
 <repository>:<tag>@<digest>
 ```
+
+Print it:
+
+```sh
+kubectl -n team-a get build whoami -o jsonpath='{.status.latestImage}{"\n"}'
+```
+
+The output looks like `<registry.host>/team-a/whoami:main-1761058800-3e1a9c2@sha256:…`.
 
 Each build has its own tag made up of the branch, Unix time, and commit. For example:
 

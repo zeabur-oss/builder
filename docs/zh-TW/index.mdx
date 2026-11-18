@@ -1,40 +1,55 @@
 ---
 title: 開始使用 Zeabur Builder
-description: 在 Kubernetes 上用 BuildKit 從 Git 建置映像檔，再把結果交給你的部署工具。
+description: 程式碼推上 GitHub 就會建置並部署。在 Zeabur 開源版裡使用 Zeabur Builder，或單獨用它以 BuildKit 從 Git 建置映像檔。
 ---
 
-Zeabur Builder 是一個 Kubernetes operator。你只要建立一個 `Build`，指定 Git 儲存庫，Zeabur Builder 就會為每個新 commit 建置映像檔，再推送到 registry。完成後會把 `<repository>:<tag>@<digest>` 寫進 `status.latestImage`。
+Zeabur Builder 把 Git 儲存庫變成可以執行的映像檔。它用 [Railpack](https://railpack.com) 判斷程式碼用的語言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、靜態網站和 shell 腳本），或依照你的 Dockerfile 建置，之後每次有新 commit 都會重新建置。
+
+## 我在用 Zeabur 開源版
+
+Zeabur 開源版會幫你安裝和執行 Zeabur Builder，不需要自己安裝或設定。
+
+- zeabur-installer 預設就會安裝 Zeabur Builder。個人安裝時，在「選擇元件」勾選 **Zeabur Builder**。
+- 叢集還沒有裝的話，打開**叢集** → **元件**，找到 Zeabur Builder 後按**安裝**，畫面會列出要在伺服器上執行的指令，見[檢視與安裝叢集元件](https://oss.zeabur.com/zh-TW/docs/zeabur/cluster/components/)。
+- 要從 Git 部署，在專案裡選**新增** → **從 Git 部署**，見[從 Git 建置並部署服務](https://oss.zeabur.com/zh-TW/docs/zeabur/deploy/git/)。
+
+從在伺服器上安裝到管理服務，Zeabur 開源版的其他說明都在 [Zeabur 開源版文件](https://oss.zeabur.com/zh-TW/docs/zeabur/)。
+
+## 我要單獨使用 Zeabur Builder
+
+Zeabur Builder 是一個 Kubernetes operator。你只要建立一個 `Build`，指定 Git 儲存庫，Zeabur Builder 就會為每個新 commit 建置映像檔，再推送到 registry。完成後會把 `<repository>:<tag>@<digest>` 寫進 `status.latestImage`，交給你的部署工具。
 
 Zeabur Builder 只負責建置映像檔。測試、部署和日誌儲存則交給你的 pipeline、部署工具和日誌收集工具。
 
 <Callout type="info">
 
-Zeabur Builder 還沒有發行版，目前的 API 是 `v1alpha1`。這份文件說明 `main` 分支目前的行為。
+API 版本是 `v1alpha1`。升級前請先讀[更新紀錄](https://github.com/zeabur-oss/builder/blob/main/CHANGELOG.md)。
 
 </Callout>
 
-## 我想先跑起來
+### 先跑起來
 
-先用 Helm chart 安裝控制器，再建立第一個 `Build`。
+先用 Helm chart 安裝控制器，再建立第一個 `Build`。每個步驟最後都有一個指令，可以確認這一步成功了。
 
 - [安裝](get-started/install.mdx)
 - [建立第一個 Build](get-started/first-build.mdx)
 
-## 我想管理 Build
+### 管理 Build
 
 - [觸發建置](builds/triggers.mdx)：輪詢、push webhook 和手動重建。
 - [私有儲存庫](builds/private-repos.mdx)：使用 `credentialsRef` 或 GitHub App。
 - [從上傳的資料夾建置](builds/archive-source.mdx)：不經過 Git。
 - [部署建置好的映像檔](builds/rollout.mdx)：tag 和 Keel 通知。
 - [推送到外部 registry](builds/external-registries.mdx)
+- [在建置節點上建置](builds/build-nodes.mdx)
 
-## 我是叢集管理員
+### 管理叢集
 
 - [Registry 權杖](operations/registry-tokens.mdx)：權杖、上傳、清理和金鑰輪替。
 - [控制器的權限](operations/controller-permissions.mdx)：將控制器視為叢集管理員。
 - [發行檔與驗證](operations/releases.mdx)
 
-## 我想了解它怎麼運作
+### 了解運作方式
 
 - [運作方式](reference/how-it-works.mdx)
-- [安全性與信任模型](reference/security.mdx)
+- [安全性與信任模型](reference/security.mdx)：buildkitd 以 privileged 模式執行，讓你不信任的人建置前先讀這一頁。

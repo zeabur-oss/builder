@@ -1,40 +1,55 @@
 ---
 title: Get started with Zeabur Builder
-description: Build images from Git with BuildKit on Kubernetes, and pass the results to your deployment tool.
+description: Push your code to GitHub and it is built and deployed. Use Zeabur Builder through Zeabur, or on its own to build images from Git with BuildKit.
 ---
 
-Zeabur Builder is a Kubernetes operator. You create a `Build` that points to a Git repository. Zeabur Builder builds an image for each new commit, pushes the image to a registry, and writes `<repository>:<tag>@<digest>` to `status.latestImage`.
+Zeabur Builder turns a Git repository into an image that can run. It finds the language your code is in with [Railpack](https://railpack.com) (Node.js, Python, Go, PHP, Ruby, Java, Rust, Elixir, Deno, .NET, Gleam, C++, Zig, static sites and shell scripts), or builds your Dockerfile, and builds again on every new commit.
+
+## I use Zeabur
+
+Zeabur installs and runs Zeabur Builder for you. You don't need to install or configure it yourself.
+
+- zeabur-installer installs Zeabur Builder by default. On a personal installation, select **Zeabur Builder** in “Choose components.”
+- If your cluster doesn't have it, open **Cluster** → **Components**, find Zeabur Builder and click **Install**. Zeabur shows the command to run on your server. See [View and install cluster components](https://oss.zeabur.com/docs/zeabur/cluster/components/).
+- To deploy from Git, open a project and select **Add** → **Deploy from Git**. See [Build and deploy a service from Git](https://oss.zeabur.com/docs/zeabur/deploy/git/).
+
+The rest of Zeabur, from installing it on a server to running your services, is in the [Zeabur documentation](https://oss.zeabur.com/docs/zeabur/).
+
+## I use Zeabur Builder on its own
+
+Zeabur Builder is a Kubernetes operator. You create a `Build` that points to a Git repository. Zeabur Builder builds an image for each new commit, pushes the image to a registry, and writes `<repository>:<tag>@<digest>` to `status.latestImage` for your rollout tool.
 
 Zeabur Builder only builds images. Your pipeline, deployment tool, and log collector handle testing, deployment, and log storage.
 
 <Callout type="info">
 
-Zeabur Builder has no releases yet, and its API is `v1alpha1`. This documentation describes the current behavior of the `main` branch.
+The API is `v1alpha1`. Read the [changelog](https://github.com/zeabur-oss/builder/blob/main/CHANGELOG.md) before you upgrade.
 
 </Callout>
 
-## I want to get started
+### Get started
 
-Install the controller with the Helm chart, then create your first `Build`.
+Install the controller with the Helm chart, then create your first `Build`. Each step ends with a command that checks it worked.
 
 - [Install](get-started/install.mdx)
 - [Create your first Build](get-started/first-build.mdx)
 
-## I want to manage Builds
+### Manage Builds
 
 - [Trigger builds](builds/triggers.mdx): Polling, push webhooks, and manual rebuilds.
 - [Private repositories](builds/private-repos.mdx): Use `credentialsRef` or a GitHub App.
 - [Build from an uploaded folder](builds/archive-source.mdx): Build without Git.
 - [Deploy built images](builds/rollout.mdx): Tags and Keel notifications.
 - [Push to external registries](builds/external-registries.mdx)
+- [Run builds on a build node](builds/build-nodes.mdx)
 
-## I'm a cluster administrator
+### Operate the cluster
 
 - [Registry tokens](operations/registry-tokens.mdx): Tokens, uploads, cleanup, and key rotation.
 - [Controller permissions](operations/controller-permissions.mdx): Treat the controller as a cluster administrator.
 - [Release artifacts and verification](operations/releases.mdx)
 
-## I want to understand how it works
+### Understand how it works
 
 - [How it works](reference/how-it-works.mdx)
-- [Security and trust model](reference/security.mdx)
+- [Security and trust model](reference/security.mdx): buildkitd runs privileged; read this before you let people you don't trust build.

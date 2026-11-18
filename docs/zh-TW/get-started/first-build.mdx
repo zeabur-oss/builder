@@ -11,16 +11,21 @@ description: 建立指向 Git 儲存庫的 Build，檢視每個新 commit 建置
 
 ### 建立 Build
 
-在叢集中建立以下 `Build`，使用 `dockerfile` 建置器，依照 Git 儲存庫中的 Dockerfile 建置映像檔：
+先建立建置用的 Namespace，再建立以下 `Build`，使用 `dockerfile` 建置器，依照 Git 儲存庫中的 Dockerfile 建置映像檔：
 
-```yaml
+```sh
+kubectl create namespace team-a
+kubectl apply -f - <<'EOF'
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: whoami, namespace: team-a}
 spec:
   source: {git: {url: https://github.com/traefik/whoami}}
   builderRef: dockerfile
+EOF
 ```
+
+`kubectl` 會印出 `build.builder.zeabur.com/whoami created`。叢集有啟用 Pod Security 的話，這個 Namespace 必須允許 `privileged` 層級，因為它的 buildkitd 在這裡執行。
 
 這個範例沒有指定 `ref`，因此會追蹤儲存庫的預設分支。你可以檢視 `status.resolvedRef`，確認控制器解析出的分支。
 
@@ -54,6 +59,20 @@ kubectl get builds -o wide
 
 `kubectl get buildruns` 會顯示每次建置的階段、原因、開始時間與結束時間。
 
+等第一次建置完成。建置快取還是空的時候，可能要幾分鐘：
+
+```sh
+kubectl -n team-a wait --for=condition=Ready build/whoami --timeout=15m
+```
+
+預期輸出：
+
+```text
+build.builder.zeabur.com/whoami condition met
+```
+
+逾時的話，`kubectl -n team-a get buildruns` 會顯示每次建置的階段和原因。
+
 每次建置的日誌都在該次建置 Job 的 Pod 日誌中。建置步驟每行輸出一個 JSON 事件，內含步驟名稱、花費秒數，以及該行來自 stdout 還是 stderr。想當成文字讀，執行 `kubectl logs <pod> | jq -r '.text // .message // .name'`。
 
 </Step>
@@ -73,6 +92,14 @@ kubectl get builds -o wide
 ```text
 <repository>:<tag>@<digest>
 ```
+
+印出映像檔：
+
+```sh
+kubectl -n team-a get build whoami -o jsonpath='{.status.latestImage}{"\n"}'
+```
+
+輸出會像 `<registry.host>/team-a/whoami:main-1761058800-3e1a9c2@sha256:…`。
 
 每次建置都有自己的 tag，由分支、Unix 時間與 commit 組成，例如：
 
