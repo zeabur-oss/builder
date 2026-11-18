@@ -1,9 +1,9 @@
 name: Release
 
-# Tag vX.Y.Z or vX.Y.Z-<pre-release> on main: build and smoke the images on both architectures, push
-# them and the chart by digest, sign and attest them, add the assets to the draft release that the
-# Release pull request workflow left when it tagged, and verify the draft. A maintainer publishes
-# the draft. Manual run: rehearse, which builds and smokes and publishes nothing.
+# Tag vX.Y.Z or vX.Y.Z-<pre-release> on main: build and smoke the images on both architectures,
+# push them and the chart by digest, sign and attest them, create the draft release with the
+# assets, and verify the draft. A maintainer publishes the draft. Manual run: rehearse, which
+# builds and smokes and publishes nothing.
 on:
   push:
     tags: ["v[0-9]*"]
@@ -211,10 +211,11 @@ jobs:
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: assets/SHA256SUMS
-      - name: Add the assets to the draft release
+      # The draft is created with its files, never before: a published release takes no more files.
+      - name: Create the draft release with the assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$VERSION" assets/* --repo "$GITHUB_REPOSITORY" --clobber
+        run: bun x zeabur-oss-release draft CHANGELOG.md "$VERSION" assets --name "Zeabur Builder" --docs https://oss.zeabur.com/docs/builder/
 
   verify:
     needs: release
