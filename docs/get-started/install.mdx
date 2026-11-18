@@ -58,13 +58,13 @@ registry:
 EOF
 ```
 
-Check that the token key Secret exists:
+Check that the token key Secret exists, with your `registry.tokenKey` values in place of `registry` and `registry-token-signer`:
 
 ```sh
 kubectl -n registry get secret registry-token-signer
 ```
 
-The command prints one row with the Secret's name. `Error from server (NotFound)` means the namespace or name in `registry.tokenKey` is wrong.
+The command prints one row with the Secret's name. `Error from server (NotFound)` means there is no such Secret: check the names, or create the Secret first.
 
 </Step>
 
@@ -124,7 +124,7 @@ Next, [create your first Build](first-build.mdx).
 
 ## Install with zot from Zeabur Catalog
 
-The `builds/zeabur-builder` component of [Zeabur Catalog](https://github.com/zeabur-oss/catalog) installs Zeabur Builder and zot together, with the registry settings above filled in. zot only accepts image pushes with tokens signed by `zot-token-signer`. When zeabur-installer removes the component, zot goes with it. `zeaburctl components export builds/zeabur-builder` prints the install commands in order; Builder's settings among them are:
+The `builds/zeabur-builder` component of [Zeabur Catalog](https://github.com/zeabur-oss/catalog) installs Zeabur Builder and zot together, with the registry settings above filled in. zot only accepts image pushes with tokens signed by `zot-token-signer`. When zeabur-installer removes the component, zot goes with it. `zeaburctl components export builds/zeabur-builder --format helm` prints the install commands in order; Builder's settings among them are:
 
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \

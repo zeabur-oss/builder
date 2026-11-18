@@ -3,7 +3,7 @@ title: 開始使用 Zeabur Builder
 description: 程式碼推上 GitHub 就會建置並部署。在 Zeabur 開源版裡使用 Zeabur Builder，或單獨用它以 BuildKit 從 Git 建置映像檔。
 ---
 
-Zeabur Builder 把 Git 儲存庫變成可以執行的映像檔。它用 [Railpack](https://railpack.com) 判斷程式碼用的語言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、靜態網站和 shell 腳本），或依照你的 Dockerfile 建置，之後每次有新 commit 都會重新建置。
+Zeabur Builder 把 Git 儲存庫變成可以執行的映像檔。它用 [Railpack](https://railpack.com) 判斷程式碼用的語言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、靜態網站和 shell 腳本），或依照你的 Dockerfile 建置，之後分支一有更新就會重新建置。
 
 ## 我在用 Zeabur 開源版
 
@@ -13,7 +13,7 @@ Zeabur 開源版會幫你安裝和執行 Zeabur Builder，不需要自己安裝�
 - 叢集還沒有裝的話，打開**叢集** → **元件**，找到 Zeabur Builder 後按**安裝**，畫面會列出要在伺服器上執行的指令，見[檢視與安裝叢集元件](https://oss.zeabur.com/zh-TW/docs/zeabur/cluster/components/)。
 - 要從 Git 部署，在專案裡選**新增** → **從 Git 部署**，見[從 Git 建置並部署服務](https://oss.zeabur.com/zh-TW/docs/zeabur/deploy/git/)。
 
-從在伺服器上安裝到管理服務，Zeabur 開源版的其他說明都在 [Zeabur 開源版文件](https://oss.zeabur.com/zh-TW/docs/zeabur/)。
+安裝 Zeabur 開源版和管理服務的方式，見 [Zeabur 開源版文件](https://oss.zeabur.com/zh-TW/docs/zeabur/)。
 
 ## 我要單獨使用 Zeabur Builder
 
@@ -27,7 +27,7 @@ API 版本是 `v1alpha1`。升級前請先讀[更新紀錄](https://github.com/z
 
 </Callout>
 
-### 先跑起來
+### 從安裝開始
 
 先用 Helm chart 安裝控制器，再建立第一個 `Build`。每個步驟最後都有一個指令，可以確認這一步成功了。
 

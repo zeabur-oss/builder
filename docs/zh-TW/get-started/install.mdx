@@ -58,13 +58,13 @@ registry:
 EOF
 ```
 
-確認存放簽署金鑰的 Secret 存在：
+把 `registry` 和 `registry-token-signer` 換成你在 `registry.tokenKey` 填的值，確認存放簽署金鑰的 Secret 存在：
 
 ```sh
 kubectl -n registry get secret registry-token-signer
 ```
 
-指令會印出一行 Secret 的名稱。出現 `Error from server (NotFound)` 表示 `registry.tokenKey` 的 Namespace 或名稱寫錯了。
+指令會印出一行 Secret 的名稱。出現 `Error from server (NotFound)` 表示找不到這個 Secret，請檢查名稱，或先建立 Secret。
 
 </Step>
 
@@ -124,7 +124,7 @@ clusterbuilder.builder.zeabur.com/railpack condition met
 
 ## 用 Zeabur Catalog 連同 zot 一起安裝
 
-[Zeabur Catalog](https://github.com/zeabur-oss/catalog) 的 `builds/zeabur-builder` 元件會一起安裝 Zeabur Builder 和 zot，並填好上面的 registry 設定。zot 只接受用 `zot-token-signer` 簽署的權杖推送映像檔。用 zeabur-installer 移除這個元件時，zot 也會一起移除。`zeaburctl components export builds/zeabur-builder` 會依序印出安裝指令，其中 Builder 的設定如下：
+[Zeabur Catalog](https://github.com/zeabur-oss/catalog) 的 `builds/zeabur-builder` 元件會一起安裝 Zeabur Builder 和 zot，並填好上面的 registry 設定。zot 只接受用 `zot-token-signer` 簽署的權杖推送映像檔。用 zeabur-installer 移除這個元件時，zot 也會一起移除。`zeaburctl components export builds/zeabur-builder --format helm` 會依序印出安裝指令，其中 Builder 的設定如下：
 
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \

@@ -25,7 +25,7 @@ spec:
 EOF
 ```
 
-`kubectl` 会输出 `build.builder.zeabur.com/whoami created`。集群启用了 Pod Security 时，这个 Namespace 必须允许 `privileged` 级别，因为它的 buildkitd 在这里运行。
+`kubectl` 会输出 `build.builder.zeabur.com/whoami created`。
 
 示例省略了 `ref`，因此会跟踪仓库的默认分支。你可以从 `status.resolvedRef` 查看控制器解析出的分支。
 
@@ -44,17 +44,17 @@ EOF
 
 ### 查看构建状态和日志
 
-在 `Build` 所在的 Namespace 执行：
+查看 Build 和每次构建：
 
 ```sh
-kubectl get builds
-kubectl get buildruns
+kubectl -n team-a get builds
+kubectl -n team-a get buildruns
 ```
 
 `kubectl get builds` 显示每个 Build 的构建器、来源、修订版本和就绪状态。加上 `-o wide` 可查看镜像：
 
 ```sh
-kubectl get builds -o wide
+kubectl -n team-a get builds -o wide
 ```
 
 `kubectl get buildruns` 显示每次构建的阶段、原因、开始时间和结束时间。
@@ -73,7 +73,7 @@ build.builder.zeabur.com/whoami condition met
 
 超时的话，`kubectl -n team-a get buildruns` 会显示每次构建的阶段和原因。
 
-构建日志位于该次构建 Job 的 Pod 日志中。构建步骤每行输出一个 JSON 事件，包含步骤名称、耗时秒数，以及该行来自 stdout 还是 stderr。想当作文本读，运行 `kubectl logs <pod> | jq -r '.text // .message // .name'`。
+构建日志位于该次构建 Job 的 Pod 日志中。构建步骤每行输出一个 JSON 事件，包含步骤名称、耗时秒数，以及该行来自 stdout 还是 stderr。想当作文本读，运行 `kubectl -n team-a logs <pod> | jq -r '.text // .message // .name'`。
 
 </Step>
 
@@ -93,7 +93,7 @@ build.builder.zeabur.com/whoami condition met
 <repository>:<tag>@<digest>
 ```
 
-输出镜像：
+输出镜像的完整名称：
 
 ```sh
 kubectl -n team-a get build whoami -o jsonpath='{.status.latestImage}{"\n"}'

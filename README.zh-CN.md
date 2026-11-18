@@ -10,7 +10,7 @@
 
 # Zeabur Builder
 
-**代码推到 GitHub 就会部署，和在 Zeabur 上一样**。Zeabur Builder 是 Zeabur 开源版中把 Git 仓库变成可运行应用的部分：它识别代码使用的语言，构建出镜像，之后每次有新提交都会重新构建。
+**代码推到 GitHub，Zeabur 开源版就会部署，和在 Zeabur 上一样**。Zeabur Builder 是 Zeabur 开源版中把 Git 仓库变成可运行应用的部分：它识别代码使用的语言，构建出镜像，之后分支一有更新就会重新构建。
 
 ## 在用 Zeabur 开源版？
 
@@ -19,13 +19,13 @@
 - **zeabur-installer** 默认安装 Zeabur Builder。个人版安装时，在“选择组件”中勾选 **Zeabur Builder**。
 - **已经在用 Zeabur 开源版，但还没装**？打开**集群** → **组件**，找到 Zeabur Builder 后点击**安装**，页面会列出需要在服务器上运行的命令。
 
-部署时，在项目中选择**新增** → **从 Git 部署**，见[从 Git 构建并部署服务](https://oss.zeabur.com/zh-CN/docs/zeabur/deploy/git/)。从在服务器上安装到管理服务，Zeabur 开源版的其他说明都在 [Zeabur 开源版文档](https://oss.zeabur.com/zh-CN/docs/zeabur/)。
+部署时，在项目中选择**新增** → **从 Git 部署**，见[从 Git 构建并部署服务](https://oss.zeabur.com/zh-CN/docs/zeabur/deploy/git/)。安装 Zeabur 开源版和管理服务的方法，见 [Zeabur 开源版文档](https://oss.zeabur.com/zh-CN/docs/zeabur/)。
 
 ## 它能帮你做什么
 
 - **自动识别语言**。用 [Railpack](https://railpack.com) 构建 Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig 应用、静态网站和 shell 脚本，不需要 Dockerfile。仓库里有 Dockerfile 时，按 Dockerfile 构建。
-- **每次提交都会构建**。推送到分支后就会构建新版本。配合 Zeabur 开源版和 Keel，服务随后会切换到新版本。
-- **构建用的机密变量不会留在镜像里**。构建变量（例如下载私有包用的令牌）只在构建时使用，不会存进镜像。
+- **分支更新就重新构建**。推送到分支后就会构建新版本。配合 Zeabur 开源版和 Keel，服务随后会切换到新版本。
+- **构建用的机密变量不会留在镜像里**。构建变量（例如下载私有包用的令牌）以机密方式传给构建，除非构建过程自己把值复制进去，否则不会存进镜像。
 - **在你的服务器上运行**。构建和缓存都留在你自己的机器和镜像仓库上。
 
 ## 单独使用

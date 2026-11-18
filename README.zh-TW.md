@@ -10,7 +10,7 @@
 
 # Zeabur Builder
 
-**程式碼推上 GitHub 就會部署，跟在 Zeabur 上一樣**。Zeabur Builder 是 Zeabur 開源版裡負責把 Git 儲存庫變成可執行應用程式的部分：它會判斷程式碼用的語言、建置出映像檔，之後每次有新 commit 都會重新建置。
+**程式碼推上 GitHub，Zeabur 開源版就會部署，跟在 Zeabur 上一樣**。Zeabur Builder 是 Zeabur 開源版裡負責把 Git 儲存庫變成可執行應用程式的部分：它會判斷程式碼用的語言、建置出映像檔，之後分支一有更新就會重新建置。
 
 ## 使用 Zeabur 開源版？
 
@@ -19,13 +19,13 @@
 - **zeabur-installer** 預設就會安裝 Zeabur Builder。個人安裝時，在「選擇元件」勾選 **Zeabur Builder**。
 - **已經在用 Zeabur 開源版，但還沒有裝**？打開**叢集** → **元件**，找到 Zeabur Builder 後按**安裝**，畫面會列出要在伺服器上執行的指令。
 
-要部署時，在專案裡選**新增** → **從 Git 部署**，見[從 Git 建置並部署服務](https://oss.zeabur.com/zh-TW/docs/zeabur/deploy/git/)。從在伺服器上安裝到管理服務，Zeabur 開源版的其他說明都在 [Zeabur 開源版文件](https://oss.zeabur.com/zh-TW/docs/zeabur/)。
+要部署時，在專案裡選**新增** → **從 Git 部署**，見[從 Git 建置並部署服務](https://oss.zeabur.com/zh-TW/docs/zeabur/deploy/git/)。安裝 Zeabur 開源版和管理服務的方式，見 [Zeabur 開源版文件](https://oss.zeabur.com/zh-TW/docs/zeabur/)。
 
 ## 它能幫你做什麼
 
 - **自動判斷語言**。用 [Railpack](https://railpack.com) 建置 Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig 應用程式、靜態網站和 shell 腳本，不需要 Dockerfile。儲存庫裡有 Dockerfile 時，就照 Dockerfile 建置。
-- **每個新 commit 都會建置**。推送到分支後就會建置新版本。搭配 Zeabur 開源版和 Keel，服務接著會換成新版本。
-- **建置用的機密變數不會留在映像檔裡**。建置變數（例如下載私有套件用的權杖）只在建置時使用，不會存進映像檔。
+- **分支更新就重新建置**。推送到分支後就會建置新版本。搭配 Zeabur 開源版和 Keel，服務接著會換成新版本。
+- **建置用的機密變數不會留在映像檔裡**。建置變數（例如下載私有套件用的權杖）以機密方式傳給建置，除非建置過程自己把值複製進去，否則不會存進映像檔。
 - **在你的伺服器上執行**。建置和快取都留在你自己的機器和 registry 上。
 
 ## 單獨使用

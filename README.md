@@ -7,9 +7,9 @@
 
 # Zeabur Builder
 
-**Push your code to GitHub and it deploys, as on zeabur.com.** Zeabur Builder is the part of Zeabur
+**Push your code to GitHub and Zeabur deploys it, as on zeabur.com.** Zeabur Builder is the part of Zeabur
 that turns a Git repository into an app that can run: it finds the language your code is in, builds
-it, and builds again on every new commit.
+it, and builds again when the branch changes.
 
 ## Using Zeabur?
 
@@ -30,10 +30,11 @@ Zeabur, from installing it on a server to running your services, is in the
 - **Finds your language.** With [Railpack](https://railpack.com), it builds Node.js, Python, Go,
   PHP, Ruby, Java, Rust, Elixir, Deno, .NET, Gleam, C++ and Zig apps, static sites and shell
   scripts without a Dockerfile. If your repository has a Dockerfile, it builds that instead.
-- **Builds every new commit.** Push to the branch and a new version is built. With Zeabur and Keel,
+- **Rebuilds when the branch changes.** Push to the branch and a new version is built. With Zeabur and Keel,
   the service then switches to it.
 - **Keeps build secrets out of the image.** Build variables, such as a token for private packages,
-  reach the build without being stored in the image.
+  reach the build as secrets, so they aren't stored in the image unless your build copies them
+  there.
 - **Runs on your server.** Builds and their cache stay on your own machines and your own registry.
 
 ## Use it on its own

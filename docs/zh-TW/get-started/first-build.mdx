@@ -25,7 +25,7 @@ spec:
 EOF
 ```
 
-`kubectl` 會印出 `build.builder.zeabur.com/whoami created`。叢集有啟用 Pod Security 的話，這個 Namespace 必須允許 `privileged` 層級，因為它的 buildkitd 在這裡執行。
+`kubectl` 會印出 `build.builder.zeabur.com/whoami created`。
 
 這個範例沒有指定 `ref`，因此會追蹤儲存庫的預設分支。你可以檢視 `status.resolvedRef`，確認控制器解析出的分支。
 
@@ -44,17 +44,17 @@ EOF
 
 ### 檢視建置狀態與日誌
 
-在 `Build` 所在的 Namespace 執行：
+檢視 Build 和每次建置：
 
 ```sh
-kubectl get builds
-kubectl get buildruns
+kubectl -n team-a get builds
+kubectl -n team-a get buildruns
 ```
 
 `kubectl get builds` 會顯示每個 Build 的建置器、來源、修訂版本與就緒狀態。加上 `-o wide` 就能檢視映像檔：
 
 ```sh
-kubectl get builds -o wide
+kubectl -n team-a get builds -o wide
 ```
 
 `kubectl get buildruns` 會顯示每次建置的階段、原因、開始時間與結束時間。
@@ -73,7 +73,7 @@ build.builder.zeabur.com/whoami condition met
 
 逾時的話，`kubectl -n team-a get buildruns` 會顯示每次建置的階段和原因。
 
-每次建置的日誌都在該次建置 Job 的 Pod 日誌中。建置步驟每行輸出一個 JSON 事件，內含步驟名稱、花費秒數，以及該行來自 stdout 還是 stderr。想當成文字讀，執行 `kubectl logs <pod> | jq -r '.text // .message // .name'`。
+每次建置的日誌都在該次建置 Job 的 Pod 日誌中。建置步驟每行輸出一個 JSON 事件，內含步驟名稱、花費秒數，以及該行來自 stdout 還是 stderr。想當成文字讀，執行 `kubectl -n team-a logs <pod> | jq -r '.text // .message // .name'`。
 
 </Step>
 
@@ -93,7 +93,7 @@ build.builder.zeabur.com/whoami condition met
 <repository>:<tag>@<digest>
 ```
 
-印出映像檔：
+印出映像檔的完整名稱：
 
 ```sh
 kubectl -n team-a get build whoami -o jsonpath='{.status.latestImage}{"\n"}'

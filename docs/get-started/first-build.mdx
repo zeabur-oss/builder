@@ -25,7 +25,7 @@ spec:
 EOF
 ```
 
-`kubectl` prints `build.builder.zeabur.com/whoami created`. If your cluster enforces Pod Security, the Namespace must allow the `privileged` level, because its buildkitd runs there.
+`kubectl` prints `build.builder.zeabur.com/whoami created`.
 
 This example omits `ref`, so it tracks the repository's default branch. Check `status.resolvedRef` for the branch the controller resolved.
 
@@ -44,17 +44,17 @@ Use `spec.env` to pass build variables. You can specify values directly or read 
 
 ### Check build status and logs
 
-Run these commands in the Namespace that contains the `Build`:
+Check the Build and its runs:
 
 ```sh
-kubectl get builds
-kubectl get buildruns
+kubectl -n team-a get builds
+kubectl -n team-a get buildruns
 ```
 
 `kubectl get builds` shows each Build's builder, source, revision, and readiness status. Add `-o wide` to view the image:
 
 ```sh
-kubectl get builds -o wide
+kubectl -n team-a get builds -o wide
 ```
 
 `kubectl get buildruns` shows each build's phase, reason, start time, and end time.
@@ -73,7 +73,7 @@ build.builder.zeabur.com/whoami condition met
 
 If it times out, `kubectl -n team-a get buildruns` shows the phase and reason of each run.
 
-Build logs are in the Pod logs for that build's Job. The build step writes one JSON event per line, with each step's name, how many seconds it took and whether a line is stdout or stderr. To read it as text, run `kubectl logs <pod> | jq -r '.text // .message // .name'`.
+Build logs are in the Pod logs for that build's Job. The build step writes one JSON event per line, with each step's name, how many seconds it took and whether a line is stdout or stderr. To read it as text, run `kubectl -n team-a logs <pod> | jq -r '.text // .message // .name'`.
 
 </Step>
 
