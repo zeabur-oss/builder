@@ -2,6 +2,20 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.2.3 (2026-11-18)
+
+### Features
+
+#### Releases are signed by builder's own release workflow
+
+Verify images, the chart and `SHA256SUMS` with `--certificate-identity-regexp '^https://github\.com/zeabur-oss/builder/\.github/workflows/release\.yml@'`, and attestations with `--signer-workflow zeabur-oss/builder/.github/workflows/release.yml` ([releases](docs/operations/releases.mdx)). Releases up to v0.2.2 keep the identity of `zeabur-oss/.github`.
+
+### Fixes
+
+#### The chart takes its version from Chart.yaml's version
+
+The chart's default image tag is now its `version`, and `appVersion` is gone, so knope sets `Cargo.toml`, `Cargo.lock` and `Chart.yaml` itself.
+
 ## 0.2.2 (2026-11-13)
 
 ### Features
