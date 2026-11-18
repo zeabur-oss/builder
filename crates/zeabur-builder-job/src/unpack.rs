@@ -320,6 +320,41 @@ mod tests {
     }
 
     #[test]
+    fn a_later_entry_cannot_replace_a_directory_or_a_linked_file() {
+        let cases: [(&str, Vec<Entry<'_>>); 3] = [
+            (
+                "link over a directory",
+                vec![Entry::File("a/f", b"x"), Entry::Symlink("a", ".")],
+            ),
+            (
+                "file over a directory",
+                vec![Entry::File("a/f", b"x"), Entry::File("a", b"x")],
+            ),
+            (
+                "hard link to a file a link replaced",
+                vec![
+                    Entry::File("f", b"x"),
+                    Entry::Symlink("f", "g"),
+                    Entry::Hardlink("h", "f"),
+                ],
+            ),
+        ];
+        for (name, entries) in cases {
+            let dir = scratch("replace");
+            let root = dir.join("src");
+            assert!(
+                unpack(archive(&entries).as_slice(), &root, 1 << 20).is_err(),
+                "{name}"
+            );
+            assert!(
+                !fs::symlink_metadata(root.join("h")).is_ok_and(|m| m.is_file()),
+                "{name}"
+            );
+            fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[test]
     fn stops_at_the_limit_while_it_unpacks() {
         let dir = scratch("limit");
         let root = dir.join("src");
