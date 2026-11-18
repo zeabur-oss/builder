@@ -39,12 +39,12 @@ registry 决定还有谁能读取归档文件。Zeabur Catalog 的 Zot 与测试
 
 ### 控制器权限
 
-控制器具备等同于集群管理员的能力，能在所有 Namespace 中创建 Job、写入 Secret，以及创建特权模式的 buildkitd StatefulSet。
+控制器具备等同于集群管理员的能力，能在所有 Namespace 中创建 Job、写入 Secret，并在自己的 Namespace 中创建特权模式的 buildkitd StatefulSet。
 
 Helm chart 的 ValidatingAdmissionPolicies 将控制器 ServiceAccount 创建的资源限制为：
 
-- 构建 Job：使用 chart 指定的镜像，不使用特权模式、不访问主机、不挂载 ServiceAccount 令牌，且不得位于 `kube-*`、控制器自身或 registry 的 Namespace。
-- buildkitd StatefulSet：使用 chart 指定的 buildkitd 镜像。
+- 构建 Job：使用 chart 指定的镜像，以非 root 用户运行，不使用特权模式、不访问主机，只挂载 emptyDir 和 Secret 卷，不挂载 ServiceAccount 令牌，且不得位于 `kube-*`、控制器自身或 registry 的 Namespace。
+- buildkitd StatefulSet：使用 chart 指定的 buildkitd 镜像，只能位于控制器的 Namespace，不访问主机，也不挂载 ServiceAccount 令牌。
 
 即使有这些限制，取得控制器令牌的攻击者仍能读取所有允许运行构建的 Namespace 内的 Secret。详见[控制器的权限](../operations/controller-permissions.mdx)。
 

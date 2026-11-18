@@ -25,14 +25,16 @@ spec:
     - {type: keel, url: http://keel.keel.svc:9300/v1/webhooks/native}
 ```
 
+Keel 要求 basic auth 时，在该条目中设置 `secretRef`，指向 Build 所在 Namespace 中带有 `username` 和 `password` 键的 Secret。
+
 每次构建成功后，控制器会发送以下内容：
 
 ```text
 {"name": <repository>, "tag": <tag>}
 ```
 
-`name` 是镜像的 repository，`tag` 是构建生成的标签。控制器会尝试 3 次，并将通知结果记录为 `Build` 上的 Event。
+`name` 是镜像的 repository，`tag` 是构建生成的标签。控制器最多尝试 3 次，并将结果记录为 `Build` 上的 `BuildNotified` 或 `NotifyFailed` Event。通知失败不会导致构建失败，也不会再重发。
 
 ## 确认结果
 
-查看 `Build` 上的 Event，确认 Keel 通知的结果。
+查看 `Build` 上的 `BuildNotified` 或 `NotifyFailed` Event，确认 Keel 通知的结果。

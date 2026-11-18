@@ -15,7 +15,7 @@ description: 了解 Zeabur Builder 如何从 Git commit 构建镜像，以及构
 
 控制器使用 Git 的 smart HTTP 或 SSH 协议，将 `Build` 的 ref 解析为 commit。
 
-省略 `ref` 时，控制器会跟踪仓库的默认分支，并将分支名称写入 `status.resolvedRef`。
+省略 `ref` 时，控制器会跟踪仓库的默认分支，并将完整的 ref 名称（例如 `refs/heads/main`）写入 `status.resolvedRef`。
 
 </Step>
 
@@ -83,7 +83,7 @@ kubectl get clusterbuilder dockerfile -o jsonpath='{.status}'
 
 ## 确认结果
 
-查看各个 Build 的构建器、来源、版本与就绪状态：
+查看各个 Build 的构建器、来源、修订版本与就绪状态：
 
 ```sh
 kubectl get builds

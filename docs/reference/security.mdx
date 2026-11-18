@@ -39,12 +39,12 @@ Anyone who can reach the registry can read its images so that nodes can pull the
 
 ### Controller permissions
 
-The controller has capabilities equivalent to a cluster administrator: it can create Jobs, write Secrets, and create privileged buildkitd StatefulSets in all Namespaces.
+The controller has capabilities equivalent to a cluster administrator: it can create Jobs and write Secrets in all Namespaces, and create privileged buildkitd StatefulSets in its own Namespace.
 
 The Helm chart's ValidatingAdmissionPolicies restrict resources created by the controller ServiceAccount as follows:
 
-- Build Jobs: Must use the image specified by the chart, run without privileges or host access, and mount no ServiceAccount token. They must not run in `kube-*` Namespaces, the controller's own Namespace, or the registry's Namespace.
-- buildkitd StatefulSets: Must use the buildkitd image specified by the chart.
+- Build Jobs: Must use the image specified by the chart, run as non-root without privileges or host access, mount only emptyDir and Secret volumes, and mount no ServiceAccount token. They must not run in `kube-*` Namespaces, the controller's own Namespace, or the registry's Namespace.
+- buildkitd StatefulSets: Must use the buildkitd image specified by the chart, only in the controller's Namespace, with no host access and no ServiceAccount token.
 
 Even with these restrictions, an attacker who obtains the controller token can still read Secrets in all Namespaces where builds are permitted. See [Controller permissions](../operations/controller-permissions.mdx).
 

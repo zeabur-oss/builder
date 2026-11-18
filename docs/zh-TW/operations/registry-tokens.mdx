@@ -10,7 +10,7 @@ registry 只信任一把 Ed25519 金鑰，只有控制器能讀取這把金鑰�
 | 類型 | 權限與範圍 | 時效 |
 | --- | --- | --- |
 | run | 推送與拉取 registry `<namespace>/<build>`，以及拉取來源封存檔倉庫 `<namespace>/<build>/source`。 | Job 的執行期限加上 10 分鐘。 |
-| upload | 推送到來源封存檔倉庫 `<namespace>/<build>/source`。 | 15 分鐘。 |
+| upload | 推送與拉取來源封存檔倉庫 `<namespace>/<build>/source`。 | 15 分鐘。 |
 
 如果 Build 的映像檔位於 `registry.host`，但倉庫路徑不屬於這個 Build，建置就會失敗。如果映像檔位於其他 registry，則使用推送時所需的 Secret。詳見[推送到外部 registry](../builds/external-registries.mdx)。
 
@@ -28,7 +28,7 @@ registry 只信任一把 Ed25519 金鑰，只有控制器能讀取這把金鑰�
 
 ### 申請 upload 權杖
 
-將 Build 上的 annotation `builder.zeabur.com/upload-token-request` 設為新值。控制器會建立 Secret `<build>-upload`，並在 `.status.uploadToken.request` 回報這次請求的值。
+Build 必須設定 `spec.source.archive`。將它的 annotation `builder.zeabur.com/upload-token-request` 設為 1 到 63 個字元的新值。控制器會建立 Secret `<build>-upload`，並在 `.status.uploadToken.request` 回報這次請求的值。
 
 ```sh
 kubectl -n team-a annotate build/api --overwrite builder.zeabur.com/upload-token-request=u1

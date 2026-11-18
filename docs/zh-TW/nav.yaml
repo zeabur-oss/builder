@@ -10,7 +10,7 @@
     private-repos: 建置私有儲存庫
     archive-source: 從上傳的資料夾建置
     rollout: 部署建置好的映像檔
-    external-registries: 推送到外部映像檔倉庫
+    external-registries: 推送到外部 registry
     build-nodes: 在建置節點上建置
 - group: operations
   label: 維運

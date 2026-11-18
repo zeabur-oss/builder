@@ -10,7 +10,7 @@ description: 了解 Registry 令牌的有效期与权限，使用 kubectl 和 OR
 | 类型 | 权限与范围 | 有效期 |
 | --- | --- | --- |
 | run | 推送与拉取镜像仓库 `<namespace>/<build>`，以及拉取源代码归档仓库 `<namespace>/<build>/source`。 | Job 的运行时限加上 10 分钟。 |
-| upload | 推送到源代码归档仓库 `<namespace>/<build>/source`。 | 15 分钟。 |
+| upload | 推送和拉取源代码归档仓库 `<namespace>/<build>/source`。 | 15 分钟。 |
 
 如果 Build 的镜像位于 `registry.host`，但仓库路径不属于该 Build，构建就会失败。其他 registry 的镜像使用推送用的 Secret，详见[推送到外部镜像仓库](../builds/external-registries.mdx)。
 
@@ -28,7 +28,7 @@ description: 了解 Registry 令牌的有效期与权限，使用 kubectl 和 OR
 
 ### 申请 upload 令牌
 
-将 Build 上的 annotation `builder.zeabur.com/upload-token-request` 设为新值。控制器会创建 Secret `<build>-upload`，并在 `.status.uploadToken.request` 中返回这次请求的值。
+Build 必须设置 `spec.source.archive`。将它的 annotation `builder.zeabur.com/upload-token-request` 设为 1 到 63 个字符的新值。控制器会创建 Secret `<build>-upload`，并在 `.status.uploadToken.request` 中返回这次请求的值。
 
 ```sh
 kubectl -n team-a annotate build/api --overwrite builder.zeabur.com/upload-token-request=u1

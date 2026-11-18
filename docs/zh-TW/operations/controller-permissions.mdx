@@ -11,7 +11,7 @@ description: 了解控制器在叢集中能做什麼、ValidatingAdmissionPolicy
 
 - 在所有 Namespace 建立 Job。
 - 讀寫所有 Namespace 的 Secret。
-- 在 `builder-system` 建立 StatefulSet，其中的 Pod 可使用特權模式。
+- 在自己的 Namespace（安裝指南中是 `builder-system`）建立 StatefulSet，其中的 Pod 可使用特權模式。
 
 取得控制器或其權杖的人，也能執行這些操作。
 
@@ -25,6 +25,8 @@ Helm chart 提供兩個 ValidatingAdmissionPolicy，用來限制控制器的 Ser
 
 - 映像檔只能使用 `jobImage`、`railpackImage` 與 `admissionPolicy.extraImages`。
 - 不允許使用特權模式、額外的 capabilities，也不允許使用主機的網路、PID、IPC、連接埠或路徑。
+- 容器必須以非 root 使用者執行，且不能提升權限。
+- Job 只能掛載 emptyDir 和 Secret 磁碟區。
 - 只能使用該 Namespace 的 `default` ServiceAccount，且不帶權杖。
 - 不得在 `kube-*` Namespace、控制器所在的 Namespace、registry 所在的 Namespace，或 `admissionPolicy.extraDeniedNamespaces` 中的 Namespace 建立 Job。
 
@@ -34,6 +36,8 @@ Helm chart 提供兩個 ValidatingAdmissionPolicy，用來限制控制器的 Ser
 
 - 映像檔只能使用 `buildkitdImage`。
 - 不允許使用主機的 Namespace、連接埠或路徑。
+- 磁碟區只能是 emptyDir、Secret 和 ConfigMap。
+- Pod 只能使用該 Namespace 的 `default` ServiceAccount，且不帶權杖。
 
 ## 政策擋不住的事
 
@@ -58,6 +62,8 @@ kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding
 <Step>
 
 ### 編輯 Job 政策
+
+政策的名稱取自 Helm release 名稱。照安裝指南使用 `builder` 時：
 
 ```sh
 kubectl edit validatingadmissionpolicy builder-zeabur-builder-jobs

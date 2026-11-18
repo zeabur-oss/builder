@@ -44,4 +44,4 @@ If the Secret contains an entry for `registry.host`, the token for that run repl
 
 | Symptom or result | Next step |
 | --- | --- |
-| The run waits in the `RegistryCredentialsMissing` state | Check that the specified Secret exists in the Build's Namespace and has the `builder.zeabur.com/push-credentials: "true"` label. |
+| The run waits in the `RegistryCredentialsMissing` state | Check that the specified Secret exists in the Build's Namespace, has the `builder.zeabur.com/push-credentials: "true"` label, is of type `kubernetes.io/dockerconfigjson`, and has a valid `.dockerconfigjson` key. |

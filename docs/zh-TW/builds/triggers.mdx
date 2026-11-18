@@ -7,7 +7,7 @@ description: 設定輪詢與 push webhook、手動重建，並選擇新 commit �
 
 ## 輪詢
 
-控制器預設每分鐘向 Git 伺服器查詢一次 ref。你可以用 `spec.triggers.pollInterval` 設定輪詢間隔。
+控制器預設每分鐘向 Git 伺服器查詢一次 ref。控制器有接收 webhook 時，使用 `spec.source.githubApp` 的 Build 改為每 10 分鐘查詢一次。你可以用 `spec.triggers.pollInterval` 設定輪詢間隔。
 
 ## 設定 push webhook
 
@@ -41,7 +41,7 @@ spec:
 
 ### 設定儲存庫的 webhook
 
-將儲存庫的 webhook 網址設為 `https://<host>/hooks/<provider>`，並使用與 Secret 相同的密鑰。
+將儲存庫的 webhook 網址設為 `https://<host>/hooks/<provider>`，並使用與 Secret 相同的金鑰。`generic` 的金鑰是 Standard Webhooks 金鑰，開頭為 `whsec_`。
 
 依照你使用的 Git 服務選擇 `<provider>`：
 
@@ -70,7 +70,7 @@ spec:
 kubectl wait --for=condition=Ready buildrun/<name>
 ```
 
-你可以用 `spec.suspend` 停止自動建置。
+你可以用 `spec.suspend` 停止自動建置。手動建立的 BuildRun 仍會執行。
 
 ## 處理執行中的建置
 

@@ -7,7 +7,7 @@ You can trigger Zeabur Builder builds with polling, push webhooks, a [GitHub App
 
 ## Polling
 
-The controller queries the Git server for the ref every minute by default. Set the polling interval with `spec.triggers.pollInterval`.
+The controller queries the Git server for the ref every minute by default. A Build with `spec.source.githubApp` polls every 10 minutes when the controller receives webhooks. Set the polling interval with `spec.triggers.pollInterval`.
 
 ## Configure a push webhook
 
@@ -41,7 +41,7 @@ spec:
 
 ### Configure the repository's webhook
 
-Set the repository's webhook URL to `https://<host>/hooks/<provider>` and use the same secret as the Secret.
+Set the repository's webhook URL to `https://<host>/hooks/<provider>` and use the same secret as the Secret. For `generic`, the secret is a Standard Webhooks key that starts with `whsec_`.
 
 Choose `<provider>` for your Git service:
 
@@ -70,7 +70,7 @@ The BuildRun that answers it shows the value in `status.observedRebuild`, if the
 kubectl wait --for=condition=Ready buildrun/<name>
 ```
 
-Use `spec.suspend` to stop automatic builds.
+Use `spec.suspend` to stop automatic builds. BuildRuns you create by hand still run.
 
 ## Handle running builds
 

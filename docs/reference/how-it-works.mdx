@@ -15,7 +15,7 @@ Create a `Build` and specify a Git repository and builder. The controller builds
 
 The controller uses Git's smart HTTP or SSH protocol to resolve the `Build` ref to a commit.
 
-If you omit `ref`, the controller tracks the repository's default branch and writes the branch name to `status.resolvedRef`.
+If you omit `ref`, the controller tracks the repository's default branch and writes the full ref name, such as `refs/heads/main`, to `status.resolvedRef`.
 
 </Step>
 
@@ -83,7 +83,7 @@ kubectl get clusterbuilder dockerfile -o jsonpath='{.status}'
 
 ## Check the results
 
-View the builder, source, version, and readiness status of each Build:
+View the builder, source, revision, and readiness status of each Build:
 
 ```sh
 kubectl get builds

@@ -11,8 +11,8 @@ Point `spec.source.credentialsRef` to the Secret that holds the credentials. The
 
 | Secret type | Contents |
 | --- | --- |
-| `kubernetes.io/basic-auth` | token |
-| `kubernetes.io/ssh-auth` | deploy key and `known_hosts` |
+| `kubernetes.io/basic-auth` | `username`, and the token as `password`. For `https://` URLs. |
+| `kubernetes.io/ssh-auth` | `ssh-privatekey` (the deploy key) and `known_hosts`. For SSH URLs. |
 
 Add the following label to the Secret:
 
@@ -42,13 +42,15 @@ kubectl -n builder-system create configmap github-app-installations \
 
 The `github-app-installations` ConfigMap uses installation IDs as keys. Each value lists the Namespaces permitted to use that installation. The example above permits `team-a` and `team-b` to use installation 12345678.
 
+Install the App on the accounts that own the repositories you build. The installation ID is the number at the end of the installation's settings URL, `https://github.com/settings/installations/<id>`.
+
 </Step>
 
 <Step>
 
 ### Specify the installation in a Build
 
-Set the installation ID in the Build's `spec.source.githubApp`:
+Set the installation ID in the Build's `spec.source.githubApp`. It needs an `https://` Git URL and can't be combined with `credentialsRef`:
 
 ```yaml
 spec:
@@ -63,4 +65,4 @@ spec:
 
 The GitHub App provides a short-lived installation token that the Job uses for read-only access to the private repository. Each commit receives a commit status.
 
-The App's push events wake the corresponding Builds without a separate Secret for each Build. With the webhook enabled, these Builds poll every 10 minutes. For other ways to trigger builds, see [Trigger builds](./triggers.mdx).
+The App's push events wake the corresponding Builds without a separate Secret for each Build. When the controller receives webhooks, these Builds poll every 10 minutes instead of every minute. For other ways to trigger builds, see [Trigger builds](./triggers.mdx).

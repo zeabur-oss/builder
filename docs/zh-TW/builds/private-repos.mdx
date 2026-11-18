@@ -11,8 +11,8 @@ description: 使用 credentialsRef 或 GitHub App，讓 Build 取得私有儲存
 
 | Secret 型別 | 內容 |
 | --- | --- |
-| `kubernetes.io/basic-auth` | 權杖 |
-| `kubernetes.io/ssh-auth` | deploy key 與 `known_hosts` |
+| `kubernetes.io/basic-auth` | `username`，以及當作 `password` 的權杖。用於 `https://` 網址。 |
+| `kubernetes.io/ssh-auth` | `ssh-privatekey`（deploy key）與 `known_hosts`。用於 SSH 網址。 |
 
 在 Secret 加上以下標籤：
 
@@ -42,13 +42,15 @@ kubectl -n builder-system create configmap github-app-installations \
 
 在 `github-app-installations` ConfigMap 中，鍵是 installation ID，值是允許使用該 installation 的 Namespace。上例允許 `team-a` 與 `team-b` 使用 installation 12345678。
 
+把 App 安裝到擁有要建置儲存庫的帳號。installation ID 是安裝設定頁網址 `https://github.com/settings/installations/<id>` 最後的數字。
+
 </Step>
 
 <Step>
 
 ### 在 Build 指定 installation
 
-在 Build 的 `spec.source.githubApp` 填入 installation ID：
+在 Build 的 `spec.source.githubApp` 填入 installation ID。Git 網址必須是 `https://`，也不能同時設定 `credentialsRef`：
 
 ```yaml
 spec:
@@ -63,4 +65,4 @@ spec:
 
 GitHub App 會提供短效 installation 權杖，讓 Job 以唯讀權限存取私有儲存庫。每個 commit 都會收到 commit status。
 
-App 的 push 事件會喚醒對應的 Build，不需要為每個 Build 設定 Secret。啟用 webhook 時，這些 Build 每 10 分鐘輪詢一次。其他觸發方式請見[觸發建置](./triggers.mdx)。
+App 的 push 事件會喚醒對應的 Build，不需要為每個 Build 設定 Secret。控制器有接收 webhook 時，這些 Build 改為每 10 分鐘輪詢一次，而不是每分鐘。其他觸發方式請見[觸發建置](./triggers.mdx)。
