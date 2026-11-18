@@ -14,4 +14,4 @@ concurrency:
 
 jobs:
   changeset:
-    uses: zeabur-oss/.github/.github/workflows/changeset.yml@3e2e5ba4210b60c1e97fa53e2029e1ea9f5e468e # main
+    uses: zeabur-oss/.github/.github/workflows/changeset.yml@01d7c04f44028272077eaf4ab97f4de5257aad65 # main
