@@ -88,13 +88,13 @@ What the model may read and its limits are in [Write a Dockerfile with AI](../re
 
 ## Later runs
 
-After the model writes a Dockerfile that builds, the run pushes it next to the Build's images, tagged `zeabur-plan-<Build uid>`, and the Build records it in `status.plan`:
+After each run that builds, the run pushes its plan, the Dockerfile and what the agent reported, next to the Build's images, tagged `zeabur-plan-<Build uid>`. The Build records it in `status.plan`:
 
 ```sh
 kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
 ```
 
-The next run builds that Dockerfile first. If it builds, the run reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the first run. If it no longer builds, for example after a dependency changed, the model writes a new one and `status.plan` changes.
+The next run builds that Dockerfile first. If it builds, the run reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the first run. If it no longer builds, for example after a dependency changed, the model writes a new one.
 
 ## Commit the Dockerfile to the repository
 

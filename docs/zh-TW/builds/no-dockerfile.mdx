@@ -88,13 +88,13 @@ kubectl -n team-a logs job/<run> -c plan
 
 ## 之後的建置
 
-模型寫出能建置的 Dockerfile 後，這次建置會把它推送到 Build 的映像檔旁邊，標籤是 `zeabur-plan-<Build uid>`，Build 也會記在 `status.plan`：
+每次建置成功後，都會把這次的 plan（Dockerfile 和 agent 回報的內容）推送到 Build 的映像檔旁邊，標籤是 `zeabur-plan-<Build uid>`，Build 也會記在 `status.plan`：
 
 ```sh
 kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
 ```
 
-下次建置會先用這份 Dockerfile。建置成功的話，結果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，連接埠、語言和變數也和第一次一樣；建置不了的話，例如相依套件改了，模型會重寫一份，`status.plan` 也會換成新的。
+下次建置會先用這份 Dockerfile。建置成功的話，結果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，連接埠、語言和變數也和第一次一樣；建置不了的話，例如相依套件改了，模型會重寫一份。
 
 ## 把 Dockerfile 放進儲存庫
 
