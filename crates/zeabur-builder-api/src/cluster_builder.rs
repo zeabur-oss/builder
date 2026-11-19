@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::build::MAX_CONDITIONS;
-use crate::common::{Condition, DURATION_PATTERN};
+use crate::common::{Condition, DURATION_PATTERN, SecretKeyRef};
 
 /// Longest image reference.
 pub const MAX_IMAGE: usize = 512;
@@ -44,11 +44,13 @@ pub const MAX_QUANTITY: usize = 64;
         type_ = "date",
         json_path = ".metadata.creationTimestamp"
     ),
-    doc = "How Zeabur Builder plans and builds: Dockerfile or Railpack."
+    doc = "How Zeabur Builder plans and builds: Dockerfile, Railpack or the agent."
 )]
 #[x_kube(
     validation = Rule::new("self.type == 'dockerfile' ? !has(self.planner) : has(self.planner)")
-        .message("planner is required for railpack, and forbidden for dockerfile")
+        .message("planner is required for railpack and agent, and forbidden for dockerfile"),
+    validation = Rule::new("self.type == 'agent' ? has(self.planner) && has(self.planner.model) && self.frontend.type == 'dockerfile.v0' : !has(self.planner) || !has(self.planner.model)")
+        .message("planner.model and the dockerfile.v0 frontend are required for agent, and planner.model is forbidden for the others")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterBuilderSpec {
@@ -136,6 +138,8 @@ pub enum BuilderType {
     Dockerfile,
     /// Railpack plans; its gateway frontend builds.
     Railpack,
+    /// An agent writes a Dockerfile and trial-builds it; the Dockerfile frontend builds it.
+    Agent,
 }
 
 /// The planning step.
@@ -152,6 +156,29 @@ pub struct PlannerSpec {
     /// CPU and memory for the plan container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Resources>,
+    /// The model the `agent` planner calls; only for `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSpec>,
+}
+
+/// The model of the `agent` planner.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSpec {
+    /// The provider, by Rig's name, such as `anthropic`, `openai`, `gcp.gemini` or `openrouter`.
+    /// It sets the endpoint and the API format.
+    #[schemars(length(min = 1, max = 64))]
+    pub provider: String,
+    /// The model, as the provider names it, such as `claude-opus-5-5`.
+    #[schemars(length(min = 1, max = 256))]
+    pub model: String,
+    /// The model API's base URL, for a proxy or a self-hosted endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 2048))]
+    pub base_url: Option<String>,
+    /// The Secret key that holds the model API key, in each `Build`'s own namespace. A run
+    /// waits with `ModelKeyMissing` while it is missing.
+    pub api_key_secret: SecretKeyRef,
 }
 
 /// CPU and memory, as Kubernetes quantities.

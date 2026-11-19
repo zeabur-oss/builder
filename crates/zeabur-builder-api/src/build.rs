@@ -490,6 +490,8 @@ pub enum ConditionReason {
     BuildkitdStarting,
     /// `Ready`: [`Reason::RegistryCredentialsMissing`].
     RegistryCredentialsMissing,
+    /// `Ready`: [`Reason::ModelKeyMissing`].
+    ModelKeyMissing,
     /// `Ready`: [`Reason::SourceFailed`].
     SourceFailed,
     /// `Ready`: [`Reason::PlanFailed`].
@@ -521,6 +523,7 @@ impl From<Reason> for ConditionReason {
             Reason::InsufficientResources => Self::InsufficientResources,
             Reason::BuildkitdStarting => Self::BuildkitdStarting,
             Reason::RegistryCredentialsMissing => Self::RegistryCredentialsMissing,
+            Reason::ModelKeyMissing => Self::ModelKeyMissing,
             Reason::SourceFailed => Self::SourceFailed,
             Reason::PlanFailed => Self::PlanFailed,
             Reason::BuildFailed => Self::BuildFailed,
@@ -557,6 +560,7 @@ mod tests {
             Reason::QuotaExceeded,
             Reason::BuildkitdStarting,
             Reason::RegistryCredentialsMissing,
+            Reason::ModelKeyMissing,
             Reason::SourceFailed,
             Reason::PlanFailed,
             Reason::BuildFailed,

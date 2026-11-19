@@ -9,7 +9,7 @@ use zeabur_builder_api::build::{
     ArchiveSource, BuildSpec, Concurrency, EnvVarSource, GitSource, SourceSpec, TriggerSpec,
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
-use zeabur_builder_api::cluster_builder::{FrontendSpec, PlannerSpec};
+use zeabur_builder_api::cluster_builder::{FrontendSpec, ModelSpec, PlannerSpec};
 use zeabur_builder_api::common::SecretKeyRef;
 
 use super::*;
@@ -104,10 +104,36 @@ fn railpack() -> ClusterBuilderSpec {
             image: format!("ghcr.io/zeabur-oss/builder-railpack:{RAILPACK}"),
             timeout: None,
             resources: None,
+            model: None,
         }),
         frontend: FrontendSpec {
             kind: FrontendType::Gateway,
             source: Some(format!("ghcr.io/railwayapp/railpack-frontend:{RAILPACK}")),
+            opts: BTreeMap::new(),
+        },
+    }
+}
+
+fn agent() -> ClusterBuilderSpec {
+    ClusterBuilderSpec {
+        kind: BuilderType::Agent,
+        planner: Some(PlannerSpec {
+            image: "ghcr.io/zeabur-oss/builder-agent:v0.0.1".to_owned(),
+            timeout: None,
+            resources: None,
+            model: Some(ModelSpec {
+                provider: "anthropic".to_owned(),
+                model: "claude-opus-5-5".to_owned(),
+                base_url: None,
+                api_key_secret: SecretKeyRef {
+                    name: "model".to_owned(),
+                    key: "anthropic".to_owned(),
+                },
+            }),
+        }),
+        frontend: FrontendSpec {
+            kind: FrontendType::Dockerfile,
+            source: None,
             opts: BTreeMap::new(),
         },
     }
@@ -224,6 +250,24 @@ fn railpack_with_secrets() {
     };
     let job = job(&inputs(&run, &build, "railpack", &builder, &tags, auth)).unwrap();
     golden("railpack", include_str!("../golden/railpack.json"), &job);
+}
+
+#[test]
+fn agent_with_a_model_key() {
+    let run = build_run();
+    let build = build("https://github.com/acme/web", None, Vec::new());
+    let builder = agent();
+    let tags = tags();
+    let job = job(&inputs(
+        &run,
+        &build,
+        "agent",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    ))
+    .unwrap();
+    golden("agent", include_str!("../golden/agent.json"), &job);
 }
 
 #[test]
@@ -411,6 +455,25 @@ fn refuses_what_admission_should_have_caught() {
         )),
         Err(JobError::Builder(_))
     ));
+    let mut no_model = agent();
+    if let Some(planner) = &mut no_model.planner {
+        planner.model = None;
+    }
+    let mut gateway = agent();
+    gateway.frontend = railpack().frontend;
+    for inconsistent in [no_model, gateway] {
+        assert!(matches!(
+            job(&inputs(
+                &run,
+                &build,
+                "agent",
+                &inconsistent,
+                &tags,
+                GitAuth::Anonymous
+            )),
+            Err(JobError::Builder(_))
+        ));
+    }
     assert_eq!(
         job(&inputs(
             &run,

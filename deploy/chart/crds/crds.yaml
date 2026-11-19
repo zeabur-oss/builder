@@ -46,7 +46,7 @@
         "name": "v1alpha1",
         "schema": {
           "openAPIV3Schema": {
-            "description": "How Zeabur Builder plans and builds: Dockerfile or Railpack.",
+            "description": "How Zeabur Builder plans and builds: Dockerfile, Railpack or the agent.",
             "properties": {
               "spec": {
                 "description": "A way to build. Every builder reduces to the same shape: an optional planner that writes files\ninto `/workspace/plan`, then a `BuildKit` frontend with options that reads them.",
@@ -98,6 +98,58 @@
                         "maxLength": 512,
                         "minLength": 1,
                         "type": "string"
+                      },
+                      "model": {
+                        "description": "The model the `agent` planner calls; only for `agent`.",
+                        "nullable": true,
+                        "properties": {
+                          "apiKeySecret": {
+                            "description": "The Secret key that holds the model API key, in each `Build`'s own namespace. A run\nwaits with `ModelKeyMissing` while it is missing.",
+                            "properties": {
+                              "key": {
+                                "description": "The key.",
+                                "maxLength": 253,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "The Secret's name.",
+                                "maxLength": 253,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "name"
+                            ],
+                            "type": "object"
+                          },
+                          "baseUrl": {
+                            "description": "The model API's base URL, for a proxy or a self-hosted endpoint.",
+                            "maxLength": 2048,
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "model": {
+                            "description": "The model, as the provider names it, such as `claude-opus-5-5`.",
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "provider": {
+                            "description": "The provider, by Rig's name, such as `anthropic`, `openai`, `gcp.gemini` or `openrouter`.\nIt sets the endpoint and the API format.",
+                            "maxLength": 64,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "apiKeySecret",
+                          "model",
+                          "provider"
+                        ],
+                        "type": "object"
                       },
                       "resources": {
                         "description": "CPU and memory for the plan container.",
@@ -161,7 +213,8 @@
                     "description": "What the planning step does.",
                     "enum": [
                       "dockerfile",
-                      "railpack"
+                      "railpack",
+                      "agent"
                     ],
                     "type": "string"
                   }
@@ -173,8 +226,12 @@
                 "type": "object",
                 "x-kubernetes-validations": [
                   {
-                    "message": "planner is required for railpack, and forbidden for dockerfile",
+                    "message": "planner is required for railpack and agent, and forbidden for dockerfile",
                     "rule": "self.type == 'dockerfile' ? !has(self.planner) : has(self.planner)"
+                  },
+                  {
+                    "message": "planner.model and the dockerfile.v0 frontend are required for agent, and planner.model is forbidden for the others",
+                    "rule": "self.type == 'agent' ? has(self.planner) && has(self.planner.model) && self.frontend.type == 'dockerfile.v0' : !has(self.planner) || !has(self.planner.model)"
                   }
                 ]
               },
@@ -1288,6 +1345,102 @@
                     "maxProperties": 8,
                     "type": "object"
                   },
+                  "plan": {
+                    "description": "What the `agent` planner reported.",
+                    "nullable": true,
+                    "properties": {
+                      "buildVariables": {
+                        "description": "Variables the build reads as secrets.",
+                        "items": {
+                          "maxLength": 256,
+                          "type": "string"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "detail": {
+                        "description": "What the user must do, when it stopped.",
+                        "maxLength": 1024,
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "dockerfile": {
+                        "description": "Where the `agent` planner's Dockerfile came from, in the order it tries them.",
+                        "enum": [
+                          "repository",
+                          "previous",
+                          "agent",
+                          "unknown"
+                        ],
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "inputTokens": {
+                        "default": 0,
+                        "description": "Input tokens over every model call.",
+                        "format": "int64",
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      "language": {
+                        "description": "Such as `node`.",
+                        "maxLength": 64,
+                        "type": "string"
+                      },
+                      "modelCalled": {
+                        "default": false,
+                        "description": "Whether the model was called.",
+                        "type": "boolean"
+                      },
+                      "outputTokens": {
+                        "default": 0,
+                        "description": "Output tokens over every model call.",
+                        "format": "int64",
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      "port": {
+                        "description": "The port the app listens on, when the agent wrote the Dockerfile.",
+                        "format": "int32",
+                        "maximum": 65535.0,
+                        "minimum": 1.0,
+                        "nullable": true,
+                        "type": "integer"
+                      },
+                      "runtimeVariables": {
+                        "description": "Variables the app reads when it starts.",
+                        "items": {
+                          "maxLength": 256,
+                          "type": "string"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "stopped": {
+                        "description": "Why the `agent` planner stopped without a Dockerfile.",
+                        "enum": [
+                          "ModelKeyMissing",
+                          "ModelFailed",
+                          "NoAppFound",
+                          "SeveralApps",
+                          "NeedsBuildVariable",
+                          "NeedsPrivateDependency",
+                          "UnsupportedPlatform",
+                          "BudgetSpent",
+                          "BuildKeepsFailing",
+                          "Unknown"
+                        ],
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "version": {
+                        "description": "Such as `24.9`.",
+                        "maxLength": 64,
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "planDigest": {
                     "description": "The plan used.",
                     "maxLength": 71,
@@ -1311,6 +1464,7 @@
                       "InsufficientResources",
                       "BuildkitdStarting",
                       "RegistryCredentialsMissing",
+                      "ModelKeyMissing",
                       "SourceFailed",
                       "PlanFailed",
                       "BuildFailed",

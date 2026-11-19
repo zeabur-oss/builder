@@ -6,20 +6,21 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
+use k8s_openapi::api::core::v1::{ContainerStatus, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::Serialize;
 use zeabur_builder_api::build::{ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason};
 use zeabur_builder_api::build_run::{
-    self as run_api, BuildRun, BuildRunStatus, CacheStats, Phase, PlanSource, Reason, StepState,
-    Trigger,
+    self as run_api, BuildRun, BuildRunStatus, CacheStats, DockerfileSource, Phase, PlanReport,
+    PlanSource, PlanStop, Reason, StepState, Trigger,
 };
 use zeabur_builder_api::cluster_builder::{
     BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderStatus,
 };
-use zeabur_builder_api::common::{Condition, ConditionStatus};
+use zeabur_builder_api::common::{Condition, ConditionStatus, SecretKeyRef};
 use zeabur_builder_api::{annotations, labels};
+use zeabur_builder_core::plan::{self, Info};
 use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome, Step};
 use zeabur_builder_core::tag::{self, TagError, TagInputs};
 use zeabur_builder_jobspec::JobMemory;
@@ -1173,6 +1174,33 @@ pub(crate) fn keel_payload<'a>(image: &'a str, run: &'a BuildRun) -> Option<Keel
 /// The waits between notify attempts: three attempts with exponential backoff.
 pub(crate) const NOTIFY_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
 
+/// Whether `secret`, the Secret the `agent` builder names in the run's namespace, holds the
+/// model API key. The controller does not read the key: the plan container mounts it.
+pub(crate) fn model_key(
+    secret_ref: &SecretKeyRef,
+    namespace: &str,
+    secret: Option<&Secret>,
+) -> Result<(), String> {
+    let SecretKeyRef { name, key } = secret_ref;
+    let Some(secret) = secret else {
+        return Err(format!(
+            "no Secret `{name}` in `{namespace}` for the model API key"
+        ));
+    };
+    let present = secret
+        .data
+        .as_ref()
+        .and_then(|d| d.get(key))
+        .is_some_and(|v| !v.0.is_empty());
+    if present {
+        Ok(())
+    } else {
+        Err(format!(
+            "Secret `{name}` has no key `{key}` with the model API key"
+        ))
+    }
+}
+
 /// What the Job and its Pod say about a run.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Observed {
@@ -1318,8 +1346,80 @@ fn from_result(result: BuildResult) -> Observed {
     Observed::Finished(Box::new(status))
 }
 
+/// The `agent` planner's report, from the termination message of the init container `plan`.
+/// Other planners write no report there.
+fn plan_info(pod: Option<&Pod>) -> Option<Info> {
+    let message = pod?
+        .status
+        .as_ref()?
+        .init_container_statuses
+        .as_ref()?
+        .iter()
+        .find(|s| s.name == "plan")?
+        .state
+        .as_ref()?
+        .terminated
+        .as_ref()?
+        .message
+        .as_deref()?;
+    Info::decode(message).ok()
+}
+
+/// `info` as the `BuildRun` records it, cut to the CRD's bounds.
+fn plan_report(info: Info) -> PlanReport {
+    const TEXT: usize = 64;
+    const NAMES: usize = 64;
+    const NAME: usize = 256;
+    let names = |names: Vec<String>| -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|n| n.chars().count() <= NAME)
+            .take(NAMES)
+            .collect()
+    };
+    let details = info.details.unwrap_or_default();
+    PlanReport {
+        dockerfile: info.source.map(|s| match s {
+            plan::Source::Repository => DockerfileSource::Repository,
+            plan::Source::Previous => DockerfileSource::Previous,
+            plan::Source::Agent => DockerfileSource::Agent,
+        }),
+        stopped: info.reason.map(|r| match r {
+            plan::Reason::ModelKeyMissing => PlanStop::ModelKeyMissing,
+            plan::Reason::ModelFailed => PlanStop::ModelFailed,
+            plan::Reason::NoAppFound => PlanStop::NoAppFound,
+            plan::Reason::SeveralApps => PlanStop::SeveralApps,
+            plan::Reason::NeedsBuildVariable => PlanStop::NeedsBuildVariable,
+            plan::Reason::NeedsPrivateDependency => PlanStop::NeedsPrivateDependency,
+            plan::Reason::UnsupportedPlatform => PlanStop::UnsupportedPlatform,
+            plan::Reason::BudgetSpent => PlanStop::BudgetSpent,
+            plan::Reason::BuildKeepsFailing => PlanStop::BuildKeepsFailing,
+        }),
+        detail: info.detail.map(|d| d.chars().take(1024).collect()),
+        model_called: info.model_called,
+        input_tokens: i64::try_from(info.input_tokens).unwrap_or(i64::MAX),
+        output_tokens: i64::try_from(info.output_tokens).unwrap_or(i64::MAX),
+        port: details.port.filter(|p| *p > 0).map(i32::from),
+        language: details.language.chars().take(TEXT).collect(),
+        version: details.version.chars().take(TEXT).collect(),
+        build_variables: names(details.build_variables),
+        runtime_variables: names(details.runtime_variables),
+    }
+}
+
 /// Reads a run's progress or result from its Job and Pod.
 pub(crate) fn observe(job: &Job, pod: Option<&Pod>) -> Observed {
+    let info = plan_info(pod);
+    match observe_job(job, pod, info.as_ref()) {
+        Observed::Finished(mut status) => {
+            status.plan = info.map(plan_report);
+            Observed::Finished(status)
+        }
+        running @ Observed::Running(_) => running,
+    }
+}
+
+fn observe_job(job: &Job, pod: Option<&Pod>, info: Option<&Info>) -> Observed {
     let pod_status = pod.and_then(|p| p.status.as_ref());
     let message = pod.and_then(termination_message);
     if job_condition(job, "Complete").is_some() {
@@ -1343,8 +1443,12 @@ pub(crate) fn observe(job: &Job, pod: Option<&Pod>) -> Observed {
         if let Some((e, step)) = terminated_with_error(init, "fetch") {
             return init_failed(Reason::SourceFailed, e, step);
         }
-        if let Some((e, step)) = terminated_with_error(init, "plan") {
-            return init_failed(Reason::PlanFailed, e, step);
+        if let Some((e, mut step)) = terminated_with_error(init, "plan") {
+            let Some(detail) = info.and_then(|i| i.detail.clone()) else {
+                return init_failed(Reason::PlanFailed, e, step);
+            };
+            step.message = detail.chars().take(result::MAX_STEP_TEXT).collect();
+            return init_failed(Reason::PlanFailed, detail, step);
         }
         return match message.as_deref().map(BuildResult::decode) {
             Some(Ok(result)) => from_result(result),

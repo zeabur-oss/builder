@@ -9,6 +9,7 @@
 //! - [`tag`]: the immutable, sortable image tag of a build.
 //! - [`daemon`]: the name and address of a build namespace's own buildkitd.
 //! - [`result`]: the build result a Job reports in its termination message.
+//! - [`plan`]: what the agent planner reports about a run.
 //! - [`progress`]: reading `buildctl --progress rawjson` output, its cached steps and its steps.
 //! - [`railpack`]: making a Railpack image run as a non-root user.
 //!
@@ -19,6 +20,7 @@ pub mod archive;
 pub mod daemon;
 pub mod git;
 pub mod hook;
+pub mod plan;
 pub mod progress;
 pub mod railpack;
 pub mod repo;
