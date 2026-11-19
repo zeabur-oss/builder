@@ -72,9 +72,18 @@ fn run(name: &str, revision: &str, phase: Option<Phase>, at: &str) -> BuildRun {
     run.status = Some(BuildRunStatus {
         phase,
         completion_time: is_finished(phase).then(|| at.to_owned()),
-        ..BuildRunStatus::default()
+        ..admitted(BuildRunStatus::default())
     });
     run
+}
+
+/// `status` with what admission records: the builder and the repository.
+fn admitted(status: BuildRunStatus) -> BuildRunStatus {
+    BuildRunStatus {
+        builder: Some("railpack".to_owned()),
+        image: Some("r/team-a/api".to_owned()),
+        ..status
+    }
 }
 
 #[test]
@@ -872,28 +881,14 @@ fn summary_points_at_the_newest_success() {
         s.message = Some("exit code: 2".to_owned());
     }
     let mut status = BuildStatus::default();
-    summarise(
-        &mut status,
-        &[ok.clone()],
-        "r/team-a/api",
-        "railpack",
-        now(),
-        Some(1),
-    );
+    summarise(&mut status, &[ok.clone()], now(), Some(1));
     assert_eq!(
         status.latest_image.as_deref(),
         Some(format!("r/team-a/api:main-1-3e1a9c2@{DIGEST}").as_str())
     );
     assert_eq!(status.conditions[0].status, ConditionStatus::True);
 
-    summarise(
-        &mut status,
-        &[ok, bad],
-        "r/team-a/api",
-        "railpack",
-        now(),
-        Some(1),
-    );
+    summarise(&mut status, &[ok, bad], now(), Some(1));
     assert_eq!(status.latest_revision.as_deref(), Some(A));
     assert_eq!(status.last_build_run_ref.as_deref(), Some("api-2"));
     assert_eq!(status.conditions[0].status, ConditionStatus::False);
@@ -955,14 +950,7 @@ fn an_older_commit_finishing_late_does_not_replace_the_newer_image() {
     let runs = [older, newer];
 
     let mut status = BuildStatus::default();
-    summarise(
-        &mut status,
-        &runs,
-        "r/team-a/api",
-        "railpack",
-        now(),
-        Some(1),
-    );
+    summarise(&mut status, &runs, now(), Some(1));
     assert_eq!(status.latest_revision.as_deref(), Some(B));
     assert_eq!(
         status.latest_image.as_deref(),
@@ -1092,31 +1080,17 @@ fn exposed_ports_reach_the_build_status_from_the_newest_success() {
     assert_eq!(run_status.exposed_ports, ["3000/tcp", "53/udp"]);
 
     let mut ok = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
-    ok.status = Some(*run_status);
+    ok.status = Some(admitted(*run_status));
     let mut portless = run("api-2", B, Some(Phase::Succeeded), "2026-10-22T02:00:00Z");
     if let Some(s) = portless.status.as_mut() {
         s.tags = vec!["main-2-aaaaaaa".to_owned()];
         s.image_digest = Some(DIGEST.to_owned());
     }
     let mut status = BuildStatus::default();
-    summarise(
-        &mut status,
-        &[ok.clone()],
-        "r/team-a/api",
-        "railpack",
-        now(),
-        Some(1),
-    );
+    summarise(&mut status, &[ok.clone()], now(), Some(1));
     assert_eq!(status.exposed_ports, ["3000/tcp", "53/udp"]);
 
-    summarise(
-        &mut status,
-        &[ok, portless],
-        "r/team-a/api",
-        "railpack",
-        now(),
-        Some(1),
-    );
+    summarise(&mut status, &[ok, portless], now(), Some(1));
     assert_eq!(status.exposed_ports, Vec::<String>::new());
 }
 
@@ -1133,7 +1107,7 @@ fn the_plan_a_run_saved_stays_until_a_newer_one() {
         panic!("finished expected")
     };
     let mut planned = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
-    planned.status = Some(*run_status);
+    planned.status = Some(admitted(*run_status));
     let mut replayed = run("api-2", B, Some(Phase::Succeeded), "2026-10-22T02:00:00Z");
     if let Some(s) = replayed.status.as_mut() {
         s.tags = vec!["main-2-aaaaaaa".to_owned()];
@@ -1141,35 +1115,53 @@ fn the_plan_a_run_saved_stays_until_a_newer_one() {
     }
 
     let mut status = BuildStatus::default();
-    summarise(
-        &mut status,
-        &[planned],
-        "r/team-a/api",
-        "railpack",
-        now(),
-        Some(1),
-    );
+    summarise(&mut status, &[planned], now(), Some(1));
     let recorded = Some(SavedPlan {
         image: format!("r/team-a/api@{PLAN}"),
         builder: "railpack".to_owned(),
     });
     assert_eq!(status.plan, recorded);
-
-    summarise(
-        &mut status,
-        &[replayed],
-        "r/team-a/api",
-        "railpack",
-        now(),
-        Some(1),
+    assert_eq!(
+        status.latest_image.as_deref(),
+        Some(format!("r/team-a/api:main-1-3e1a9c2@{DIGEST}").as_str())
     );
+
+    summarise(&mut status, &[replayed], now(), Some(1));
     assert_eq!(status.plan, recorded);
+}
+
+/// A `Build` that moves to another builder or repository after a run planned keeps the plan
+/// named for the builder and repository that run used, so the next run does not reuse it.
+#[test]
+fn a_saved_plan_names_the_builder_and_repository_of_its_run() {
+    let mut planned = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+    if let Some(s) = planned.status.as_mut() {
+        s.builder = Some("agent".to_owned());
+        s.image = Some("r/team-a/old".to_owned());
+        s.plan_digest = Some(PLAN.to_owned());
+    }
+    let mut status = BuildStatus::default();
+    summarise(&mut status, &[planned], now(), Some(1));
+    let saved = SavedPlan {
+        image: format!("r/team-a/old@{PLAN}"),
+        builder: "agent".to_owned(),
+    };
+    assert_eq!(status.plan, Some(saved));
+
+    let mut build = build();
+    build.spec.builder_ref = "agent".to_owned();
+    build.status = Some(status);
+    assert_eq!(reused_plan(&build, "r/team-a/old").as_deref(), Some(PLAN));
+    assert_eq!(reused_plan(&build, "r/team-a/api"), None);
+    build.spec.builder_ref = "railpack".to_owned();
+    assert_eq!(reused_plan(&build, "r/team-a/old"), None);
 }
 
 #[test]
 fn a_run_reuses_the_saved_plan_of_the_same_builder_unless_asked_to_plan_again() {
     let mut build = build();
-    assert_eq!(reused_plan(&build), None);
+    let image = "r/team-a/api";
+    assert_eq!(reused_plan(&build, image), None);
 
     build.status = Some(BuildStatus {
         plan: Some(SavedPlan {
@@ -1178,17 +1170,17 @@ fn a_run_reuses_the_saved_plan_of_the_same_builder_unless_asked_to_plan_again() 
         }),
         ..BuildStatus::default()
     });
-    assert_eq!(reused_plan(&build).as_deref(), Some(PLAN));
+    assert_eq!(reused_plan(&build, image).as_deref(), Some(PLAN));
 
     build.metadata.annotations = Some(BTreeMap::from([(
         annotations::PLAN.to_owned(),
         annotations::PLAN_FRESH.to_owned(),
     )]));
-    assert_eq!(reused_plan(&build), None);
+    assert_eq!(reused_plan(&build, image), None);
 
     build.metadata.annotations = None;
     build.spec.builder_ref = "agent".to_owned();
-    assert_eq!(reused_plan(&build), None);
+    assert_eq!(reused_plan(&build, image), None);
 }
 
 #[test]
@@ -1243,6 +1235,35 @@ fn an_agent_run_waits_for_its_model_key() {
         model_key(&secret_ref, "team-a", Some(&secret("anthropic", b"sk"))),
         Ok(())
     );
+}
+
+/// An `agent` run checks for its model key only when it plans; a run that restores a saved plan
+/// calls no model and starts without one.
+#[test]
+fn only_a_run_that_plans_needs_the_model_key() {
+    use zeabur_builder_api::cluster_builder::{ModelSpec, PlannerSpec};
+    let secret_ref = SecretKeyRef {
+        name: "model".to_owned(),
+        key: "anthropic".to_owned(),
+    };
+    let mut agent = cluster_builder(1).spec;
+    agent.planner = Some(PlannerSpec {
+        image: "agent".to_owned(),
+        timeout: None,
+        resources: None,
+        model: Some(ModelSpec {
+            provider: "anthropic".to_owned(),
+            model: "claude-opus-5-5".to_owned(),
+            base_url: None,
+            api_key_secret: secret_ref.clone(),
+        }),
+    });
+    let mut planning = run("api-1", A, None, "2026-10-22T01:00:00Z");
+    assert_eq!(model_key_ref(&agent, &planning), Some(&secret_ref));
+    assert_eq!(model_key_ref(&cluster_builder(1).spec, &planning), None);
+
+    planning.spec.plan = Some(PLAN.to_owned());
+    assert_eq!(model_key_ref(&agent, &planning), None);
 }
 
 #[test]
@@ -1662,14 +1683,7 @@ fn the_longest_idle_daemon_goes_first() {
 fn ready_names_the_outcome_of_the_latest_finished_run() {
     let ready = |runs: &[BuildRun]| {
         let mut status = BuildStatus::default();
-        summarise(
-            &mut status,
-            runs,
-            "r/team-a/api",
-            "railpack",
-            now(),
-            Some(1),
-        );
+        summarise(&mut status, runs, now(), Some(1));
         status.conditions[0].reason.clone()
     };
     assert_eq!(ready(&[]), "NotBuilt");

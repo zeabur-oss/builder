@@ -127,8 +127,16 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 16), inner(length(max = 128)))]
     pub tags: Vec<String>,
-    /// The plan artifact this run's planner wrote, when the builder has a planner and the run did
-    /// not reuse a saved plan.
+    /// The `ClusterBuilder` the Job builds with, set once the run is admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = MAX_NAME))]
+    pub builder: Option<String>,
+    /// The repository the Job pushes the image and the plan to, set once the run is admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 1024))]
+    pub image: Option<String>,
+    /// The plan artifact this run's planner wrote in `image`, when the builder has a planner and
+    /// the run did not reuse a saved plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
     pub plan_digest: Option<String>,
