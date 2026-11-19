@@ -94,7 +94,7 @@ Each run that writes a new Dockerfile pushes its plan, the Dockerfile and what t
 kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
 ```
 
-Later runs build that Dockerfile and do not call the model. Such a run reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the run that wrote it. Its `spec.plan` is the plan's digest.
+Later runs build that Dockerfile and do not call the model. Such a run reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the run that wrote it. Its status shows `"planSource":"saved"` and the plan's digest in `planDigest`.
 
 If the saved Dockerfile no longer builds, for example after a dependency changed, the run fails. To have the model write a new one, annotate the Build with `fresh`:
 

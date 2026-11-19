@@ -94,7 +94,7 @@ kubectl -n team-a logs job/<run> -c plan
 kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
 ```
 
-之后的构建会直接用这份 Dockerfile，不再调用模型。这种构建的结果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，端口、语言和变量也和写出这份 Dockerfile 的那次一样。BuildRun 的 `spec.plan` 是这份 plan 的 digest。
+之后的构建会直接用这份 Dockerfile，不再调用模型。这种构建的结果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，端口、语言和变量也和写出这份 Dockerfile 的那次一样。BuildRun 的 status 会显示 `"planSource":"saved"`，`planDigest` 是这份 plan 的 digest。
 
 如果保存的 Dockerfile 已经构建不了，例如依赖改了，这次构建会失败。要让模型重写一份，给 Build 加上 `fresh` annotation：
 
