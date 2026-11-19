@@ -439,8 +439,9 @@ pub(crate) struct NextRun {
 /// Decides whether `remote` needs a build.
 ///
 /// A commit that already has a `BuildRun`, in any phase, gets no other: a failed build is not
-/// retried by itself, which would loop on a broken commit. Nor does the commit of the last run
-/// created, once that run is deleted: deleting a run cancels it. A [pending
+/// retried by itself, which would loop on a broken commit. A spec edit is the exception: when no
+/// run is of the `Build`'s generation, the commit builds again, as `Manual`. Nor does the commit of
+/// the last run created, once that run is deleted: deleting a run cancels it. A [pending
 /// rebuild](pending_rebuild) builds it again, as `Manual`, under the same concurrency rules as a
 /// new commit. A new commit is built with `found_by`: `Poll`, or `Webhook` when a delivery asked
 /// for the poll.
@@ -459,9 +460,13 @@ pub(crate) fn next_run(
     let new_commit = latest != Some(remote)
         && last_run != Some(remote)
         && !runs.iter().any(|r| r.spec.revision == remote);
+    let spec_changed = !runs.is_empty()
+        && !runs
+            .iter()
+            .any(|r| built_from(r, build.metadata.generation));
     let trigger = if new_commit {
         found_by
-    } else if pending_rebuild(build, runs).is_some() {
+    } else if spec_changed || pending_rebuild(build, runs).is_some() {
         Trigger::Manual
     } else {
         return NextRun::default();

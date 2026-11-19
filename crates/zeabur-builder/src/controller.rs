@@ -294,7 +294,11 @@ pub(crate) async fn run(client: Client, settings: Settings) -> Result<(), String
 
 /// The `BuildRun` controller and its store. A run is looked at again when its Job, a buildkitd
 /// Pod or `StatefulSet`, or another run's end changes what it waits for.
-fn run_controller(client: &Client, leader: &Leader) -> (Controller<BuildRun>, Store<BuildRun>) {
+fn run_controller(
+    client: &Client,
+    leader: &Leader,
+    daemon_namespace: &str,
+) -> (Controller<BuildRun>, Store<BuildRun>) {
     let runs = Controller::new(
         Api::<BuildRun>::all(client.clone()),
         watcher::Config::default(),
@@ -322,7 +326,7 @@ fn run_controller(client: &Client, leader: &Leader) -> (Controller<BuildRun>, St
             },
         )
         .watches(
-            Api::<StatefulSet>::all(client.clone()),
+            Api::<StatefulSet>::namespaced(client.clone(), daemon_namespace),
             watcher::Config::default().labels(labels::NAMESPACE),
             {
                 let in_namespace = in_namespace.clone();
@@ -364,7 +368,7 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
     ));
     let receiver_settings = settings.webhook.clone();
     let daemon_settings = Arc::clone(&settings.daemon);
-    let (runs, store) = run_controller(&client, &leader);
+    let (runs, store) = run_controller(&client, &leader, &settings.daemon.namespace);
     let context = Arc::new(Context {
         runs: store,
         leader: leader.clone(),

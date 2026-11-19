@@ -58,6 +58,7 @@ fn build() -> Build {
         },
     );
     build.metadata.namespace = Some("team-a".to_owned());
+    build.metadata.generation = Some(1);
     build
 }
 
@@ -162,6 +163,26 @@ fn resolves_once_per_interval_or_new_generation() {
     ));
     assert!(needs_resolve(None, Some(1), false, minute, now()));
     assert!(needs_resolve(Some(&status), Some(1), true, minute, now()));
+}
+
+#[test]
+fn a_spec_edit_builds_the_same_commit_again() {
+    let mut build = build();
+    let runs = [run(
+        "api-1",
+        B,
+        Some(Phase::Succeeded),
+        "2026-10-22T07:00:00Z",
+    )];
+    assert_eq!(
+        next_run(&build, B, &runs, Trigger::Poll),
+        NextRun::default()
+    );
+    build.metadata.generation = Some(2);
+    assert_eq!(
+        next_run(&build, B, &runs, Trigger::Poll).create,
+        Some(Trigger::Manual)
+    );
 }
 
 #[test]
