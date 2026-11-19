@@ -168,6 +168,11 @@ fn resolves_once_per_interval_or_new_generation() {
 #[test]
 fn a_spec_edit_builds_the_same_commit_again() {
     let mut build = build();
+    build.status = Some(BuildStatus {
+        last_run_revision: Some(B.to_owned()),
+        last_run_generation: Some(1),
+        ..BuildStatus::default()
+    });
     let runs = [run(
         "api-1",
         B,
@@ -182,6 +187,12 @@ fn a_spec_edit_builds_the_same_commit_again() {
     assert_eq!(
         next_run(&build, B, &runs, Trigger::Poll).create,
         Some(Trigger::Manual)
+    );
+    build.status.as_mut().unwrap().last_run_generation = Some(2);
+    assert_eq!(
+        next_run(&build, B, &[], Trigger::Poll),
+        NextRun::default(),
+        "deleting the run of the new generation does not build it again"
     );
 }
 
@@ -1629,6 +1640,7 @@ fn a_deleted_run_is_not_created_again() {
     let mut build = build();
     build.status = Some(BuildStatus {
         last_run_revision: Some(B.to_owned()),
+        last_run_generation: Some(1),
         ..BuildStatus::default()
     });
     assert_eq!(next_run(&build, B, &[], Trigger::Poll), NextRun::default());

@@ -913,6 +913,12 @@
                     "nullable": true,
                     "type": "string"
                   },
+                  "lastRunGeneration": {
+                    "description": "The `metadata.generation` the controller last created a `BuildRun` for. A different\ngeneration builds the revision again; deleting that run does not.",
+                    "format": "int64",
+                    "nullable": true,
+                    "type": "integer"
+                  },
                   "lastRunRevision": {
                     "description": "The revision the controller last created a `BuildRun` for. Deleting that run does not\nbuild the revision again.",
                     "maxLength": 71,

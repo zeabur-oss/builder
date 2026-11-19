@@ -582,6 +582,7 @@ async fn reconcile_build(build: Arc<Build>, ctx: Arc<Context>) -> Result<Action,
             let run =
                 create_run(&runs_api, &build, sha, status.resolved_ref.clone(), trigger).await?;
             status.last_run_revision = Some(sha.clone());
+            status.last_run_generation = build.metadata.generation;
             tracing::info!(build = %name, namespace = %namespace, buildrun = %run.name_any(), revision = %sha, ?trigger, "new run");
             if !runs.iter().any(|r| r.metadata.name == run.metadata.name) {
                 runs.push(run);
