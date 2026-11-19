@@ -612,12 +612,10 @@ mod tests {
     async fn a_silent_token_endpoint_ends_the_exchange() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/token", listener.local_addr().unwrap());
-        let token_file = std::env::temp_dir().join(format!("federation-{}", std::process::id()));
-        tokio::fs::write(&token_file, "jwt").await.unwrap();
         let federation = Federation::OpenAi {
             provider: "idp_1".to_owned(),
             service_account: "svc_1".to_owned(),
-            token_file: token_file.clone(),
+            token_file: concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/token").into(),
         };
 
         let result = federation
@@ -627,7 +625,6 @@ mod tests {
                 Duration::from_millis(200),
             )
             .await;
-        tokio::fs::remove_file(&token_file).await.unwrap();
         drop(listener);
 
         let Err((reason, detail)) = result else {
