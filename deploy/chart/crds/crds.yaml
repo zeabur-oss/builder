@@ -341,9 +341,15 @@
                           "type": "string"
                         },
                         "type": {
-                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.",
-                          "maxLength": 316,
-                          "minLength": 1,
+                          "description": "The type.",
+                          "enum": [
+                            "Ready",
+                            "SourceReady",
+                            "BuilderReady",
+                            "Reconciling",
+                            "Stalled",
+                            "Unknown"
+                          ],
                           "type": "string"
                         }
                       },
@@ -863,9 +869,15 @@
                           "type": "string"
                         },
                         "type": {
-                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.",
-                          "maxLength": 316,
-                          "minLength": 1,
+                          "description": "The type.",
+                          "enum": [
+                            "Ready",
+                            "SourceReady",
+                            "BuilderReady",
+                            "Reconciling",
+                            "Stalled",
+                            "Unknown"
+                          ],
                           "type": "string"
                         }
                       },
@@ -1238,9 +1250,15 @@
                           "type": "string"
                         },
                         "type": {
-                          "description": "The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,\n`Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.",
-                          "maxLength": 316,
-                          "minLength": 1,
+                          "description": "The type.",
+                          "enum": [
+                            "Ready",
+                            "SourceReady",
+                            "BuilderReady",
+                            "Reconciling",
+                            "Stalled",
+                            "Unknown"
+                          ],
                           "type": "string"
                         }
                       },

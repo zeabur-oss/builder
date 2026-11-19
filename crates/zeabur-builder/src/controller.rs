@@ -62,7 +62,7 @@ use zeabur_builder_api::build_run::{
     BuildRun, BuildRunSpec, BuildRunStatus, Phase, Reason, Trigger,
 };
 use zeabur_builder_api::cluster_builder::ClusterBuilder;
-use zeabur_builder_api::common::ConditionStatus;
+use zeabur_builder_api::common::{ConditionStatus, ConditionType};
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::repo::RepoKey;
 use zeabur_builder_jobspec::{GitAuth, JobInputs, JobMemory};
@@ -188,11 +188,10 @@ impl Lookup for ClusterLookup {
 
     fn touch<'a>(&'a self, namespace: &'a str, name: &'a str, at: Timestamp) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            let patch = serde_json::json!({
-                "apiVersion": Build::api_version(&()),
-                "kind": Build::kind(&()),
-                "status": {"lastWebhookAt": at.to_string()},
-            });
+            let status = WebhookStatus {
+                last_webhook_at: at,
+            };
+            let patch = StatusPatch::new::<Build>(&status);
             let patched = Api::<Build>::namespaced(self.client.clone(), namespace)
                 .patch_status(
                     name,
@@ -231,20 +230,41 @@ fn now() -> Timestamp {
     Timestamp::now()
 }
 
+/// A server-side apply of the `status` of a resource, and no other field.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusPatch<'a, S> {
+    api_version: String,
+    kind: String,
+    status: &'a S,
+}
+
+impl<'a, S> StatusPatch<'a, S> {
+    fn new<K: kube::Resource<DynamicType = ()>>(status: &'a S) -> Self {
+        Self {
+            api_version: K::api_version(&()).into_owned(),
+            kind: K::kind(&()).into_owned(),
+            status,
+        }
+    }
+}
+
+/// The part of a `Build`'s status a webhook receiver writes.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebhookStatus {
+    last_webhook_at: Timestamp,
+}
+
 async fn apply_status<K, S>(api: &Api<K>, name: &str, status: &S) -> Result<(), Error>
 where
-    S: Serialize + Sync,
+    S: Serialize + std::fmt::Debug + Sync,
     K: kube::Resource<DynamicType = ()> + Clone + serde::de::DeserializeOwned + std::fmt::Debug,
 {
-    let body = serde_json::json!({
-        "apiVersion": K::api_version(&()),
-        "kind": K::kind(&()),
-        "status": status,
-    });
     api.patch_status(
         name,
         &PatchParams::apply(MANAGER).force(),
-        &Patch::Apply(body),
+        &Patch::Apply(StatusPatch::new::<K>(status)),
     )
     .await?;
     Ok(())
@@ -414,7 +434,7 @@ async fn find_builder(
         decide::builder_ready(builder.is_some(), &build.spec.builder_ref);
     decide::set_condition(
         &mut status.conditions,
-        "BuilderReady",
+        ConditionType::BuilderReady,
         ready,
         reason,
         &message,
@@ -565,7 +585,7 @@ async fn resolve_source(
         status.resolved_ref = None;
         decide::set_condition(
             &mut status.conditions,
-            "SourceReady",
+            ConditionType::SourceReady,
             ready,
             reason,
             &message,
@@ -584,7 +604,7 @@ async fn resolve_source(
                 .await
             {
                 Ok(resolved) => {
-                    status.last_resolved_at = Some(at.to_string());
+                    status.last_resolved_at = Some(at);
                     status.resolved_ref = Some(resolved.name);
                     Ok(resolved.commit)
                 }
@@ -602,7 +622,7 @@ async fn resolve_source(
             status.remote_revision = Some(sha.clone());
             decide::set_condition(
                 &mut status.conditions,
-                "SourceReady",
+                ConditionType::SourceReady,
                 ConditionStatus::True,
                 ConditionReason::Resolved,
                 &decide::resolved_message(&git.git_ref, status.resolved_ref.as_deref(), sha),
@@ -614,7 +634,7 @@ async fn resolve_source(
             tracing::info!(build = %build.name_any(), %reason, message, "ref not resolved");
             decide::set_condition(
                 &mut status.conditions,
-                "SourceReady",
+                ConditionType::SourceReady,
                 ConditionStatus::False,
                 *reason,
                 message,
@@ -793,7 +813,7 @@ async fn cancel_run(ctx: &Context, build: &Build, name: &str) -> Result<(), Erro
     status.phase = Some(Phase::Cancelled);
     status.reason = Some(Reason::Cancelled);
     status.message = Some("a newer run replaced it".to_owned());
-    status.completion_time = Some(now().to_string());
+    status.completion_time = Some(now());
     apply_run_status(&runs, &run, status).await?;
     report(
         ctx,
@@ -913,10 +933,7 @@ async fn daemon_out_of_memory(ctx: &Context, status: &BuildRunStatus) -> Result<
     let Some(pod) = &status.buildkitd_instance else {
         return Ok(false);
     };
-    let since = status
-        .start_time
-        .as_deref()
-        .and_then(|t| t.parse::<Timestamp>().ok());
+    let since = status.start_time;
     let pod = Api::<Pod>::namespaced(ctx.client.clone(), &ctx.settings.daemon.namespace)
         .get_opt(pod)
         .await?;
@@ -930,7 +947,7 @@ async fn finish(
 ) -> Result<Action, Error> {
     let namespace = run.namespace().unwrap_or_default();
     let name = run.name_any();
-    status.completion_time = Some(now().to_string());
+    status.completion_time = Some(now());
     let status = decide::run_status(run, status, now());
     apply_status(
         &Api::<BuildRun>::namespaced(ctx.client.clone(), &namespace),
@@ -1045,7 +1062,7 @@ async fn notify_targets(
         }
     }
     let status = BuildRunStatus {
-        notified_at: Some(now().to_string()),
+        notified_at: Some(now()),
         ..run.status.clone().unwrap_or_default()
     };
     apply_run_status(
@@ -1259,7 +1276,7 @@ async fn job_created(
         message: None,
         job_ref: Some(name.clone()),
         buildkitd_instance: Some(pod.to_owned()),
-        start_time: Some(now().to_string()),
+        start_time: Some(now()),
         tags,
         ..status
     };
@@ -1335,7 +1352,7 @@ async fn short_of_resources(
     }
     if decide::release_slot(&runs, run, &ready, since, now(), ctx.settings.pending_grace) {
         status.buildkitd_instance = None;
-        status.slot_released_at = Some(now().to_string());
+        status.slot_released_at = Some(now());
         let message = format!("{message}. Its slot went to a run that can start now");
         return pending(ctx, run, status, Reason::InsufficientResources, message).await;
     }
@@ -1676,7 +1693,7 @@ async fn upload_token(
     Ok(UploadToken {
         request: request.to_owned(),
         secret_name,
-        expires_at: expires.to_string(),
+        expires_at: expires,
     })
 }
 

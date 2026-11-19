@@ -164,13 +164,16 @@ fn phase_seconds(phases: &mut BTreeMap<String, f64>) {
     }
 }
 
+/// The file `buildctl --metadata-file` writes.
+#[derive(serde::Deserialize)]
+struct BuildMetadata {
+    #[serde(rename = "containerimage.digest")]
+    digest: Option<String>,
+}
+
 fn digest(metadata_file: Option<&str>) -> Option<String> {
     let text = std::fs::read_to_string(metadata_file?).ok()?;
-    let metadata: serde_json::Value = serde_json::from_str(&text).ok()?;
-    metadata
-        .get("containerimage.digest")?
-        .as_str()
-        .map(str::to_owned)
+    serde_json::from_str::<BuildMetadata>(&text).ok()?.digest
 }
 
 /// Splits a CSV record as `buildctl` reads `--output` (`encoding/csv`).

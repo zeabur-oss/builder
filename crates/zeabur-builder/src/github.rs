@@ -51,8 +51,9 @@ use http::{Method, Request, StatusCode, header};
 use http_body_util::{BodyExt as _, Full, Limited};
 use jiff::Timestamp;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::Api;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use zeabur_builder_api::build::ConditionReason;
 use zeabur_builder_core::repo::RepoKey;
 
@@ -69,9 +70,24 @@ const TOKEN_MARGIN: Duration = Duration::from_mins(5);
 /// The longest description GitHub shows on a status; longer ones are cut.
 const MAX_DESCRIPTION: usize = 140;
 
+/// The JWT's issuer: the client id, or the App id when the Secret has no client id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum Issuer {
+    ClientId(String),
+    AppId(u64),
+}
+
+#[derive(Serialize)]
+struct Claims<'a> {
+    iat: i64,
+    exp: i64,
+    iss: &'a Issuer,
+}
+
 /// What the App's Secret holds.
 pub(crate) struct AppConfig {
-    issuer: Value,
+    issuer: Issuer,
     key: RsaKeyPair,
     /// The App webhook's secret.
     pub(crate) webhook_secret: Option<Vec<u8>>,
@@ -105,10 +121,10 @@ impl AppConfig {
     pub(crate) fn from_secret(secret: &Secret) -> Result<Self, String> {
         let app_id = text(secret, "app-id").ok_or("no `app-id`")?;
         let issuer = match text(secret, "client-id") {
-            Some(client_id) => Value::String(client_id),
+            Some(client_id) => Issuer::ClientId(client_id),
             None => app_id
                 .parse::<u64>()
-                .map(Value::from)
+                .map(Issuer::AppId)
                 .map_err(|_error| "`app-id` is not a number")?,
         };
         let pem = text(secret, "private-key").ok_or("no `private-key`")?;
@@ -131,8 +147,13 @@ impl AppConfig {
     pub(crate) fn jwt(&self, now: Timestamp) -> Result<String, String> {
         let now = now.as_second();
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
-        let claims = json!({"iat": now - 60, "exp": now + 9 * 60, "iss": self.issuer});
-        let claims = URL_SAFE_NO_PAD.encode(claims.to_string());
+        let claims = Claims {
+            iat: now - 60,
+            exp: now + 9 * 60,
+            iss: &self.issuer,
+        };
+        let claims = serde_json::to_vec(&claims).map_err(|_error| "cannot encode the JWT")?;
+        let claims = URL_SAFE_NO_PAD.encode(claims);
         let input = format!("{header}.{claims}");
         let mut signature = vec![0; self.key.public_modulus_len()];
         self.key
@@ -220,12 +241,46 @@ pub(crate) enum Access {
 }
 
 impl Access {
-    fn permissions(self) -> Value {
+    const fn permissions(self) -> Permissions {
         match self {
-            Self::Controller => json!({"contents": "read", "statuses": "write"}),
-            Self::Fetch => json!({"contents": "read"}),
+            Self::Controller => Permissions {
+                contents: "read",
+                statuses: Some("write"),
+            },
+            Self::Fetch => Permissions {
+                contents: "read",
+                statuses: None,
+            },
         }
     }
+}
+
+/// The permissions a token asks for.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct Permissions {
+    contents: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    statuses: Option<&'static str>,
+}
+
+/// The body of `POST /app/installations/{id}/access_tokens`.
+#[derive(Serialize)]
+struct TokenRequest<'a> {
+    repositories: [&'a str; 1],
+    permissions: Permissions,
+}
+
+/// What GitHub answers to a token request.
+#[derive(Deserialize)]
+struct TokenAnswer {
+    token: String,
+    expires_at: Option<Time>,
+}
+
+/// An error answer of GitHub.
+#[derive(Deserialize)]
+struct ErrorAnswer {
+    message: Option<String>,
 }
 
 /// A commit status.
@@ -252,10 +307,21 @@ impl State {
     }
 }
 
+/// A commit status body.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub(crate) struct StatusBody<'a> {
+    state: &'static str,
+    context: &'a str,
+    description: String,
+}
+
 /// The body of a commit status.
-pub(crate) fn status_body(state: State, context: &str, description: &str) -> Value {
-    let description: String = description.chars().take(MAX_DESCRIPTION).collect();
-    json!({"state": state.as_str(), "context": context, "description": description})
+pub(crate) fn status_body<'a>(state: State, context: &'a str, description: &str) -> StatusBody<'a> {
+    StatusBody {
+        state: state.as_str(),
+        context,
+        description: description.chars().take(MAX_DESCRIPTION).collect(),
+    }
 }
 
 /// Installation, Build and access of a cached token.
@@ -392,7 +458,10 @@ impl GitHub {
             "{}/app/installations/{installation}/access_tokens",
             app.api_url
         );
-        let body = json!({"repositories": [name], "permissions": access.permissions()});
+        let body = TokenRequest {
+            repositories: [name],
+            permissions: access.permissions(),
+        };
         let (status, answer) = self.call(Method::POST, &url, &jwt, &body).await?;
         if status != StatusCode::CREATED {
             let reason = if status.is_server_error() {
@@ -408,27 +477,13 @@ impl GitHub {
                 ),
             ));
         }
-        let answer: Value = serde_json::from_slice(&answer).map_err(|_error| {
+        let TokenAnswer { token, expires_at } = serde_json::from_slice(&answer).map_err(|e| {
             (
                 ConditionReason::ResolveFailed,
-                "GitHub's token answer is not JSON".to_owned(),
+                format!("GitHub's token answer is not a token: {e}"),
             )
         })?;
-        let token = answer
-            .get("token")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                (
-                    ConditionReason::ResolveFailed,
-                    "GitHub's answer has no token".to_owned(),
-                )
-            })?
-            .to_owned();
-        let expires = answer
-            .get("expires_at")
-            .and_then(Value::as_str)
-            .and_then(|t| t.parse::<Timestamp>().ok())
-            .unwrap_or(now);
+        let expires = expires_at.map_or(now, |t| t.0);
         if access == Access::Controller {
             let mut tokens = self.tokens.lock().unwrap_or_else(PoisonError::into_inner);
             tokens.retain(|_, (_, e)| *e > now);
@@ -438,7 +493,13 @@ impl GitHub {
     }
 
     /// Sets a commit status. Failures are logged; a build never fails over its status.
-    pub(crate) async fn report(&self, installation: i64, key: &RepoKey, sha: &str, body: &Value) {
+    pub(crate) async fn report(
+        &self,
+        installation: i64,
+        key: &RepoKey,
+        sha: &str,
+        body: &StatusBody<'_>,
+    ) {
         if let Err(e) = self.try_report(installation, key, sha, body).await {
             tracing::warn!(repository = %key, revision = sha, error = %e.1, "commit status not set");
         }
@@ -449,7 +510,7 @@ impl GitHub {
         installation: i64,
         key: &RepoKey,
         sha: &str,
-        body: &Value,
+        body: &StatusBody<'_>,
     ) -> Result<(), Refusal> {
         let app = self.app().await?;
         let (owner, name) = app
@@ -473,7 +534,7 @@ impl GitHub {
         method: Method,
         url: &str,
         bearer: &str,
-        body: &Value,
+        body: &(impl Serialize + Sync),
     ) -> Result<(StatusCode, Bytes), Refusal> {
         let failed = |e: &dyn fmt::Display| (ConditionReason::ResolveFailed, format!("{url}: {e}"));
         let mut auth =
@@ -487,7 +548,9 @@ impl GitHub {
             .header(header::CONTENT_TYPE, "application/json")
             .header("X-GitHub-Api-Version", API_VERSION)
             .header(header::AUTHORIZATION, auth)
-            .body(Full::new(Bytes::from(body.to_string())))
+            .body(Full::new(Bytes::from(
+                serde_json::to_vec(body).map_err(|e| failed(&e))?,
+            )))
             .map_err(|e| failed(&e))?;
         let response = tokio::time::timeout(TIMEOUT, self.http.request(request))
             .await
@@ -508,13 +571,9 @@ impl GitHub {
 
 /// GitHub's `message`, for an error.
 fn github_message(answer: &[u8]) -> String {
-    serde_json::from_slice::<Value>(answer)
+    serde_json::from_slice::<ErrorAnswer>(answer)
         .ok()
-        .and_then(|v| {
-            v.get("message")
-                .and_then(Value::as_str)
-                .map(|m| m.chars().take(200).collect())
-        })
+        .and_then(|v| v.message)
         .unwrap_or_default()
 }
 
@@ -526,6 +585,7 @@ mod tests {
     use aws_lc_rs::rsa::KeySize;
     use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
     use k8s_openapi::ByteString;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -592,7 +652,7 @@ mod tests {
         let (pem, _) = pkcs8_pem();
         let app =
             AppConfig::from_secret(&secret(&[("app-id", "12345"), ("private-key", &pem)])).unwrap();
-        assert_eq!(app.issuer, json!(12345));
+        assert_eq!(app.issuer, Issuer::AppId(12345));
         assert!(app.webhook_secret.is_none());
     }
 
@@ -682,15 +742,16 @@ mod tests {
     #[test]
     fn status_descriptions_are_cut() {
         let body = status_body(State::Failure, "zeabur-builder/a/b", &"x".repeat(500));
-        assert_eq!(body["state"], "failure");
-        assert_eq!(body["description"].as_str().unwrap().len(), MAX_DESCRIPTION);
+        assert_eq!(body.state, "failure");
+        assert_eq!(body.description.len(), MAX_DESCRIPTION);
     }
 
     #[test]
     fn token_permissions() {
-        assert_eq!(Access::Fetch.permissions(), json!({"contents": "read"}));
+        let written = |access: Access| serde_json::to_value(access.permissions()).unwrap();
+        assert_eq!(written(Access::Fetch), json!({"contents": "read"}));
         assert_eq!(
-            Access::Controller.permissions(),
+            written(Access::Controller),
             json!({"contents": "read", "statuses": "write"})
         );
     }

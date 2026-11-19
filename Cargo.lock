@@ -4394,6 +4394,7 @@ dependencies = [
 name = "zeabur-builder-api"
 version = "0.2.3"
 dependencies = [
+ "jiff",
  "k8s-openapi",
  "kube",
  "schemars",

@@ -21,7 +21,7 @@ use zeabur_builder_api::cluster_builder::{
     BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderSpec,
     ClusterBuilderStatus,
 };
-use zeabur_builder_api::common::{Condition, ConditionStatus, SecretKeyRef};
+use zeabur_builder_api::common::{Condition, ConditionStatus, ConditionType, SecretKeyRef};
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::plan::{self, Info};
 use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome, Step};
@@ -68,14 +68,13 @@ pub(crate) enum Wake {
 /// ref is being resolved is stamped later than the reconcile's time and stays pending. A failed
 /// resolve leaves it pending, retried by later reconciles.
 pub(crate) fn wake(status: Option<&BuildStatus>, now: Timestamp) -> Wake {
-    let time = |t: Option<&str>| t.and_then(|t| t.parse::<Timestamp>().ok());
     let Some(status) = status else {
         return Wake::Idle;
     };
-    let Some(hook) = time(status.last_webhook_at.as_deref()) else {
+    let Some(hook) = status.last_webhook_at else {
         return Wake::Idle;
     };
-    let Some(last) = time(status.last_resolved_at.as_deref()) else {
+    let Some(last) = status.last_resolved_at else {
         return Wake::Now;
     };
     if last >= hook {
@@ -98,8 +97,8 @@ pub(crate) fn next_poll(status: &BuildStatus, interval: Duration, now: Timestamp
     let failing = status
         .conditions
         .iter()
-        .find(|c| c.kind == "SourceReady" && c.status == ConditionStatus::False)
-        .and_then(|c| c.last_transition_time.parse::<Timestamp>().ok())
+        .find(|c| c.kind == ConditionType::SourceReady && c.status == ConditionStatus::False)
+        .map(|c| c.last_transition_time)
         .map_or(Duration::ZERO, |since| {
             now.duration_since(since).unsigned_abs()
         });
@@ -166,7 +165,7 @@ pub(crate) fn recorded(
     let age = now.duration_since(created).unsigned_abs();
     (age >= START_GRACE).then(|| BuildRunStatus {
         job_ref: job.metadata.name.clone(),
-        start_time: Some(created.to_string()),
+        start_time: Some(created),
         ..status
     })
 }
@@ -249,7 +248,10 @@ pub(crate) fn run_status(
         .as_ref()
         .map_or_default(|stored| stored.conditions.clone());
     let conditions = &mut status.conditions;
-    for (kind, holds) in [("Reconciling", reconciling), ("Stalled", stalled)] {
+    for (kind, holds) in [
+        (ConditionType::Reconciling, reconciling),
+        (ConditionType::Stalled, stalled),
+    ] {
         if holds {
             let reason = why.clone();
             put_condition(
@@ -265,7 +267,15 @@ pub(crate) fn run_status(
             conditions.retain(|c| c.kind != kind);
         }
     }
-    put_condition(conditions, "Ready", ready, why, &message, now, generation);
+    put_condition(
+        conditions,
+        ConditionType::Ready,
+        ready,
+        why,
+        &message,
+        now,
+        generation,
+    );
     status
 }
 
@@ -279,7 +289,7 @@ fn wire<T: Serialize>(value: T) -> String {
 
 fn put_condition(
     conditions: &mut Vec<Condition>,
-    kind: &str,
+    kind: ConditionType,
     status: ConditionStatus,
     reason: String,
     message: &str,
@@ -289,10 +299,10 @@ fn put_condition(
     let transition = conditions
         .iter()
         .find(|c| c.kind == kind && c.status == status)
-        .map_or_else(|| now.to_string(), |c| c.last_transition_time.clone());
+        .map_or(now, |c| c.last_transition_time);
     conditions.retain(|c| c.kind != kind);
     conditions.push(Condition {
-        kind: kind.to_owned(),
+        kind,
         status,
         reason,
         message: message.to_owned(),
@@ -304,7 +314,7 @@ fn put_condition(
 /// Sets a condition, keeping its transition time when the status did not change.
 pub(crate) fn set_condition(
     conditions: &mut Vec<Condition>,
-    kind: &str,
+    kind: ConditionType,
     status: ConditionStatus,
     reason: ConditionReason,
     message: &str,
@@ -336,11 +346,7 @@ pub(crate) fn needs_resolve(
     if force || status.remote_revision.is_none() || status.observed_generation != generation {
         return true;
     }
-    let Some(last) = status
-        .last_resolved_at
-        .as_deref()
-        .and_then(|t| t.parse::<Timestamp>().ok())
-    else {
+    let Some(last) = status.last_resolved_at else {
         return true;
     };
     now.duration_since(last).unsigned_abs() >= interval
@@ -476,17 +482,11 @@ pub(crate) fn next_run(
     }
 }
 
-fn finished_at(run: &BuildRun) -> String {
+fn finished_at(run: &BuildRun) -> Option<Timestamp> {
     run.status
         .as_ref()
-        .and_then(|s| s.completion_time.clone())
-        .or_else(|| {
-            run.metadata
-                .creation_timestamp
-                .as_ref()
-                .map(|t| t.0.to_string())
-        })
-        .unwrap_or_default()
+        .and_then(|s| s.completion_time)
+        .or_else(|| run.metadata.creation_timestamp.as_ref().map(|t| t.0))
 }
 
 /// The successful run created last, the image `status.latestImage` names and Keel is told of.
@@ -590,7 +590,7 @@ pub(crate) fn cluster_builder_status(
         .map_or_default(|stored| stored.conditions.clone());
     set_condition(
         &mut conditions,
-        "Ready",
+        ConditionType::Ready,
         ConditionStatus::True,
         ConditionReason::Published,
         "the status holds the controller's build settings",
@@ -710,10 +710,7 @@ fn released_at(run: &BuildRun) -> Option<Timestamp> {
     if !released(run) {
         return None;
     }
-    run.status
-        .as_ref()
-        .and_then(|s| s.slot_released_at.as_deref())
-        .and_then(|t| t.parse().ok())
+    run.status.as_ref().and_then(|s| s.slot_released_at)
 }
 
 type QueueKey<'a> = (bool, Option<Timestamp>, Option<Timestamp>, Option<&'a str>);
@@ -917,11 +914,7 @@ pub(crate) fn oom_killed(pod: &Pod, since: Option<Timestamp>) -> bool {
 
 fn last_activity(run: &BuildRun) -> Option<Timestamp> {
     let created = run.metadata.creation_timestamp.as_ref().map(|t| t.0);
-    let completed = run
-        .status
-        .as_ref()
-        .and_then(|s| s.completion_time.as_deref())
-        .and_then(|t| t.parse::<Timestamp>().ok());
+    let completed = run.status.as_ref().and_then(|s| s.completion_time);
     created.max(completed)
 }
 
@@ -1191,7 +1184,7 @@ pub(crate) fn summarise(
     );
     set_condition(
         &mut status.conditions,
-        "Ready",
+        ConditionType::Ready,
         ready,
         reason,
         &message,
@@ -1329,8 +1322,8 @@ fn api_step(step: Step) -> run_api::Step {
             result::StepState::Failed => StepState::Failed,
         },
         cached: step.cached,
-        start_time: step.start_time,
-        completion_time: step.completion_time,
+        start_time: step.start_time.and_then(|t| t.parse().ok()),
+        completion_time: step.completion_time.and_then(|t| t.parse().ok()),
         message: step.message,
     }
 }

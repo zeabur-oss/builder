@@ -24,6 +24,10 @@ fn set_ref(build: &mut Build, git_ref: &str) {
     }
 }
 
+fn ts(at: &str) -> Timestamp {
+    at.parse().unwrap()
+}
+
 fn now() -> Timestamp {
     "2026-10-22T08:00:00Z".parse().unwrap()
 }
@@ -70,7 +74,7 @@ fn run(name: &str, revision: &str, phase: Option<Phase>, at: &str) -> BuildRun {
     run.metadata.creation_timestamp = Some(Time(at.parse().unwrap()));
     run.status = Some(BuildRunStatus {
         phase,
-        completion_time: is_finished(phase).then(|| at.to_owned()),
+        completion_time: is_finished(phase).then(|| ts(at)),
         ..admitted(BuildRunStatus::default())
     });
     run
@@ -103,7 +107,7 @@ fn conditions_keep_their_transition_time() {
     let earlier: Timestamp = "2026-10-22T07:00:00Z".parse().unwrap();
     set_condition(
         &mut conditions,
-        "Ready",
+        ConditionType::Ready,
         ConditionStatus::True,
         ConditionReason::Succeeded,
         "",
@@ -112,7 +116,7 @@ fn conditions_keep_their_transition_time() {
     );
     set_condition(
         &mut conditions,
-        "Ready",
+        ConditionType::Ready,
         ConditionStatus::True,
         ConditionReason::Succeeded,
         "again",
@@ -120,25 +124,25 @@ fn conditions_keep_their_transition_time() {
         Some(2),
     );
     assert_eq!(conditions.len(), 1);
-    assert_eq!(conditions[0].last_transition_time, earlier.to_string());
+    assert_eq!(conditions[0].last_transition_time, earlier);
     assert_eq!(conditions[0].message, "again");
     set_condition(
         &mut conditions,
-        "Ready",
+        ConditionType::Ready,
         ConditionStatus::False,
         ConditionReason::BuildFailed,
         "",
         now(),
         Some(2),
     );
-    assert_eq!(conditions[0].last_transition_time, now().to_string());
+    assert_eq!(conditions[0].last_transition_time, now());
 }
 
 #[test]
 fn resolves_once_per_interval_or_new_generation() {
     let status = BuildStatus {
         remote_revision: Some(A.to_owned()),
-        last_resolved_at: Some("2026-10-22T07:59:30Z".to_owned()),
+        last_resolved_at: Some(ts("2026-10-22T07:59:30Z")),
         observed_generation: Some(1),
         ..BuildStatus::default()
     };
@@ -179,8 +183,8 @@ fn a_woken_build_records_the_webhook_as_its_trigger() {
 #[test]
 fn webhooks_wake_from_status_and_wait_out_the_gap() {
     let status = |hook: Option<&str>, resolved: Option<&str>| BuildStatus {
-        last_webhook_at: hook.map(str::to_owned),
-        last_resolved_at: resolved.map(str::to_owned),
+        last_webhook_at: hook.map(ts),
+        last_resolved_at: resolved.map(ts),
         ..BuildStatus::default()
     };
     assert_eq!(wake(None, now()), Wake::Idle);
@@ -685,8 +689,8 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
     assert!(json.get("buildCeiling").is_none(), "{json}");
     let ready = &status.conditions[0];
     assert_eq!(
-        (ready.kind.as_str(), ready.status, ready.reason.as_str()),
-        ("Ready", ConditionStatus::True, "Published")
+        (ready.kind, ready.status, ready.reason.as_str()),
+        (ConditionType::Ready, ConditionStatus::True, "Published")
     );
     assert_eq!(ready.observed_generation, Some(1));
 
@@ -923,7 +927,7 @@ fn the_newest_success_is_notified_once() {
         Some("api-2")
     );
     if let Some(s) = new.status.as_mut() {
-        s.notified_at = Some(now().to_string());
+        s.notified_at = Some(now());
     }
     assert!(notify_due(&build, &[old, new, failed]).is_none());
 }
@@ -940,11 +944,11 @@ fn an_older_commit_finishing_late_does_not_replace_the_newer_image() {
     }];
     let mut older = succeeded("api-1", A, "2026-10-22T01:00:00Z", &["main-1-3e1a9c2"]);
     if let Some(s) = older.status.as_mut() {
-        s.completion_time = Some("2026-10-22T03:00:00Z".to_owned());
+        s.completion_time = Some(ts("2026-10-22T03:00:00Z"));
     }
     let mut newer = succeeded("api-2", B, "2026-10-22T02:00:00Z", &["main-2-0123456"]);
     if let Some(s) = newer.status.as_mut() {
-        s.notified_at = Some("2026-10-22T02:10:00Z".to_owned());
+        s.notified_at = Some(ts("2026-10-22T02:10:00Z"));
     }
     let runs = [older, newer];
 
@@ -1457,7 +1461,7 @@ fn a_job_is_used_once_its_run_records_it() {
     let later = now() + START_GRACE;
     let adopted = recorded(unrecorded, &job, later).unwrap();
     assert_eq!(adopted.job_ref.as_deref(), Some("app-x1"));
-    assert_eq!(adopted.start_time, Some(now().to_string()));
+    assert_eq!(adopted.start_time, Some(now()));
 }
 
 #[test]
@@ -1489,7 +1493,7 @@ fn a_ref_that_does_not_resolve_is_asked_less_often() {
         let mut status = BuildStatus::default();
         set_condition(
             &mut status.conditions,
-            "SourceReady",
+            ConditionType::SourceReady,
             ConditionStatus::False,
             ConditionReason::ResolveFailed,
             "",
@@ -1771,7 +1775,7 @@ fn steps_reach_the_run_within_the_crd_bounds() {
     );
 }
 
-fn condition<'a>(status: &'a BuildRunStatus, kind: &str) -> Option<&'a Condition> {
+fn condition(status: &BuildRunStatus, kind: ConditionType) -> Option<&Condition> {
     status.conditions.iter().find(|c| c.kind == kind)
 }
 
@@ -1839,46 +1843,44 @@ fn run_conditions_follow_the_phase() {
             Some(Reason::QuotaExceeded),
             "2026-10-22T01:00:00Z",
         );
-        let reconciling = condition(&pending, "Reconciling").unwrap();
+        let reconciling = condition(&pending, ConditionType::Reconciling).unwrap();
         assert_eq!(reconciling.status, ConditionStatus::True, "{case}");
         assert_eq!(reconciling.reason, "QuotaExceeded", "{case}");
         assert_eq!(
-            condition(&pending, "Ready").unwrap().status,
+            condition(&pending, ConditionType::Ready).unwrap().status,
             ConditionStatus::False
         );
-        assert!(condition(&pending, "Stalled").is_none(), "{case}");
+        assert!(
+            condition(&pending, ConditionType::Stalled).is_none(),
+            "{case}"
+        );
 
         let planning = step(pending, Phase::Planning, None, "2026-10-22T01:01:00Z");
         let building = step(planning, Phase::Building, None, "2026-10-22T01:02:00Z");
-        let reconciling = condition(&building, "Reconciling").unwrap();
+        let reconciling = condition(&building, ConditionType::Reconciling).unwrap();
         assert_eq!(reconciling.reason, "Building", "{case}");
         // Still True since Pending: the transition time stays.
-        assert_eq!(
-            reconciling.last_transition_time, "2026-10-22T01:00:00Z",
-            "{case}"
-        );
-        let ready_since = condition(&building, "Ready")
-            .unwrap()
-            .last_transition_time
-            .clone();
-        assert_eq!(ready_since, "2026-10-22T01:00:00Z", "{case}");
+        let since = ts("2026-10-22T01:00:00Z");
+        assert_eq!(reconciling.last_transition_time, since, "{case}");
+        let building_ready = condition(&building, ConditionType::Ready).unwrap();
+        assert_eq!(building_ready.last_transition_time, since, "{case}");
 
         let done = step(building, end, reason, "2026-10-22T01:03:00Z");
-        assert!(condition(&done, "Reconciling").is_none(), "{case}");
+        assert!(
+            condition(&done, ConditionType::Reconciling).is_none(),
+            "{case}"
+        );
         assert_eq!(
-            condition(&done, "Stalled").map(|c| (c.status, c.reason.as_str())),
+            condition(&done, ConditionType::Stalled).map(|c| (c.status, c.reason.as_str())),
             stalled.map(|r| (ConditionStatus::True, r)),
             "{case}"
         );
-        let ready_condition = condition(&done, "Ready").unwrap();
+        let ready_condition = condition(&done, ConditionType::Ready).unwrap();
         assert_eq!(ready_condition.status, ready, "{case}");
         assert_eq!(ready_condition.reason, ready_reason, "{case}");
         let moved = ready == ConditionStatus::True;
-        assert_eq!(
-            ready_condition.last_transition_time == "2026-10-22T01:03:00Z",
-            moved,
-            "{case}"
-        );
+        let at_end = ready_condition.last_transition_time == ts("2026-10-22T01:03:00Z");
+        assert_eq!(at_end, moved, "{case}");
         for c in &done.conditions {
             assert_eq!(c.observed_generation, Some(3), "{case}");
         }
@@ -2058,7 +2060,7 @@ fn a_run_gives_its_slot_to_a_run_that_comes_before_it_afterwards() {
 fn runs_that_gave_their_slots_back_take_turns() {
     let released_at = |mut run: BuildRun, at: &str| {
         if let Some(status) = run.status.as_mut() {
-            status.slot_released_at = Some(at.to_owned());
+            status.slot_released_at = Some(ts(at));
         }
         run
     };
