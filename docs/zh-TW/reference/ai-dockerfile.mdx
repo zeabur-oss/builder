@@ -1,0 +1,206 @@
+---
+title: 用 AI 寫 Dockerfile
+description: 在沒有 Dockerfile 的儲存庫執行 zeabur-builder-agent，取得通過試建置的 Dockerfile，再交給 Zeabur Builder 使用。
+---
+
+儲存庫還沒有 Dockerfile 時，可以執行 `zeabur-builder-agent`，讓模型讀取程式碼、撰寫 Dockerfile，並在 BuildKit daemon（`buildkitd`）上試建置；工具只會給你建置成功的 Dockerfile。目前需要自行執行指令，尚未提供 `agent` 類型的 ClusterBuilder，叢集整合規劃見 [issue #152](https://github.com/zeabur-oss/builder/issues/152)。
+
+## 執行
+
+<Steps>
+
+<Step>
+
+### 編譯工具並準備 BuildKit
+
+`zeabur-builder-agent` 尚未包含在發布版本中，請在 Zeabur Builder 的儲存庫裡進入開發環境，再編譯：
+
+```sh
+nix develop
+cargo build --release -p zeabur-builder-agent
+export PATH="$PWD/target/release:$PATH"
+```
+
+工具需要 PATH 中的 `buildctl`，開發環境已經有這個指令。另外要準備一個連得到的 `buildkitd`，下一步會用 `--buildkit` 指定它的位址。
+
+</Step>
+
+<Step>
+
+### 指定儲存庫、供應商、模型與輸出位置
+
+將 `./my-app` 換成應用程式所在的資料夾，並把 API 金鑰設定在供應商自己的環境變數：
+
+```sh
+export ANTHROPIC_API_KEY=…
+zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
+  --provider anthropic --model claude-opus-5-5 --out ./plan
+```
+
+`--provider` 填供應商在 Rig 裡的名稱，Rig 是工具用來連線模型的函式庫。這個名稱決定端點、API 格式和金鑰變數。`--model` 填供應商自己的模型名稱，這個版本之後才推出的模型也可以用。建議使用能力較強、支援工具呼叫的模型，例如 `anthropic` 的 `claude-opus-5-5` 或 `openai` 的 `gpt-6.1-sol`。
+
+| 供應商 | `--provider` | `--model` 例子 | API 格式 | 金鑰變數 |
+| --- | --- | --- | --- | --- |
+| Anthropic | `anthropic` | `claude-opus-5-5` | Messages | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | `gpt-6.1-sol` | Responses | `OPENAI_API_KEY` |
+| Google Gemini | `gcp.gemini` | `gemini-2.5-pro` | Gemini | `GEMINI_API_KEY` |
+| OpenRouter | `openrouter` | `anthropic/claude-opus-5.5` | Chat Completions | `OPENROUTER_API_KEY` |
+| DeepSeek | `deepseek` | `deepseek-v4-flash` | Chat Completions | `DEEPSEEK_API_KEY` |
+| Mistral | `mistral` | `mistral-large-latest` | Chat Completions | `MISTRAL_API_KEY` |
+| xAI | `xai` | `grok-4.7` | Responses | `XAI_API_KEY` |
+| Groq | `groq` | `llama-3.3-70b-versatile` | Chat Completions | `GROQ_API_KEY` |
+| Together AI | `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | Chat Completions | `TOGETHER_API_KEY` |
+| Moonshot AI | `moonshot` | `kimi-k3` | Chat Completions | `MOONSHOT_API_KEY` |
+| Z.ai | `zai` | `glm-5` | Chat Completions | `ZAI_API_KEY` |
+| Ollama | `ollama` | `qwen3` | Chat Completions | `OLLAMA_API_KEY`（可不設） |
+| llama.cpp、vLLM | `llamacpp` | `…` | Chat Completions | `LLAMACPP_API_KEY`（可不設） |
+
+透過代理伺服器連線，或連到自己架設的伺服器時，用 `--base-url` 指定網址。llama.cpp、vLLM 等提供 Chat Completions API 的伺服器用 `llamacpp`；Ollama 沒有設定 `--base-url` 時連到 `http://localhost:11434/v1`。
+
+依照 BuildKit 的設定調整參數：
+
+| 參數 | 用途 |
+| --- | --- |
+| `--buildkit` | `buildkitd` 的連線位址。 |
+| `--tlsdir` | `buildkitd` 使用 mTLS 時，指定含有 `ca.pem`、`cert.pem`、`key.pem` 的資料夾。 |
+| `--registry` | 允許拉取映像檔的 registry。預設為 `docker.io`、`ghcr.io`、`quay.io`、`gcr.io`；重複傳入此參數可設定自己的清單。 |
+| `--out` | 輸出資料夾，預設為 `/workspace/plan`，上面的例子改成 `./plan`。 |
+
+</Step>
+
+<Step>
+
+### 使用產出的 Dockerfile
+
+成功後，把原本的儲存庫當成建置內容、`./plan` 當成 Dockerfile 所在的資料夾，就能用 `buildctl` 建置。依需要加上 `--output` 推送映像檔：
+
+```sh
+buildctl --addr tcp://127.0.0.1:1234 build \
+  --frontend dockerfile.v0 \
+  --local context=./my-app \
+  --local dockerfile=./plan \
+  --opt filename=Dockerfile
+```
+
+也可以將兩個檔案複製到儲存庫根目錄並提交，再使用 Zeabur Builder 的 `dockerfile` 建置器。`Dockerfile.dockerignore` 放在 Dockerfile 旁邊，建置時會排除認證資訊檔案：
+
+```sh
+cp ./plan/Dockerfile ./plan/Dockerfile.dockerignore ./my-app/
+```
+
+建置器的使用方式見[建立第一個 Build](../get-started/first-build.mdx)。
+
+</Step>
+
+</Steps>
+
+## 下次沿用結果
+
+如果沒有把 Dockerfile 放進儲存庫，下次可用 `--previous` 指定上次的輸出資料夾，資料夾裡要有 `Dockerfile` 和 `Dockerfile.dockerignore`：
+
+```sh
+zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
+  --provider anthropic --model claude-opus-5-5 \
+  --previous ./plan --out ./next-plan
+```
+
+工具依照下列順序選用 Dockerfile，符合條件就不再往下檢查：
+
+1. 儲存庫根目錄已有 `Dockerfile`：直接使用，不呼叫模型。
+2. `--previous` 指定的上一份結果仍能建置：直接沿用，不呼叫模型。
+3. 其餘情況由模型撰寫。如果上一份結果已無法建置，模型會拿那份 Dockerfile 和建置錯誤當起點修改。
+
+## 讀懂結果
+
+工具會在標準輸出顯示 Dockerfile，並寫入：
+
+- `<out>/Dockerfile`
+- `<out>/Dockerfile.dockerignore`，使用儲存庫原有的 Dockerfile 時不寫入此檔案
+- `<out>/info.json`
+
+標準輸出的最後一行與 `info.json` 內容相同，可以直接給其他程式讀取。
+
+例如，一個沒有相依套件的小型 Node 應用程式，用 Claude Opus 5.5 產出的 Dockerfile：
+
+```dockerfile
+FROM node:22.20-alpine AS build
+WORKDIR /app
+COPY package.json ./
+COPY server.js ./
+
+FROM node:22.20-alpine
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+COPY --from=build --chown=node:node /app ./
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+這次執行的 `info.json`：
+
+```json
+{"source":"agent","details":{"port":3000,"language":"javascript","version":"22","versionSource":"package.json","buildVariables":[],"runtimeVariables":["PORT"],"notes":["No dependencies, so no npm install step is needed.","Runs as the non-root node user."]},"modelCalled":true,"inputTokens":8489,"outputTokens":644}
+```
+
+這次執行的 `source` 是 `agent`，表示 Dockerfile 由模型撰寫。`details` 記錄連接埠、語言、版本、版本來源、建置變數、執行時變數和備註；範例中的應用程式使用連接埠 3000，執行時變數是 `PORT`。
+
+| 欄位 | 內容 |
+| --- | --- |
+| `source` | `repository` 表示使用儲存庫的 Dockerfile，`previous` 表示沿用上一份結果，`agent` 表示由模型撰寫。 |
+| `details` | 模型撰寫 Dockerfile 時附上的 `port`、`language`、`version`、`versionSource`、`buildVariables`、`runtimeVariables`、`notes`。 |
+| `reason`、`detail` | 工具停止時的原因與詳細訊息。 |
+| `modelCalled` | 是否呼叫過模型。 |
+| `inputTokens`、`outputTokens` | 模型輸入與輸出的 token 數。 |
+
+退出碼決定下一步：
+
+| 退出碼 | 結果 |
+| --- | --- |
+| `0` | Dockerfile 已準備好，可以用來建置。 |
+| `2` | 工具已停止，原因在 `info.json` 的 `reason` 和 `detail`。 |
+| `1` | 工具本身執行失敗，例如無法開啟指定的資料夾。 |
+
+## 工具停止時
+
+退出碼為 `2` 時，依照 `reason` 處理；`detail` 會提供需要檢查的項目或錯誤內容。
+
+| `reason` | 怎麼做 |
+| --- | --- |
+| `ModelKeyMissing` | 設定 `detail` 指出的變數，例如 `ANTHROPIC_API_KEY`。 |
+| `ModelFailed` | 模型 API 拒絕請求，或呼叫失敗時，依照 `detail` 的 API 訊息檢查供應商、模型名稱、金鑰或額度。 |
+| `NoAppFound` | 資料夾內沒有可建置的應用程式，例如只有 README；加入程式碼，或將 `--context` 指向應用程式資料夾。 |
+| `SeveralApps` | 找到多個應用程式，例如 monorepo；將 `--context` 指向其中一個。 |
+| `NeedsBuildVariable` | 建置需要 `detail` 指出的變數。試建置目前無法帶入變數，請自行在 Dockerfile 加上這個變數，或調整程式讓建置時不需要它。 |
+| `NeedsPrivateDependency` | 建置需要 `detail` 指出的私有套件或儲存庫。試建置目前無法存取私有來源，請自行撰寫 Dockerfile。 |
+| `UnsupportedPlatform` | 應用程式需要 BuildKit 無法建置的平台，`detail` 會說明是哪個平台。這類應用程式需要另外的建置方式。 |
+| `BudgetSpent` | 已達工具限制，對照下一節，確認碰到哪一項上限。 |
+| `BuildKeepsFailing` | 已有 4 次建置失敗，依照 `detail` 中最後一次建置錯誤修正問題。 |
+
+## 限制
+
+工具本身有下列限制：
+
+| 項目 | 上限 |
+| --- | --- |
+| 模型呼叫 | 40 次 |
+| 建置失敗 | 4 次 |
+| 單次建置時間 | 10 分鐘 |
+| 整次執行時間 | 20 分鐘 |
+| 輸入 token | 1,000,000 |
+
+## 模型能讀到什麼
+
+模型用列出檔案、讀取和搜尋這幾種工具瀏覽 `--context` 內的儲存庫，無法讀取該資料夾以外的檔案。模型讀取的內容會傳給模型供應商，執行前請檢查儲存庫中其他檔案是否適合傳送。
+
+工具會阻擋模型讀取下列內容：
+
+- `.git`
+- `.env`、`.env.*`，但允許讀取 `.env.example`、`.env.sample`、`.env.template`
+- `.npmrc`、`.netrc`、`.pypirc`、`.git-credentials`
+- `*.pem`、`*.key` 和 SSH 金鑰
+- `node_modules`、`.venv`、`vendor`、`target` 等相依套件資料夾
+
+每次試建置也會排除同一組認證資訊檔案，就算 Dockerfile 寫了 `COPY . .`，這些檔案也不會進到建置。
+
+試建置只能從允許的 registry 拉取映像檔，其他映像檔、用 `ADD <url>` 下載的檔案和 Git 來源都不允許，`RUN --network=host` 也不允許。工具會忽略 Dockerfile 的 `# syntax=`，改用 buildkitd 內建的 Dockerfile frontend。試建置不會推送映像檔。

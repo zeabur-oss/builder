@@ -8,4 +8,4 @@ allow-print-in-tests = true
 avoid-breaking-exported-api = false
 
 # Proper nouns that doc_markdown would otherwise ask to wrap in backticks.
-doc-valid-idents = ["BuildKit", "GitHub", "GitOps", "OpenAPI", "Railpack", ".."]
+doc-valid-idents = ["BuildKit", "GitHub", "GitOps", "OpenAPI", "OpenRouter", "Railpack", ".."]

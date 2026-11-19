@@ -1,0 +1,206 @@
+---
+title: Write a Dockerfile with AI
+description: Run zeabur-builder-agent on a repository without a Dockerfile to get one that passed a trial build, then use it with Zeabur Builder.
+---
+
+When a repository has no Dockerfile, run `zeabur-builder-agent`. A model reads the code, writes a Dockerfile and trial-builds it on a BuildKit daemon (`buildkitd`). You only get a Dockerfile that built. For now you run the command yourself: there is no `agent` ClusterBuilder type yet. The cluster integration is planned in [issue #152](https://github.com/zeabur-oss/builder/issues/152).
+
+## Run it
+
+<Steps>
+
+<Step>
+
+### Build the tool and prepare BuildKit
+
+`zeabur-builder-agent` is not in a release yet. Enter the dev shell in the Zeabur Builder repository and build it:
+
+```sh
+nix develop
+cargo build --release -p zeabur-builder-agent
+export PATH="$PWD/target/release:$PATH"
+```
+
+The tool needs `buildctl` on your PATH; the dev shell has it. You also need a `buildkitd` the tool can reach. The next step passes its address with `--buildkit`.
+
+</Step>
+
+<Step>
+
+### Set the repository, the provider, the model and the output folder
+
+Replace `./my-app` with the folder of your app, and set the API key in the provider's own variable:
+
+```sh
+export ANTHROPIC_API_KEY=…
+zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
+  --provider anthropic --model claude-opus-5-5 --out ./plan
+```
+
+`--provider` takes the provider's name in Rig, the library the tool talks to models through. The name sets the endpoint, the API format and the key variable. `--model` is the model's name as the provider writes it, and may be a model released after this version of the tool. Use a capable model that supports tool calls, such as `claude-opus-5-5` on `anthropic` or `gpt-6.1-sol` on `openai`.
+
+| Provider | `--provider` | `--model`, for example | API format | Key variable |
+| --- | --- | --- | --- | --- |
+| Anthropic | `anthropic` | `claude-opus-5-5` | Messages | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | `gpt-6.1-sol` | Responses | `OPENAI_API_KEY` |
+| Google Gemini | `gcp.gemini` | `gemini-2.5-pro` | Gemini | `GEMINI_API_KEY` |
+| OpenRouter | `openrouter` | `anthropic/claude-opus-5.5` | Chat Completions | `OPENROUTER_API_KEY` |
+| DeepSeek | `deepseek` | `deepseek-v4-flash` | Chat Completions | `DEEPSEEK_API_KEY` |
+| Mistral | `mistral` | `mistral-large-latest` | Chat Completions | `MISTRAL_API_KEY` |
+| xAI | `xai` | `grok-4.7` | Responses | `XAI_API_KEY` |
+| Groq | `groq` | `llama-3.3-70b-versatile` | Chat Completions | `GROQ_API_KEY` |
+| Together AI | `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | Chat Completions | `TOGETHER_API_KEY` |
+| Moonshot AI | `moonshot` | `kimi-k3` | Chat Completions | `MOONSHOT_API_KEY` |
+| Z.ai | `zai` | `glm-5` | Chat Completions | `ZAI_API_KEY` |
+| Ollama | `ollama` | `qwen3` | Chat Completions | `OLLAMA_API_KEY` (optional) |
+| llama.cpp, vLLM | `llamacpp` | `…` | Chat Completions | `LLAMACPP_API_KEY` (optional) |
+
+To reach a provider through a proxy, or a server you run yourself, set its URL with `--base-url`. For llama.cpp, vLLM and other servers with a Chat Completions API, use `llamacpp`; Ollama listens on `http://localhost:11434/v1` unless you set `--base-url`.
+
+Adjust the flags to your BuildKit setup:
+
+| Flag | Use |
+| --- | --- |
+| `--buildkit` | The address of `buildkitd`. |
+| `--tlsdir` | A folder with `ca.pem`, `cert.pem` and `key.pem`, when `buildkitd` uses mTLS. |
+| `--registry` | A registry images may come from. The default is `docker.io`, `ghcr.io`, `quay.io` and `gcr.io`. Repeat the flag to set your own list. |
+| `--out` | The output folder. The default is `/workspace/plan`; the example above uses `./plan`. |
+
+</Step>
+
+<Step>
+
+### Use the Dockerfile
+
+Build it with `buildctl`, with your repository as the context and `./plan` as the Dockerfile folder. Add `--output` to push the image:
+
+```sh
+buildctl --addr tcp://127.0.0.1:1234 build \
+  --frontend dockerfile.v0 \
+  --local context=./my-app \
+  --local dockerfile=./plan \
+  --opt filename=Dockerfile
+```
+
+You can also copy both files to the root of the repository, commit them, and use Zeabur Builder's `dockerfile` builder. `Dockerfile.dockerignore` stays next to the Dockerfile and keeps credential files out of the build:
+
+```sh
+cp ./plan/Dockerfile ./plan/Dockerfile.dockerignore ./my-app/
+```
+
+For the builder, see [Create your first Build](../get-started/first-build.mdx).
+
+</Step>
+
+</Steps>
+
+## Reuse the result next time
+
+If you did not commit the Dockerfile, pass the last output folder with `--previous` next time. The folder must hold `Dockerfile` and `Dockerfile.dockerignore`:
+
+```sh
+zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
+  --provider anthropic --model claude-opus-5-5 \
+  --previous ./plan --out ./next-plan
+```
+
+The tool picks the Dockerfile in this order and stops at the first that applies:
+
+1. The repository has a `Dockerfile` at its root: it is used as is, and the model is not called.
+2. The last result from `--previous` still builds: it is used as is, and the model is not called.
+3. Otherwise the model writes one. If the last result no longer builds, the model starts from that Dockerfile and the error it failed with.
+
+## Read the result
+
+The tool prints the Dockerfile and writes:
+
+- `<out>/Dockerfile`
+- `<out>/Dockerfile.dockerignore`, except when the repository's own Dockerfile was used
+- `<out>/info.json`
+
+The last line on stdout is the same as `info.json`, so another program can read it.
+
+Claude Opus 5.5 wrote this Dockerfile for a small Node app with no dependencies:
+
+```dockerfile
+FROM node:22.20-alpine AS build
+WORKDIR /app
+COPY package.json ./
+COPY server.js ./
+
+FROM node:22.20-alpine
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+COPY --from=build --chown=node:node /app ./
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+The `info.json` of the same run:
+
+```json
+{"source":"agent","details":{"port":3000,"language":"javascript","version":"22","versionSource":"package.json","buildVariables":[],"runtimeVariables":["PORT"],"notes":["No dependencies, so no npm install step is needed.","Runs as the non-root node user."]},"modelCalled":true,"inputTokens":8489,"outputTokens":644}
+```
+
+`source` is `agent`, so the model wrote this Dockerfile. `details` holds the port, the language, its version and where the version came from, the build and runtime variables, and the model's notes. The app listens on port 3000 and reads `PORT` at runtime.
+
+| Field | Content |
+| --- | --- |
+| `source` | `repository` for the repository's Dockerfile, `previous` for the last result, `agent` when the model wrote it. |
+| `details` | When the model wrote the Dockerfile: `port`, `language`, `version`, `versionSource`, `buildVariables`, `runtimeVariables` and `notes`. |
+| `reason`, `detail` | Why the tool stopped, and what to check. |
+| `modelCalled` | Whether the model was called. |
+| `inputTokens`, `outputTokens` | How many tokens the model read and wrote. |
+
+The exit code tells you what to do next:
+
+| Exit code | Result |
+| --- | --- |
+| `0` | The Dockerfile is ready to build. |
+| `2` | The tool stopped. `reason` and `detail` in `info.json` say why. |
+| `1` | The tool itself failed, for example when it cannot open the folder. |
+
+## When the tool stops
+
+With exit code `2`, act on `reason`. `detail` names what to check or holds the error.
+
+| `reason` | What to do |
+| --- | --- |
+| `ModelKeyMissing` | Set the variable that `detail` names, such as `ANTHROPIC_API_KEY`. |
+| `ModelFailed` | The model API refused the request or returned an error. Check the provider, the model name, the key or your quota against the API's message in `detail`. |
+| `NoAppFound` | The folder has no app to build, for example only a README. Add the app's code, or point `--context` at the app's folder. |
+| `SeveralApps` | The folder has several apps, such as a monorepo. Point `--context` at one of them. |
+| `NeedsBuildVariable` | The build needs the variable that `detail` names. Trial builds cannot pass variables yet: add it to the Dockerfile yourself, or change the app so the build does not need it. |
+| `NeedsPrivateDependency` | The build needs the private package or repository that `detail` names. Trial builds cannot reach private sources yet: write the Dockerfile yourself. |
+| `UnsupportedPlatform` | The app needs a platform BuildKit cannot build; `detail` names it. Build this app another way. |
+| `BudgetSpent` | The tool reached a limit. See the next section for which one. |
+| `BuildKeepsFailing` | 4 builds failed. Fix what the last build error in `detail` reports. |
+
+## Limits
+
+The tool enforces these limits itself:
+
+| Item | Limit |
+| --- | --- |
+| Model calls | 40 |
+| Failed builds | 4 |
+| Time per build | 10 minutes |
+| Time per run | 20 minutes |
+| Input tokens | 1,000,000 |
+
+## What the model can read
+
+The model reads the repository at `--context` with tools that list, read and search files. It cannot read files outside that folder. What it reads is sent to the model's vendor, so before you run the tool, check that the repository holds nothing you cannot send.
+
+The tool keeps these from the model:
+
+- `.git`
+- `.env` and `.env.*`, except `.env.example`, `.env.sample` and `.env.template`
+- `.npmrc`, `.netrc`, `.pypirc` and `.git-credentials`
+- `*.pem`, `*.key` and SSH keys
+- Dependency folders such as `node_modules`, `.venv`, `vendor` and `target`
+
+Every trial build leaves out the same credential files, even when the Dockerfile has `COPY . .`.
+
+Trial builds pull images only from the allowed registries. The tool refuses other images, files downloaded with `ADD <url>`, Git sources and `RUN --network=host`. The tool ignores a `# syntax=` line in the Dockerfile and uses the Dockerfile frontend built into `buildkitd`. Trial builds push nothing.

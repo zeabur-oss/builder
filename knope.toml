@@ -3,6 +3,7 @@
 versioned_files = [
   "Cargo.toml",
   { path = "Cargo.lock", dependency = "zeabur-builder" },
+  { path = "Cargo.lock", dependency = "zeabur-builder-agent" },
   { path = "Cargo.lock", dependency = "zeabur-builder-api" },
   { path = "Cargo.lock", dependency = "zeabur-builder-core" },
   { path = "Cargo.lock", dependency = "zeabur-builder-job" },

@@ -1,0 +1,206 @@
+---
+title: 用 AI 写 Dockerfile
+description: 在没有 Dockerfile 的仓库上运行 zeabur-builder-agent，拿到通过试构建的 Dockerfile，再交给 Zeabur Builder 使用。
+---
+
+仓库还没有 Dockerfile 时，可以运行 `zeabur-builder-agent`：模型读取代码、编写 Dockerfile，并在 BuildKit 守护进程（`buildkitd`）上试构建，只有构建成功的 Dockerfile 才会输出。目前需要自己运行命令，还没有 `agent` 类型的 ClusterBuilder，集群集成安排在 [issue #152](https://github.com/zeabur-oss/builder/issues/152)。
+
+## 运行
+
+<Steps>
+
+<Step>
+
+### 编译工具并准备 BuildKit
+
+`zeabur-builder-agent` 还没有进入发布版本。在 Zeabur Builder 仓库里进入开发环境并编译：
+
+```sh
+nix develop
+cargo build --release -p zeabur-builder-agent
+export PATH="$PWD/target/release:$PATH"
+```
+
+工具需要 PATH 里有 `buildctl`，开发环境里已经装好。另外要准备一个能连上的 `buildkitd`，下一步用 `--buildkit` 指定它的地址。
+
+</Step>
+
+<Step>
+
+### 指定仓库、厂商、模型和输出目录
+
+把 `./my-app` 换成应用所在的目录，并把 API 密钥设置在厂商自己的环境变量里：
+
+```sh
+export ANTHROPIC_API_KEY=…
+zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
+  --provider anthropic --model claude-opus-5-5 --out ./plan
+```
+
+`--provider` 填厂商在 Rig 里的名称，Rig 是工具用来连接模型的库。这个名称决定端点、API 格式和密钥变量。`--model` 填厂商自己的模型名称，这个版本之后才发布的模型也能用。建议用能力较强、支持工具调用的模型，例如 `anthropic` 的 `claude-opus-5-5` 或 `openai` 的 `gpt-6.1-sol`。
+
+| 厂商 | `--provider` | `--model` 例子 | API 格式 | 密钥变量 |
+| --- | --- | --- | --- | --- |
+| Anthropic | `anthropic` | `claude-opus-5-5` | Messages | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | `gpt-6.1-sol` | Responses | `OPENAI_API_KEY` |
+| Google Gemini | `gcp.gemini` | `gemini-2.5-pro` | Gemini | `GEMINI_API_KEY` |
+| OpenRouter | `openrouter` | `anthropic/claude-opus-5.5` | Chat Completions | `OPENROUTER_API_KEY` |
+| DeepSeek | `deepseek` | `deepseek-v4-flash` | Chat Completions | `DEEPSEEK_API_KEY` |
+| Mistral | `mistral` | `mistral-large-latest` | Chat Completions | `MISTRAL_API_KEY` |
+| xAI | `xai` | `grok-4.7` | Responses | `XAI_API_KEY` |
+| Groq | `groq` | `llama-3.3-70b-versatile` | Chat Completions | `GROQ_API_KEY` |
+| Together AI | `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | Chat Completions | `TOGETHER_API_KEY` |
+| 月之暗面 | `moonshot` | `kimi-k3` | Chat Completions | `MOONSHOT_API_KEY` |
+| 智谱 Z.ai | `zai` | `glm-5` | Chat Completions | `ZAI_API_KEY` |
+| Ollama | `ollama` | `qwen3` | Chat Completions | `OLLAMA_API_KEY`（可不设） |
+| llama.cpp、vLLM | `llamacpp` | `…` | Chat Completions | `LLAMACPP_API_KEY`（可不设） |
+
+通过代理服务器连接，或连到自己部署的服务器时，用 `--base-url` 指定地址。llama.cpp、vLLM 等提供 Chat Completions API 的服务器用 `llamacpp`；不设 `--base-url` 时，Ollama 连到 `http://localhost:11434/v1`。
+
+按 BuildKit 的配置调整参数：
+
+| 参数 | 用途 |
+| --- | --- |
+| `--buildkit` | `buildkitd` 的地址。 |
+| `--tlsdir` | `buildkitd` 启用 mTLS 时，指定包含 `ca.pem`、`cert.pem`、`key.pem` 的目录。 |
+| `--registry` | 允许拉取镜像的镜像仓库（registry）。默认是 `docker.io`、`ghcr.io`、`quay.io`、`gcr.io`；重复传这个参数，就能用自己的列表替换默认值。 |
+| `--out` | 输出目录，默认是 `/workspace/plan`，上面的例子改成了 `./plan`。 |
+
+</Step>
+
+<Step>
+
+### 使用生成的 Dockerfile
+
+成功后用 `buildctl` 构建：仓库作为构建上下文，`./plan` 作为 Dockerfile 所在的目录。需要推送镜像时加上 `--output`：
+
+```sh
+buildctl --addr tcp://127.0.0.1:1234 build \
+  --frontend dockerfile.v0 \
+  --local context=./my-app \
+  --local dockerfile=./plan \
+  --opt filename=Dockerfile
+```
+
+也可以把 `Dockerfile` 和 `Dockerfile.dockerignore` 复制到仓库根目录并提交，再用 Zeabur Builder 的 `dockerfile` 构建器。`Dockerfile.dockerignore` 放在 Dockerfile 旁边，构建时会排除凭据文件：
+
+```sh
+cp ./plan/Dockerfile ./plan/Dockerfile.dockerignore ./my-app/
+```
+
+构建器的用法见[创建第一个 Build](../get-started/first-build.mdx)。
+
+</Step>
+
+</Steps>
+
+## 下次沿用结果
+
+如果没有把 Dockerfile 提交进仓库，下次可以用 `--previous` 指定上次运行的输出目录，目录里要有 `Dockerfile` 和 `Dockerfile.dockerignore`：
+
+```sh
+zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
+  --provider anthropic --model claude-opus-5-5 \
+  --previous ./plan --out ./next-plan
+```
+
+工具按下面的顺序选 Dockerfile，符合其中一条就不再往下检查：
+
+1. 仓库根目录已有 `Dockerfile`：直接用，不调用模型。
+2. `--previous` 指定的上一份结果还能构建：直接沿用，不调用模型。
+3. 其他情况由模型编写。上一份结果已经无法构建时，模型从那份 Dockerfile 和构建错误出发修改。
+
+## 看懂结果
+
+工具会在标准输出打印 Dockerfile，并写入：
+
+- `<out>/Dockerfile`
+- `<out>/Dockerfile.dockerignore`，用的是仓库自带的 Dockerfile 时不写
+- `<out>/info.json`
+
+标准输出的最后一行和 `info.json` 相同，其他程序可以直接读取这一行。
+
+下面是 Claude Opus 5.5 为一个没有依赖项的小型 Node 应用写出的 Dockerfile：
+
+```dockerfile
+FROM node:22.20-alpine AS build
+WORKDIR /app
+COPY package.json ./
+COPY server.js ./
+
+FROM node:22.20-alpine
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+COPY --from=build --chown=node:node /app ./
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+这次运行的 `info.json`：
+
+```json
+{"source":"agent","details":{"port":3000,"language":"javascript","version":"22","versionSource":"package.json","buildVariables":[],"runtimeVariables":["PORT"],"notes":["No dependencies, so no npm install step is needed.","Runs as the non-root node user."]},"modelCalled":true,"inputTokens":8489,"outputTokens":644}
+```
+
+这次运行的 `source` 是 `agent`，说明 Dockerfile 由模型编写。`details` 记录端口、语言、版本及版本来源、构建变量、运行时变量和备注；例子里的应用监听 3000 端口，运行时读取 `PORT`。
+
+| 字段 | 内容 |
+| --- | --- |
+| `source` | `repository` 表示用了仓库的 Dockerfile，`previous` 表示沿用上一份结果，`agent` 表示由模型编写。 |
+| `details` | 模型编写 Dockerfile 时附带的 `port`、`language`、`version`、`versionSource`、`buildVariables`、`runtimeVariables`、`notes`。 |
+| `reason`、`detail` | 工具停止的原因和要检查的内容。 |
+| `modelCalled` | 是否调用过模型。 |
+| `inputTokens`、`outputTokens` | 模型输入和输出的 token 数。 |
+
+根据退出码决定下一步：
+
+| 退出码 | 结果 |
+| --- | --- |
+| `0` | Dockerfile 已就绪，可以用来构建。 |
+| `2` | 工具已停止，原因在 `info.json` 的 `reason` 和 `detail` 里。 |
+| `1` | 工具自身运行失败，例如打不开指定的目录。 |
+
+## 工具停止时
+
+退出码为 `2` 时，按 `reason` 处理；`detail` 会给出要检查的项目或错误内容。
+
+| `reason` | 怎么做 |
+| --- | --- |
+| `ModelKeyMissing` | 设置 `detail` 指出的变量，例如 `ANTHROPIC_API_KEY`。 |
+| `ModelFailed` | 模型 API 拒绝了请求，或调用失败。按 `detail` 里 API 返回的消息检查厂商、模型名称、密钥或额度。 |
+| `NoAppFound` | 目录里没有可构建的应用，例如只有 README。加入应用代码，或把 `--context` 指向应用所在目录。 |
+| `SeveralApps` | 目录里有多个应用，例如 monorepo。把 `--context` 指向其中一个。 |
+| `NeedsBuildVariable` | 构建需要 `detail` 指出的变量。试构建暂时无法传入变量，请在 Dockerfile 里自行加上这个变量，或修改应用代码，让构建不再依赖它。 |
+| `NeedsPrivateDependency` | 构建需要 `detail` 指出的私有包或仓库。试构建暂时访问不了私有包或私有仓库，需要自行编写 Dockerfile。 |
+| `UnsupportedPlatform` | 应用需要 BuildKit 构建不了的平台，`detail` 会写明是哪个。这类应用需要换一种方式构建。 |
+| `BudgetSpent` | 达到了工具的上限，对照下一节看是哪一项。 |
+| `BuildKeepsFailing` | 已经有 4 次构建失败，按 `detail` 里最后一次构建的错误修复问题。 |
+
+## 限制
+
+这些上限由工具本身执行：
+
+| 项目 | 上限 |
+| --- | --- |
+| 模型调用 | 40 次 |
+| 构建失败 | 4 次 |
+| 单次构建时长 | 10 分钟 |
+| 整次运行时长 | 20 分钟 |
+| 输入 token | 1,000,000 |
+
+## 模型能读到什么
+
+模型用列出、读取和搜索文件这几种工具浏览 `--context` 里的仓库，读不到这个目录以外的文件。模型读到的内容会发给模型厂商，运行前请确认仓库里其余文件都能发送给厂商。
+
+工具不让模型读取下面这些内容：
+
+- `.git`
+- `.env`、`.env.*`，但 `.env.example`、`.env.sample`、`.env.template` 可以读
+- `.npmrc`、`.netrc`、`.pypirc`、`.git-credentials`
+- `*.pem`、`*.key` 和 SSH 密钥
+- `node_modules`、`.venv`、`vendor`、`target` 等依赖目录
+
+每次试构建也会排除同一组凭据文件：Dockerfile 即使写了 `COPY . .`，这些文件也不会进入构建。
+
+试构建只从允许的镜像仓库（registry）拉取镜像，其他镜像、用 `ADD <url>` 下载的文件、Git 源和 `RUN --network=host` 都会被拒绝。工具会忽略 Dockerfile 里的 `# syntax=`，改用 `buildkitd` 内置的 Dockerfile 前端。试构建不会推送镜像。
