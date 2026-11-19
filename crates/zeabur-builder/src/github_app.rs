@@ -18,6 +18,7 @@
 //! [manifest flow]: https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
 //! [conversion]: https://docs.github.com/en/rest/apps/apps#create-a-github-app-from-a-manifest
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -29,7 +30,9 @@ use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt as _, Full, Limited};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use serde_json::{Value, json};
+use k8s_openapi::api::core::v1::Secret;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -85,69 +88,89 @@ pub(crate) struct CreateArgs {
     namespace: String,
 }
 
-/// The App's manifest.
-pub(crate) fn manifest(name: &str, webhook_url: &str, redirect_url: Option<&str>) -> Value {
-    let mut manifest = json!({
-        "name": name,
-        "url": "https://github.com/zeabur-oss/builder",
-        "description": "Builds container images of pushed commits with Zeabur Builder.",
-        "hook_attributes": {"url": webhook_url, "active": true},
-        "public": false,
-        "default_permissions": {"contents": "read", "metadata": "read", "statuses": "write"},
-        "default_events": ["push"],
-    });
-    if let (Some(url), Some(fields)) = (redirect_url, manifest.as_object_mut()) {
-        fields.insert("redirect_url".to_owned(), json!(url));
-    }
-    manifest
+/// The App's manifest, as GitHub's manifest flow reads it.
+#[derive(Debug, Serialize)]
+pub(crate) struct Manifest<'a> {
+    name: &'a str,
+    url: &'static str,
+    description: &'static str,
+    hook_attributes: HookAttributes<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redirect_url: Option<&'a str>,
+    public: bool,
+    default_permissions: BTreeMap<&'static str, &'static str>,
+    default_events: [&'static str; 1],
 }
 
-/// The Secret, from GitHub's answer to the conversion.
-pub(crate) fn secret(
-    conversion: &Value,
-    name: &str,
-    namespace: &str,
-    api_url: &str,
-) -> Result<Value, String> {
-    let field = |key: &str| {
-        conversion
-            .get(key)
-            .filter(|v| !v.is_null())
-            .ok_or_else(|| format!("GitHub's answer has no `{key}`"))
-    };
-    let id = field("id")?
-        .as_u64()
-        .ok_or("GitHub's `id` is not a number")?;
-    let text = |key: &str| -> Result<String, String> {
-        field(key)?
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| format!("GitHub's `{key}` is not text"))
-    };
-    let mut data = json!({
-        "app-id": id.to_string(),
-        "client-id": text("client_id")?,
-        "private-key": text("pem")?,
-        "webhook-secret": text("webhook_secret")?,
-    });
-    if api_url.trim_end_matches('/') != "https://api.github.com"
-        && let Some(fields) = data.as_object_mut()
-    {
-        fields.insert("api-url".to_owned(), json!(api_url));
-    }
-    Ok(json!({
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {
-            "name": name,
-            "namespace": namespace,
-            "annotations": {
-                "builder.zeabur.com/github-app": text("html_url").unwrap_or_default(),
-            },
+#[derive(Debug, Serialize)]
+struct HookAttributes<'a> {
+    url: &'a str,
+    active: bool,
+}
+
+/// The App's manifest.
+pub(crate) fn manifest<'a>(
+    name: &'a str,
+    webhook_url: &'a str,
+    redirect_url: Option<&'a str>,
+) -> Manifest<'a> {
+    Manifest {
+        name,
+        url: "https://github.com/zeabur-oss/builder",
+        description: "Builds container images of pushed commits with Zeabur Builder.",
+        hook_attributes: HookAttributes {
+            url: webhook_url,
+            active: true,
         },
-        "type": "Opaque",
-        "stringData": data,
-    }))
+        redirect_url,
+        public: false,
+        default_permissions: BTreeMap::from([
+            ("contents", "read"),
+            ("metadata", "read"),
+            ("statuses", "write"),
+        ]),
+        default_events: ["push"],
+    }
+}
+
+/// What GitHub answers to the conversion: the App's id, keys and page.
+#[derive(Debug, Deserialize)]
+pub(crate) struct Conversion {
+    id: u64,
+    client_id: String,
+    pem: String,
+    webhook_secret: String,
+    #[serde(default)]
+    html_url: String,
+}
+
+impl Conversion {
+    /// The Secret [`crate::github`] reads.
+    pub(crate) fn secret(&self, name: &str, namespace: &str, api_url: &str) -> Secret {
+        let mut data = BTreeMap::from([
+            ("app-id".to_owned(), self.id.to_string()),
+            ("client-id".to_owned(), self.client_id.clone()),
+            ("private-key".to_owned(), self.pem.clone()),
+            ("webhook-secret".to_owned(), self.webhook_secret.clone()),
+        ]);
+        if api_url.trim_end_matches('/') != "https://api.github.com" {
+            data.insert("api-url".to_owned(), api_url.to_owned());
+        }
+        Secret {
+            metadata: ObjectMeta {
+                name: Some(name.to_owned()),
+                namespace: Some(namespace.to_owned()),
+                annotations: Some(BTreeMap::from([(
+                    "builder.zeabur.com/github-app".to_owned(),
+                    self.html_url.clone(),
+                )])),
+                ..ObjectMeta::default()
+            },
+            type_: Some("Opaque".to_owned()),
+            string_data: Some(data),
+            ..Secret::default()
+        }
+    }
 }
 
 fn escape(text: &str) -> String {
@@ -164,14 +187,14 @@ fn escape(text: &str) -> String {
 }
 
 /// The page that POSTs the manifest to GitHub.
-pub(crate) fn form(action: &str, manifest: &Value) -> String {
+pub(crate) fn form(action: &str, manifest: &Manifest<'_>) -> String {
     format!(
         "<!doctype html><meta charset=utf-8><title>Create the GitHub App</title>\
          <form method=post action=\"{}\"><input type=hidden name=manifest value=\"{}\">\
          <p>Zeabur Builder will ask GitHub to create the App below.</p>\
          <pre>{}</pre><button type=submit>Create on GitHub</button></form>",
         escape(action),
-        escape(&manifest.to_string()),
+        escape(&serde_json::to_string(manifest).unwrap_or_default()),
         escape(&serde_json::to_string_pretty(manifest).unwrap_or_default()),
     )
 }
@@ -204,7 +227,7 @@ fn page(status: StatusCode, text: &str) -> Response<Full<Bytes>> {
     response
 }
 
-async fn convert(api_url: &str, code: &str) -> Result<Value, String> {
+async fn convert(api_url: &str, code: &str) -> Result<Conversion, String> {
     let client = remote::http_client()?;
     let request = Request::builder()
         .method(Method::POST)
@@ -229,20 +252,24 @@ async fn convert(api_url: &str, code: &str) -> Result<Value, String> {
     if status != StatusCode::CREATED {
         return Err(format!("GitHub answered {status} to the conversion"));
     }
-    serde_json::from_slice(&body).map_err(|_error| "GitHub's answer is not JSON".to_owned())
+    serde_json::from_slice(&body)
+        .map_err(|e| format!("GitHub's answer is not the App's conversion: {e}"))
 }
 
 /// Runs a `github-app` subcommand; the text for stdout.
 pub(crate) async fn run(command: Command) -> Result<String, String> {
     match command {
-        Command::Manifest(args) => {
-            Ok(manifest(&args.name, &args.webhook_url, args.redirect_url.as_deref()).to_string())
-        }
+        Command::Manifest(args) => serde_json::to_string(&manifest(
+            &args.name,
+            &args.webhook_url,
+            args.redirect_url.as_deref(),
+        ))
+        .map_err(|e| e.to_string()),
         Command::Create(args) => create(args).await,
     }
 }
 
-type Done = Arc<Mutex<Option<oneshot::Sender<Result<Value, String>>>>>;
+type Done = Arc<Mutex<Option<oneshot::Sender<Result<Conversion, String>>>>>;
 
 /// The form page, the state, the API URL and where the conversion goes.
 type Shared = (String, String, String, Done);
@@ -349,29 +376,33 @@ async fn create(args: CreateArgs) -> Result<String, String> {
             .map_err(|_closed| "the flow stopped".to_owned())??,
         () = serve => return Err("the callback server stopped".to_owned()),
     };
-    let secret = secret(&converted, &args.secret, &args.namespace, &args.api_url)?;
+    let secret = converted.secret(&args.secret, &args.namespace, &args.api_url);
     output::stderr_line(&format!(
         "Created {}. Install it on the accounts whose repositories you build, then allow \
          namespaces in the ConfigMap github-app-installations.",
-        converted
-            .get("html_url")
-            .and_then(Value::as_str)
-            .unwrap_or("the App")
+        if converted.html_url.is_empty() {
+            "the App"
+        } else {
+            &converted.html_url
+        }
     ));
     serde_json::to_string_pretty(&secret).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
     fn the_manifest_asks_for_little() {
-        let m = manifest(
+        let m = serde_json::to_value(manifest(
             "Zeabur Builder",
             "https://hooks.example.com/hooks/github-app",
             Some("http://127.0.0.1:9/callback"),
-        );
+        ))
+        .unwrap();
         assert_eq!(
             m["default_permissions"],
             json!({"contents": "read", "metadata": "read", "statuses": "write"})
@@ -387,32 +418,40 @@ mod tests {
 
     #[test]
     fn the_secret_keeps_what_the_controller_reads() {
-        let conversion = json!({
+        let conversion: Conversion = serde_json::from_value(json!({
             "id": 42, "slug": "zeabur-builder", "client_id": "Iv23li", "client_secret": "cs",
             "webhook_secret": "ws", "pem": "-----BEGIN RSA PRIVATE KEY-----",
             "html_url": "https://github.com/apps/zeabur-builder", "owner": {}
-        });
-        let s = secret(
-            &conversion,
+        }))
+        .unwrap();
+        let s = serde_json::to_value(conversion.secret(
             "github-app",
             "builder-system",
             "https://api.github.com/",
-        )
+        ))
         .unwrap();
         assert_eq!(
             s["stringData"],
             json!({"app-id": "42", "client-id": "Iv23li", "private-key": "-----BEGIN RSA PRIVATE KEY-----",
                    "webhook-secret": "ws"})
         );
+        assert_eq!(s["kind"], "Secret");
         assert_eq!(s["metadata"]["namespace"], "builder-system");
-        let ghes = secret(&conversion, "x", "y", "https://ghe.example.com/api/v3").unwrap();
+        let ghes =
+            serde_json::to_value(conversion.secret("x", "y", "https://ghe.example.com/api/v3"))
+                .unwrap();
         assert_eq!(
             ghes["stringData"]["api-url"],
             "https://ghe.example.com/api/v3"
         );
-        let mut no_secret = conversion;
-        no_secret["webhook_secret"] = Value::Null;
-        assert!(secret(&no_secret, "x", "y", "https://api.github.com").is_err());
+    }
+
+    #[test]
+    fn an_answer_without_the_keys_is_refused() {
+        let no_secret = json!({
+            "id": 42, "client_id": "Iv23li", "webhook_secret": null, "pem": "k"
+        });
+        assert!(serde_json::from_value::<Conversion>(no_secret).is_err());
     }
 
     #[test]

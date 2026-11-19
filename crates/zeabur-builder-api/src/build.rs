@@ -5,6 +5,7 @@
     reason = "the KubeSchema derive re-emits these types inside a private module"
 )]
 
+use jiff::Timestamp;
 use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -368,13 +369,13 @@ pub struct BuildStatus {
     pub resolved_ref: Option<String>,
     /// When the ref was last resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("format" = "date-time"))]
-    pub last_resolved_at: Option<String>,
+    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    pub last_resolved_at: Option<Timestamp>,
     /// When a webhook last woke this `Build`; written by the receiver only. Later than
     /// `lastResolvedAt`: the ref is asked again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("format" = "date-time"))]
-    pub last_webhook_at: Option<String>,
+    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    pub last_webhook_at: Option<Timestamp>,
     /// The commit or archive digest of the newest successful build.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = MAX_REVISION), regex(pattern = REVISION_PATTERN))]
@@ -441,8 +442,8 @@ pub struct UploadToken {
     #[schemars(length(max = MAX_NAME))]
     pub secret_name: String,
     /// When the token expires.
-    #[schemars(extend("format" = "date-time"))]
-    pub expires_at: String,
+    #[schemars(with = "String", extend("format" = "date-time"))]
+    pub expires_at: Timestamp,
 }
 
 /// How the source is reached.
@@ -457,7 +458,7 @@ pub enum SourceMode {
 }
 
 /// The `reason` of a `Build` or `ClusterBuilder` condition, written as its name.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConditionReason {
     /// `SourceReady`: neither `git` nor `archive` is set.
     NoSource,
@@ -524,6 +525,7 @@ pub enum ConditionReason {
     /// `Ready`: [`Reason::InfraError`].
     InfraError,
     /// `Ready`: the run's reason is one this version does not know.
+    #[serde(other)]
     Unknown,
 }
 

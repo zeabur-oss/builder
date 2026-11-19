@@ -1,5 +1,6 @@
 //! Types shared by the custom resources.
 
+use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -41,11 +42,9 @@ pub struct SecretKeyRef {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
-    /// The type: on a `Build`, `Ready`, `SourceReady` or `BuilderReady`; on a `BuildRun`,
-    /// `Reconciling`, `Stalled` or `Ready`; on a `ClusterBuilder`, `Ready`.
+    /// The type.
     #[serde(rename = "type")]
-    #[schemars(length(min = 1, max = 316))]
-    pub kind: String,
+    pub kind: ConditionType,
     /// `True`, `False` or `Unknown`.
     pub status: ConditionStatus,
     /// A `CamelCase` reason.
@@ -56,8 +55,8 @@ pub struct Condition {
     #[schemars(length(max = 32768))]
     pub message: String,
     /// When the status last changed (RFC 3339).
-    #[schemars(extend("format" = "date-time"))]
-    pub last_transition_time: String,
+    #[schemars(with = "String", extend("format" = "date-time"))]
+    pub last_transition_time: Timestamp,
     /// The `metadata.generation` the condition was computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0))]
@@ -72,5 +71,25 @@ pub enum ConditionStatus {
     /// It does not.
     False,
     /// Not known yet.
+    Unknown,
+}
+
+/// The `type` of a [`Condition`]. A `Build` has `Ready`, `SourceReady` and `BuilderReady`, a
+/// `BuildRun` has `Reconciling`, `Stalled` and `Ready`, a `ClusterBuilder` has `Ready`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+pub enum ConditionType {
+    /// The object has reached what its spec asks.
+    Ready,
+    /// A `Build`: the source resolves to a revision.
+    SourceReady,
+    /// A `Build`: its `ClusterBuilder` exists.
+    BuilderReady,
+    /// Work toward the current spec is under way.
+    Reconciling,
+    /// Work toward the current spec cannot go on.
+    Stalled,
+    /// A type this version does not know. It encodes as `Unknown`, so a writer must not send
+    /// back a status it read.
+    #[serde(other)]
     Unknown,
 }

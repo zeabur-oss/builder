@@ -7,6 +7,7 @@
 //!
 //! [token authentication]: https://distribution.github.io/distribution/spec/auth/jwt/
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use aws_lc_rs::signature::Ed25519KeyPair;
@@ -18,8 +19,7 @@ use http_body_util::{BodyExt as _, Full, Limited};
 use jiff::Timestamp;
 use k8s_openapi::api::core::v1::Secret;
 use kube::{Api, Client};
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 use zeabur_builder_api::labels;
 
 use crate::remote::HttpClient;
@@ -110,21 +110,24 @@ impl Signer {
         let now = now.as_second();
         let ttl = i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX);
         let skew = i64::try_from(CLOCK_SKEW.as_secs()).unwrap_or(i64::MAX);
-        let access: Vec<_> = grants
+        let access = grants
             .iter()
-            .map(|(name, access)| {
-                json!({"type": "repository", "name": name, "actions": access.actions()})
+            .map(|&(name, access)| Grant {
+                kind: "repository",
+                name,
+                actions: access.actions(),
             })
             .collect();
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
-        let claims = json!({
-            "iss": "zeabur-builder",
-            "iat": now,
-            "nbf": now.saturating_sub(skew),
-            "exp": now.saturating_add(ttl),
-            "access": access,
-        });
-        let claims = URL_SAFE_NO_PAD.encode(claims.to_string());
+        let claims = Claims {
+            iss: "zeabur-builder",
+            iat: now,
+            nbf: now.saturating_sub(skew),
+            exp: now.saturating_add(ttl),
+            access,
+        };
+        let claims = serde_json::to_vec(&claims).unwrap_or_default();
+        let claims = URL_SAFE_NO_PAD.encode(claims);
         let input = format!("{header}.{claims}");
         let signature = self.key.sign(input.as_bytes());
         format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_ref()))
@@ -157,34 +160,72 @@ pub(crate) async fn read_signer(
     Signer::from_pem(&key.0).map_err(|e| format!("Secret `{namespace}/{name}`: {e}"))
 }
 
+/// The registry token's claims.
+#[derive(Serialize)]
+struct Claims<'a> {
+    iss: &'static str,
+    iat: i64,
+    nbf: i64,
+    exp: i64,
+    access: Vec<Grant<'a>>,
+}
+
+/// One repository a token grants.
+#[derive(Serialize)]
+struct Grant<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: &'a str,
+    actions: Vec<&'static str>,
+}
+
+/// A Docker config. Fields this crate does not set pass through.
+#[derive(Serialize, Deserialize, Default)]
+struct DockerConfig {
+    #[serde(default)]
+    auths: BTreeMap<String, Auth>,
+    #[serde(flatten)]
+    rest: BTreeMap<String, serde_json::Value>,
+}
+
+/// The credentials of one registry host.
+#[derive(Serialize, Deserialize, Default)]
+struct Auth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registrytoken: Option<String>,
+    #[serde(flatten)]
+    rest: BTreeMap<String, serde_json::Value>,
+}
+
 /// A Docker config that sends `token` to `host` as it is.
 pub(crate) fn docker_config(host: &str, token: &str) -> Vec<u8> {
-    json!({"auths": {host: {"registrytoken": token}}})
-        .to_string()
-        .into_bytes()
+    let config = DockerConfig {
+        auths: BTreeMap::from([(host.to_owned(), bearer(token))]),
+        rest: BTreeMap::new(),
+    };
+    serde_json::to_vec(&config).unwrap_or_default()
+}
+
+fn bearer(token: &str) -> Auth {
+    Auth {
+        registrytoken: Some(token.to_owned()),
+        rest: BTreeMap::new(),
+    }
 }
 
 /// Adds `token` for `host` to a Docker config, replacing any entry for `host`.
 pub(crate) fn with_token(config: &[u8], host: &str, token: &str) -> Result<Vec<u8>, String> {
-    let mut config: serde_json::Value = serde_json::from_slice(config)
+    let mut config: DockerConfig = serde_json::from_slice(config)
         .map_err(|e| format!("cannot read the Docker config: {e}"))?;
-    let auths = config
-        .as_object_mut()
-        .ok_or("the Docker config is not an object")?
-        .entry("auths")
-        .or_insert_with(|| json!({}));
-    let auths = auths
-        .as_object_mut()
-        .ok_or("`auths` in the Docker config is not an object")?;
-    auths.retain(|key, _| {
+    config.auths.retain(|key, _| {
         let key = key
             .strip_prefix("https://")
             .or_else(|| key.strip_prefix("http://"))
             .unwrap_or(key);
         key.split('/').next() != Some(host)
     });
-    auths.insert(host.to_owned(), json!({"registrytoken": token}));
-    Ok(config.to_string().into_bytes())
+    config.auths.insert(host.to_owned(), bearer(token));
+    serde_json::to_vec(&config).map_err(|e| e.to_string())
 }
 
 /// The Docker config of `secret`, named `name`: a `kubernetes.io/dockerconfigjson` Secret with the
@@ -213,12 +254,9 @@ pub(crate) fn push_config(name: &str, secret: &Secret) -> Result<Vec<u8>, String
         .as_ref()
         .and_then(|d| d.get(".dockerconfigjson"))
         .ok_or_else(|| format!("Secret `{name}` has no .dockerconfigjson"))?;
-    match serde_json::from_slice::<serde_json::Value>(&config.0) {
-        Ok(serde_json::Value::Object(_)) => Ok(config.0.clone()),
-        _ => Err(format!(
-            "Secret `{name}`: .dockerconfigjson is not a Docker config"
-        )),
-    }
+    serde_json::from_slice::<DockerConfig>(&config.0)
+        .map(|_| config.0.clone())
+        .map_err(|_error| format!("Secret `{name}`: .dockerconfigjson is not a Docker config"))
 }
 
 /// The registry API of one host.
@@ -380,6 +418,7 @@ impl Registry {
 mod tests {
     use aws_lc_rs::rand::SystemRandom;
     use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
+    use serde_json::json;
 
     use super::*;
 
@@ -468,16 +507,12 @@ mod tests {
     fn push_credentials_need_the_label_and_the_type() {
         let secret = |label: Option<&str>, type_: &str, config: &str| Secret {
             metadata: kube::api::ObjectMeta {
-                labels: label.map(|v| {
-                    std::collections::BTreeMap::from([(
-                        labels::PUSH_CREDENTIALS.to_owned(),
-                        v.to_owned(),
-                    )])
-                }),
+                labels: label
+                    .map(|v| BTreeMap::from([(labels::PUSH_CREDENTIALS.to_owned(), v.to_owned())])),
                 ..Default::default()
             },
             type_: Some(type_.to_owned()),
-            data: Some(std::collections::BTreeMap::from([(
+            data: Some(BTreeMap::from([(
                 ".dockerconfigjson".to_owned(),
                 k8s_openapi::ByteString(config.as_bytes().to_vec()),
             )])),
