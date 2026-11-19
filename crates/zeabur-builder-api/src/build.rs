@@ -383,8 +383,9 @@ pub struct BuildStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 1024))]
     pub latest_image: Option<String>,
-    /// The plan of the newest successful run with a planner. A run reuses it when the `Build`
-    /// asks (`builder.zeabur.com/plan: reuse`) and still names the builder that made it.
+    /// The plan of the newest successful run with a planner. A new run reuses it while the
+    /// `Build` names the builder that made it, unless the `Build` has
+    /// `builder.zeabur.com/plan: fresh`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<SavedPlan>,
     /// The revision the controller last created a `BuildRun` for. Deleting that run does not

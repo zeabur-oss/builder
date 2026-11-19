@@ -1089,16 +1089,16 @@ pub(crate) fn tags(build: &Build, run: &BuildRun) -> Result<Vec<String>, TagErro
     Ok(tags)
 }
 
-/// The digest of the saved plan a new run of `build` builds with: only when the `Build` asks to
-/// reuse its plan and the plan comes from the builder it names now.
+/// The digest of the saved plan a new run of `build` builds with: when the plan comes from the
+/// builder the `Build` names now, unless the `Build` asks to plan again.
 pub(crate) fn reused_plan(build: &Build) -> Option<String> {
-    if build
+    let fresh = build
         .metadata
         .annotations
-        .as_ref()?
-        .get(annotations::PLAN)?
-        != annotations::PLAN_REUSE
-    {
+        .as_ref()
+        .and_then(|a| a.get(annotations::PLAN))
+        .is_some_and(|v| v == annotations::PLAN_FRESH);
+    if fresh {
         return None;
     }
     let saved = build.status.as_ref()?.plan.as_ref()?;

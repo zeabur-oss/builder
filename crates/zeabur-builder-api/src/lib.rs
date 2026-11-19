@@ -69,12 +69,11 @@ pub mod annotations {
     /// On a `Build` with an archive source: a new value asks for an upload token
     /// (`status.uploadToken`).
     pub const UPLOAD_TOKEN_REQUEST: &str = "builder.zeabur.com/upload-token-request";
-    /// On a `Build`: [`PLAN_REUSE`] makes each new run build with the plan the last successful
-    /// run saved (`status.plan`), without running the planner. Any other value, or none, plans
-    /// every run.
+    /// On a `Build`: [`PLAN_FRESH`] makes each new run run the planner. Without it, a new run
+    /// builds with the plan the last successful run saved (`status.plan`), when there is one.
     pub const PLAN: &str = "builder.zeabur.com/plan";
-    /// The value of [`PLAN`] that reuses the saved plan.
-    pub const PLAN_REUSE: &str = "reuse";
+    /// The value of [`PLAN`] that plans every run again.
+    pub const PLAN_FRESH: &str = "fresh";
     /// On a buildkitd `StatefulSet`: the SHA-256 of the spec the controller applied.
     pub const SPEC_HASH: &str = "builder.zeabur.com/spec-hash";
 }

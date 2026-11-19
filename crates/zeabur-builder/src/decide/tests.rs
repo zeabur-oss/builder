@@ -1167,8 +1167,10 @@ fn the_plan_a_run_saved_stays_until_a_newer_one() {
 }
 
 #[test]
-fn a_run_reuses_the_saved_plan_only_when_asked_and_from_the_same_builder() {
+fn a_run_reuses_the_saved_plan_of_the_same_builder_unless_asked_to_plan_again() {
     let mut build = build();
+    assert_eq!(reused_plan(&build), None);
+
     build.status = Some(BuildStatus {
         plan: Some(SavedPlan {
             image: format!("r/team-a/api@{PLAN}"),
@@ -1176,14 +1178,15 @@ fn a_run_reuses_the_saved_plan_only_when_asked_and_from_the_same_builder() {
         }),
         ..BuildStatus::default()
     });
-    assert_eq!(reused_plan(&build), None);
+    assert_eq!(reused_plan(&build).as_deref(), Some(PLAN));
 
     build.metadata.annotations = Some(BTreeMap::from([(
         annotations::PLAN.to_owned(),
-        annotations::PLAN_REUSE.to_owned(),
+        annotations::PLAN_FRESH.to_owned(),
     )]));
-    assert_eq!(reused_plan(&build).as_deref(), Some(PLAN));
+    assert_eq!(reused_plan(&build), None);
 
+    build.metadata.annotations = None;
     build.spec.builder_ref = "agent".to_owned();
     assert_eq!(reused_plan(&build), None);
 }

@@ -9,8 +9,8 @@
 //! and the build turns the source and the plan into an image. After a planner runs and the build
 //! pushes its image, the build step pushes the plan folder as an image of its own
 //! ([`SAVED_DOCKERFILE`], tagged [`saved_tag`]) and reports its digest; the controller records it
-//! in `Build.status.plan`. A `Build` with `builder.zeabur.com/plan: reuse` skips the planner: its
-//! next runs unpack that plan into `/workspace/plan` and build with it.
+//! in `Build.status.plan`. Later runs of the `Build` skip the planner: they unpack that plan into
+//! `/workspace/plan` and build with it, unless the `Build` has `builder.zeabur.com/plan: fresh`.
 
 use serde::{Deserialize, Serialize};
 

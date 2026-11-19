@@ -78,8 +78,8 @@ pub struct BuildRunSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<Trigger>,
     /// The digest of the saved plan the run builds with, in the `Build`'s own repository. The
-    /// controller sets it from `Build.status.plan` when the `Build` asks to reuse its plan
-    /// (`builder.zeabur.com/plan: reuse`). Without it, the planner runs.
+    /// controller sets it from `Build.status.plan`, unless the `Build` asks to plan again
+    /// (`builder.zeabur.com/plan: fresh`). Without it, the planner runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
     pub plan: Option<String>,

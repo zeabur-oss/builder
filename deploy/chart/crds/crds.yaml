@@ -934,7 +934,7 @@
                     "type": "integer"
                   },
                   "plan": {
-                    "description": "The plan of the newest successful run with a planner. A run reuses it when the `Build`\nasks (`builder.zeabur.com/plan: reuse`) and still names the builder that made it.",
+                    "description": "The plan of the newest successful run with a planner. A new run reuses it while the\n`Build` names the builder that made it, unless the `Build` has\n`builder.zeabur.com/plan: fresh`.",
                     "nullable": true,
                     "properties": {
                       "builder": {
@@ -1106,7 +1106,7 @@
                     "type": "string"
                   },
                   "plan": {
-                    "description": "The digest of the saved plan the run builds with, in the `Build`'s own repository. The\ncontroller sets it from `Build.status.plan` when the `Build` asks to reuse its plan\n(`builder.zeabur.com/plan: reuse`). Without it, the planner runs.",
+                    "description": "The digest of the saved plan the run builds with, in the `Build`'s own repository. The\ncontroller sets it from `Build.status.plan`, unless the `Build` asks to plan again\n(`builder.zeabur.com/plan: fresh`). Without it, the planner runs.",
                     "maxLength": 71,
                     "nullable": true,
                     "pattern": "^sha256:[0-9a-f]{64}$",
