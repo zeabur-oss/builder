@@ -148,7 +148,7 @@ where
         let plan = Plan {
             source: Source::Repository,
             dockerfile,
-            dockerignore: String::new(),
+            dockerignore: repo.file("Dockerfile.dockerignore").unwrap_or_default(),
             details: Details::default(),
         };
         return (Outcome::Ready(plan), None);
@@ -211,9 +211,11 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
         Outcome::Ready(plan) => {
             printed = Some(plan.dockerfile.clone());
             write("Dockerfile", plan.dockerfile).await?;
-            // The repository's own Dockerfile keeps the repository's `.dockerignore`, so a file
-            // left from an earlier run must not override it.
-            if plan.source == Source::Repository {
+            // The repository's own Dockerfile keeps the repository's ignore rules as they are,
+            // so a file left from an earlier run must not override them.
+            if plan.source == Source::Repository && !plan.dockerignore.is_empty() {
+                write("Dockerfile.dockerignore", plan.dockerignore).await?;
+            } else if plan.source == Source::Repository {
                 let stale = out.join("Dockerfile.dockerignore");
                 if let Err(e) = tokio::fs::remove_file(&stale).await
                     && e.kind() != std::io::ErrorKind::NotFound
@@ -378,6 +380,21 @@ mod tests {
         );
 
         assert!(!out.path().join("Dockerfile.dockerignore").exists());
+    }
+
+    #[tokio::test]
+    async fn the_repository_s_own_ignore_file_goes_with_its_dockerfile() {
+        let context = Dir::new();
+        context.write("Dockerfile", "FROM busybox\n");
+        context.write("Dockerfile.dockerignore", "secrets/\n");
+        let repo = Repo::new(context.path()).unwrap();
+        let out = Dir::new();
+
+        let (outcome, _) = plan(&repo, &Script::default(), None, Limits::default(), no_model).await;
+        report(out.path(), outcome, None).await.unwrap();
+
+        let read = |name: &str| std::fs::read_to_string(out.path().join(name)).unwrap();
+        assert_eq!(read("Dockerfile.dockerignore"), "secrets/\n");
     }
 
     #[tokio::test]

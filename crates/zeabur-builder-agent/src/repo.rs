@@ -49,8 +49,8 @@ const BUILD_IGNORE: &str = "\
 **/.netrc
 **/.pypirc
 **/.git-credentials
-**/*.pem
-**/*.key
+**/*.[pP][eE][mM]
+**/*.[kK][eE][yY]
 **/id_rsa*
 **/id_ecdsa*
 **/id_ed25519*

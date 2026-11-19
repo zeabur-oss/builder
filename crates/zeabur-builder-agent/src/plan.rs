@@ -23,7 +23,8 @@ pub(crate) struct Plan {
     pub(crate) source: Source,
     /// The Dockerfile, as it built.
     pub(crate) dockerfile: String,
-    /// The `.dockerignore` it built with, without the rules every build adds.
+    /// The `.dockerignore` it built with, without the rules every build adds. For the repository's
+    /// own Dockerfile, its `Dockerfile.dockerignore` as is, or empty when it has none.
     pub(crate) dockerignore: String,
     /// What the agent reported when it finished; empty when no model was called.
     pub(crate) details: Details,
