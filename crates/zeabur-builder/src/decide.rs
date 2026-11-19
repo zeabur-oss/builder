@@ -146,28 +146,28 @@ pub(crate) const fn is_finished(phase: Option<Phase>) -> bool {
     )
 }
 
-/// How long a Job may go unrecorded in its run's status before the controller takes it as
-/// stopped between creating the Job and recording it.
-pub(crate) const START_GRACE: Duration = Duration::from_mins(1);
+/// Whether `run` is the controller of `job`: a Job of the same name that an earlier run of that
+/// name left is not.
+pub(crate) fn controls(run: &BuildRun, job: &Job) -> bool {
+    job.metadata
+        .owner_references
+        .iter()
+        .flatten()
+        .any(|o| o.controller == Some(true) && Some(&o.uid) == run.metadata.uid.as_ref())
+}
 
-/// The status to build on once a run's Job exists: as it is when it names the Job; `None` while
-/// the start may still be recording it, since writing an older status would drop what the start
-/// writes; past [`START_GRACE`], the Job adopted.
-pub(crate) fn recorded(
-    status: BuildRunStatus,
-    job: &Job,
-    now: Timestamp,
-) -> Option<BuildRunStatus> {
+/// The status to build on once a run's Job exists: as it is when it names the Job, else with the
+/// Job adopted. The Job is the run's own, so the run that created it and stopped before recording
+/// it is the one that finds it.
+pub(crate) fn recorded(status: BuildRunStatus, job: &Job) -> BuildRunStatus {
     if status.job_ref.is_some() {
-        return Some(status);
+        return status;
     }
-    let created = job.metadata.creation_timestamp.as_ref()?.0;
-    let age = now.duration_since(created).unsigned_abs();
-    (age >= START_GRACE).then(|| BuildRunStatus {
+    BuildRunStatus {
         job_ref: job.metadata.name.clone(),
-        start_time: Some(created),
+        start_time: job.metadata.creation_timestamp.as_ref().map(|t| t.0),
         ..status
-    })
+    }
 }
 
 fn phase(run: &BuildRun) -> Option<Phase> {
@@ -391,7 +391,8 @@ pub(crate) fn pending_rebuild<'a>(build: &'a Build, runs: &[BuildRun]) -> Option
 const NAME_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
 
 /// The name of the run the `Build` reconciler creates for `revision`: `<build>-` and five
-/// characters from a SHA-256 of the `Build`'s UID, the commit and the `rebuild` value.
+/// characters from a SHA-256 of the `Build`'s UID and generation, the commit and the `rebuild`
+/// value. A spec edit thus builds again, and its run is the one `Ready` waits for.
 ///
 /// Two replicas that decide the same run give it the same name, so the second create gets
 /// `409 Conflict`. The trigger is not in the hash: a poll and a webhook that find the same commit
@@ -401,6 +402,7 @@ pub(crate) fn run_name(build: &Build, revision: &str) -> String {
     let mut input = Vec::new();
     for part in [
         build.metadata.uid.as_deref().unwrap_or_default(),
+        &build.metadata.generation.unwrap_or_default().to_string(),
         revision,
         rebuild_value(&build.metadata).unwrap_or_default(),
     ] {
@@ -506,11 +508,21 @@ pub(crate) fn latest_success(runs: &[BuildRun]) -> Option<&BuildRun> {
         })
 }
 
-/// The newest finished run.
-pub(crate) fn latest_finished(runs: &[BuildRun]) -> Option<&BuildRun> {
-    runs.iter()
-        .filter(|r| is_finished(phase(r)))
+/// The newest finished run of `runs`.
+fn latest_finished<'a>(runs: impl Iterator<Item = &'a BuildRun>) -> Option<&'a BuildRun> {
+    runs.filter(|r| is_finished(phase(r)))
         .max_by_key(|r| finished_at(r))
+}
+
+/// Whether `run` was created for the `Build`'s `generation`.
+fn built_from(run: &BuildRun, generation: Option<i64>) -> bool {
+    let made = run
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(annotations::BUILD_GENERATION))
+        .and_then(|g| g.parse::<i64>().ok());
+    made == generation
 }
 
 /// Finished runs beyond the `Build`'s history limit, oldest first. The newest success is kept
@@ -682,6 +694,11 @@ pub(crate) const fn admitted(status: &BuildRunStatus) -> bool {
     status.job_ref.is_some() || status.buildkitd_instance.is_some()
 }
 
+/// Whether `run` has not finished and has no Job yet: it waits for a daemon, a slot or a Job.
+pub(crate) fn is_waiting(run: &BuildRun) -> bool {
+    !is_finished(phase(run)) && run.status.as_ref().is_none_or(|s| s.job_ref.is_none())
+}
+
 pub(crate) fn holds_slot(run: &BuildRun) -> bool {
     !is_finished(phase(run)) && run.status.as_ref().is_some_and(admitted)
 }
@@ -732,6 +749,10 @@ fn queue_key(run: &BuildRun) -> QueueKey<'_> {
 /// A run holds a slot from the moment it is admitted until it finishes, through its daemon's
 /// start and its Job's creation. The cluster's slots go to queued runs in [`queue_key`] order: a
 /// run starts only when the free slots outnumber the runs waiting ahead of it.
+///
+/// This queue stays in the controller: a `ResourceQuota` on Jobs limits one namespace but cannot
+/// share a cluster's slots fairly across namespaces, and Pod priority does not scale a buildkitd
+/// down.
 pub(crate) fn admission(
     runs: &[BuildRun],
     run: &BuildRun,
@@ -767,23 +788,22 @@ pub(crate) fn admission(
     Ok(())
 }
 
-/// Since when the daemon's Pod has been Pending for want of memory or CPU, if it has.
-pub(crate) fn short_of_resources(pod: &Pod) -> Option<Timestamp> {
-    let conditions = pod.status.as_ref()?.conditions.as_ref()?;
-    for condition in conditions {
-        let short = condition
-            .message
-            .as_deref()
-            .is_some_and(|m| m.contains("Insufficient memory") || m.contains("Insufficient cpu"));
-        if condition.type_ == "PodScheduled"
-            && condition.status == "False"
-            && condition.reason.as_deref() == Some("Unschedulable")
-            && short
-        {
-            return condition.last_transition_time.as_ref().map(|t| t.0);
-        }
-    }
-    None
+/// Since when the scheduler has found no node for the daemon's Pod, and what it says.
+pub(crate) fn unschedulable(pod: &Pod) -> Option<(Timestamp, String)> {
+    pod.status
+        .as_ref()?
+        .conditions
+        .iter()
+        .flatten()
+        .find(|c| {
+            c.type_ == "PodScheduled"
+                && c.status == "False"
+                && c.reason.as_deref() == Some("Unschedulable")
+        })
+        .and_then(|c| {
+            let since = c.last_transition_time.as_ref()?.0;
+            Some((since, c.message.clone().unwrap_or_default()))
+        })
 }
 
 /// Whether a run whose daemon has been short of resources since `since` gives its slot back:
@@ -1155,7 +1175,8 @@ pub(crate) fn summarise(
         .iter()
         .max_by_key(|r| r.metadata.creation_timestamp.as_ref().map(|t| t.0))
         .and_then(|r| r.metadata.name.clone());
-    let (ready, reason, message) = latest_finished(runs).map_or_else(
+    let current = || runs.iter().filter(|r| built_from(r, generation));
+    let (ready, reason, message) = latest_finished(current()).map_or_else(
         || {
             (
                 ConditionStatus::Unknown,
@@ -1191,6 +1212,46 @@ pub(crate) fn summarise(
         now,
         generation,
     );
+    if current().any(|r| !is_finished(phase(r))) {
+        set_condition(
+            &mut status.conditions,
+            ConditionType::Reconciling,
+            ConditionStatus::True,
+            ConditionReason::Building,
+            "",
+            now,
+            generation,
+        );
+    } else {
+        status
+            .conditions
+            .retain(|c| c.kind != ConditionType::Reconciling);
+    }
+    let cause = status
+        .conditions
+        .iter()
+        .find(|c| {
+            matches!(
+                c.kind,
+                ConditionType::SourceReady | ConditionType::BuilderReady
+            ) && c.status == ConditionStatus::False
+        })
+        .map(|c| (c.reason.clone(), c.message.clone()));
+    if let Some((reason, message)) = cause {
+        put_condition(
+            &mut status.conditions,
+            ConditionType::Stalled,
+            ConditionStatus::True,
+            reason,
+            &message,
+            now,
+            generation,
+        );
+    } else {
+        status
+            .conditions
+            .retain(|c| c.kind != ConditionType::Stalled);
+    }
 }
 
 /// The run whose image the `Build`'s notify targets are owed: the newest success, which

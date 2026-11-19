@@ -407,7 +407,10 @@ pub struct BuildStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = MAX_EXPOSED_PORTS), inner(length(max = 32)))]
     pub exposed_ports: Vec<String>,
-    /// `SourceReady`, `BuilderReady` and `Ready`.
+    /// `Ready`, `Reconciling` and `Stalled` as kstatus reads them, with `SourceReady` and
+    /// `BuilderReady` as the causes. `Ready` is `True` only when the newest run of the current
+    /// `metadata.generation` succeeded. A `Build` with no `observedGeneration` is a new one, and
+    /// its first status write marks that the controller has cleared its repositories.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = MAX_CONDITIONS))]
     pub conditions: Vec<Condition>,
@@ -494,8 +497,10 @@ pub enum ConditionReason {
     Published,
     /// `BuilderReady`: there is no such `ClusterBuilder`.
     BuilderNotFound,
-    /// `Ready`: no run has finished.
+    /// `Ready`: no run of the current generation has finished.
     NotBuilt,
+    /// `Reconciling`: a run of the current generation has not finished.
+    Building,
     /// `Ready`: the latest finished run succeeded.
     Succeeded,
     /// `Ready`: the latest finished run failed without a reason.

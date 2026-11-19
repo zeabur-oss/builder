@@ -42,6 +42,7 @@ use futures_util::StreamExt as _;
 use futures_util::future::BoxFuture;
 use jiff::Timestamp;
 use k8s_openapi::ByteString;
+use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ConfigMap, Namespace, ObjectReference, Pod, Secret};
 use kube::api::{
@@ -49,7 +50,7 @@ use kube::api::{
 };
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
-use kube::runtime::reflector::Store;
+use kube::runtime::reflector::{ObjectRef, Store};
 use kube::runtime::watcher::{self, watcher};
 use kube::{Client, Resource as _, ResourceExt as _};
 use serde::Serialize;
@@ -81,10 +82,11 @@ const MANAGER: &str = "zeabur-builder";
 /// The field manager of `status.lastWebhookAt`, apart from [`MANAGER`] so neither removes the
 /// other's fields.
 const WEBHOOK_MANAGER: &str = "zeabur-builder-webhook";
-/// How often a waiting `BuildRun` is looked at again.
-const PENDING_RETRY: Duration = Duration::from_secs(15);
-/// How often a `BuildRun` waiting for its buildkitd to start is looked at again.
-const STARTING_RETRY: Duration = Duration::from_secs(2);
+/// How often a waiting `BuildRun` is looked at again, as a safety net: a change of its buildkitd or
+/// of another run wakes it first.
+const PENDING_RETRY: Duration = Duration::from_secs(60);
+/// How soon a failed registry sweep tries again.
+const SWEEP_RETRY: Duration = Duration::from_secs(15);
 /// Objects read per page of a LIST.
 const PAGE: u32 = 100;
 /// The name of the client certificate Secret in a build namespace.
@@ -290,6 +292,61 @@ pub(crate) async fn run(client: Client, settings: Settings) -> Result<(), String
     served
 }
 
+/// The `BuildRun` controller and its store. A run is looked at again when its Job, a buildkitd
+/// Pod or `StatefulSet`, or another run's end changes what it waits for.
+fn run_controller(client: &Client, leader: &Leader) -> (Controller<BuildRun>, Store<BuildRun>) {
+    let runs = Controller::new(
+        Api::<BuildRun>::all(client.clone()),
+        watcher::Config::default(),
+    );
+    let store = runs.store();
+    let in_namespace = {
+        let store = store.clone();
+        move |namespace: Option<&String>| waiting_in(&store, namespace)
+    };
+    let runs = runs
+        .owns(
+            Api::<Job>::all(client.clone()),
+            watcher::Config::default().labels(&format!(
+                "{}={}",
+                labels::MANAGED_BY,
+                labels::MANAGER
+            )),
+        )
+        .watches(
+            Api::<Pod>::all(client.clone()),
+            watcher::Config::default().labels(labels::NAMESPACE),
+            {
+                let in_namespace = in_namespace.clone();
+                move |pod| in_namespace(pod.labels().get(labels::NAMESPACE))
+            },
+        )
+        .watches(
+            Api::<StatefulSet>::all(client.clone()),
+            watcher::Config::default().labels(labels::NAMESPACE),
+            {
+                let in_namespace = in_namespace.clone();
+                move |set| in_namespace(set.labels().get(labels::NAMESPACE))
+            },
+        )
+        .watches(
+            Api::<BuildRun>::all(client.clone()),
+            watcher::Config::default(),
+            {
+                let store = store.clone();
+                move |run| {
+                    if decide::is_finished(run.status.as_ref().and_then(|s| s.phase)) {
+                        waiting_in(&store, None)
+                    } else {
+                        Vec::new()
+                    }
+                }
+            },
+        )
+        .reconcile_all_on(leader.taken());
+    (runs, store)
+}
+
 /// Runs the controllers, the sweep and the receiver until a termination signal.
 async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Result<(), String> {
     let http = remote::http_client()?;
@@ -307,17 +364,9 @@ async fn run_replica(client: Client, settings: Settings, leader: Leader) -> Resu
     ));
     let receiver_settings = settings.webhook.clone();
     let daemon_settings = Arc::clone(&settings.daemon);
-    let runs = Controller::new(
-        Api::<BuildRun>::all(client.clone()),
-        watcher::Config::default(),
-    )
-    .owns(
-        Api::<Job>::all(client.clone()),
-        watcher::Config::default().labels(&format!("{}={}", labels::MANAGED_BY, labels::MANAGER)),
-    )
-    .reconcile_all_on(leader.taken());
+    let (runs, store) = run_controller(&client, &leader);
     let context = Arc::new(Context {
-        runs: runs.store(),
+        runs: store,
         leader: leader.clone(),
         admitting: tokio::sync::Mutex::new(()),
         github: Arc::clone(&github),
@@ -758,16 +807,21 @@ async fn create_run(
     let owner = build
         .controller_owner_ref(&())
         .ok_or_else(|| Error::Invalid("the Build has no UID".to_owned()))?;
-    let rebuild = build
+    let generation = build.metadata.generation.unwrap_or_default().to_string();
+    let recorded = BTreeMap::from([(annotations::BUILD_GENERATION.to_owned(), generation)]);
+    let annotated: BTreeMap<String, String> = build
         .annotations()
         .get(annotations::REBUILD)
-        .map(|v| BTreeMap::from([(annotations::REBUILD.to_owned(), v.clone())]));
+        .map(|v| (annotations::REBUILD.to_owned(), v.clone()))
+        .into_iter()
+        .chain(recorded)
+        .collect();
     let run_name = decide::run_name(build, sha);
     let mut run = BuildRun {
         metadata: ObjectMeta {
             name: Some(run_name.clone()),
             namespace: build.namespace(),
-            annotations: rebuild,
+            annotations: Some(annotated),
             labels: Some(BTreeMap::from([
                 (labels::BUILD.to_owned(), name.clone()),
                 (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
@@ -791,6 +845,8 @@ async fn create_run(
         && existing.spec.revision == run.spec.revision
         && existing.annotations().get(annotations::REBUILD)
             == run.annotations().get(annotations::REBUILD)
+        && existing.annotations().get(annotations::BUILD_GENERATION)
+            == run.annotations().get(annotations::BUILD_GENERATION)
         && existing
             .owner_references()
             .iter()
@@ -851,7 +907,13 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
     let runs: Api<BuildRun> = Api::namespaced(ctx.client.clone(), &namespace);
     let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &namespace);
 
-    let Some(job) = jobs.get_opt(&name).await? else {
+    let job = match jobs.get_opt(&name).await? {
+        Some(job) if decide::controls(&run, &job) => Some(job),
+        // The Job of an earlier run of this name, still being deleted.
+        Some(_) => return Ok(Action::requeue(Duration::from_secs(5))),
+        None => None,
+    };
+    let Some(job) = job else {
         if status.job_ref.is_some() {
             return finish(
                 &ctx,
@@ -868,16 +930,25 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
         return Box::pin(start(&ctx, &run, status)).await;
     };
 
-    let Some(status) = decide::recorded(status, &job, now()) else {
-        return Ok(Action::requeue(Duration::from_secs(2)));
+    // The cached run may not hold what the start that created the Job has just written.
+    let status = if status.job_ref.is_none() {
+        runs.get(&name).await?.status.unwrap_or_default()
+    } else {
+        status
     };
+    let status = decide::recorded(status, &job);
     let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), &namespace);
-    let pod = pods
-        .list(&ListParams::default().labels(&format!("batch.kubernetes.io/job-name={name}")))
-        .await?
-        .items
-        .into_iter()
-        .max_by_key(|p| p.metadata.creation_timestamp.as_ref().map(|t| t.0));
+    let pod = match job.metadata.uid.as_deref() {
+        Some(uid) => pods
+            .list(
+                &ListParams::default().labels(&format!("batch.kubernetes.io/controller-uid={uid}")),
+            )
+            .await?
+            .items
+            .into_iter()
+            .max_by_key(|p| p.metadata.creation_timestamp.as_ref().map(|t| t.0)),
+        None => None,
+    };
     match decide::observe(&job, pod.as_ref()) {
         Observed::Running(phase) => {
             if status.phase != Some(phase) || status.reason.is_some() {
@@ -1111,6 +1182,18 @@ async fn basic_auth(ctx: &Context, namespace: &str, name: &str) -> Result<Creden
     })
 }
 
+/// The runs that wait for a daemon or a slot, in `namespace` or in all namespaces: the ones to look
+/// at again when a daemon changes or another run finishes.
+fn waiting_in(store: &Store<BuildRun>, namespace: Option<&String>) -> Vec<ObjectRef<BuildRun>> {
+    store
+        .state()
+        .iter()
+        .filter(|r| namespace.is_none_or(|n| r.namespace().as_ref() == Some(n)))
+        .filter(|r| decide::is_waiting(r))
+        .map(|r| ObjectRef::from_obj(r.as_ref()))
+        .collect()
+}
+
 async fn pending(
     ctx: &Context,
     run: &BuildRun,
@@ -1118,11 +1201,6 @@ async fn pending(
     reason: Reason,
     message: String,
 ) -> Result<Action, Error> {
-    let retry = if reason == Reason::BuildkitdStarting {
-        STARTING_RETRY
-    } else {
-        PENDING_RETRY
-    };
     status.phase = Some(Phase::Pending);
     status.reason = Some(reason);
     status.message = Some(message);
@@ -1132,7 +1210,7 @@ async fn pending(
             Api::<BuildRun>::namespaced(ctx.client.clone(), &run.namespace().unwrap_or_default());
         apply_status(&api, &run.name_any(), &status).await?;
     }
-    Ok(Action::requeue(retry))
+    Ok(Action::requeue(PENDING_RETRY))
 }
 
 /// The run's `Build` and its `ClusterBuilder`, or why one is missing.
@@ -1325,9 +1403,10 @@ async fn short_of_resources(
     mut status: BuildRunStatus,
     pod: &str,
     since: Timestamp,
+    scheduler: &str,
 ) -> Result<Action, Error> {
     let namespace = run.namespace().unwrap_or_default();
-    let message = format!("not enough memory or CPU in the cluster to start {pod}");
+    let message = format!("{pod} cannot be scheduled: {scheduler}");
     if ctx.runs.wait_until_ready().await.is_err() {
         return pending(ctx, run, status, Reason::InsufficientResources, message).await;
     }
@@ -1383,9 +1462,11 @@ async fn daemon_for(
         Ok(daemon::Wake::Starting(message)) => {
             pending(ctx, run, status, Reason::BuildkitdStarting, message).await?
         }
-        Ok(daemon::Wake::Short { pod, since }) => {
-            short_of_resources(ctx, run, status, &pod, since).await?
-        }
+        Ok(daemon::Wake::Short {
+            pod,
+            since,
+            message,
+        }) => short_of_resources(ctx, run, status, &pod, since, &message).await?,
         // The controller's settings make a buildkitd the API server refuses.
         Err(kube::Error::Api(e)) if e.code == 422 => {
             let failed = BuildRunStatus {
@@ -1800,7 +1881,7 @@ async fn sweep_registry(ctx: &Context) -> Result<(), String> {
 /// Deletes the repositories of deleted `Build`s: on each delete event, and by a sweep at start and
 /// every [`SWEEP`], which also catches events missed while the controller was down. A failed
 /// sweep, such as one a network policy refuses while it does not yet admit a new Pod, tries again
-/// after [`PENDING_RETRY`].
+/// after [`SWEEP_RETRY`].
 async fn janitor(ctx: Arc<Context>) {
     let events = watcher(
         Api::<Build>::all(ctx.client.clone()),
@@ -1827,14 +1908,14 @@ async fn janitor(ctx: Arc<Context>) {
             },
             () = tokio::time::sleep_until(next_sweep) => {
                 if !ctx.leader.is_leader() {
-                    next_sweep += PENDING_RETRY;
+                    next_sweep += SWEEP_RETRY;
                     continue;
                 }
                 let wait = match sweep_registry(&ctx).await {
                     Ok(()) => SWEEP,
                     Err(error) => {
                         tracing::warn!(%error, "sweeping the registry; trying again soon");
-                        PENDING_RETRY
+                        SWEEP_RETRY
                     }
                 };
                 next_sweep = tokio::time::Instant::now() + wait;

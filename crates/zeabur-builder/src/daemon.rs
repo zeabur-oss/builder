@@ -118,8 +118,12 @@ pub(crate) enum Wake {
     Ready(Woken),
     /// The daemon is starting or being replaced; why the run waits.
     Starting(String),
-    /// The daemon's Pod cannot be scheduled for want of memory or CPU, since the given time.
-    Short { pod: String, since: Timestamp },
+    /// The scheduler finds no node for the daemon's Pod, since the given time, and says why.
+    Short {
+        pod: String,
+        since: Timestamp,
+        message: String,
+    },
 }
 
 /// Makes the namespace's certificates and applies its daemon with one replica.
@@ -196,10 +200,11 @@ pub(crate) async fn wake(
         .get_opt(&pod_name)
         .await?;
     if !pod.as_ref().is_some_and(|p| ready(p, &set)) {
-        if let Some(since) = pod.as_ref().and_then(decide::short_of_resources) {
+        if let Some((since, message)) = pod.as_ref().and_then(decide::unschedulable) {
             return Ok(Wake::Short {
                 pod: pod_name,
                 since,
+                message,
             });
         }
         return Ok(Wake::Starting(format!(

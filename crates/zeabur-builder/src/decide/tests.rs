@@ -4,7 +4,7 @@ use k8s_openapi::api::batch::v1::{JobCondition, JobStatus};
 use k8s_openapi::api::core::v1::{
     ContainerState, ContainerStateRunning, ContainerStateTerminated, PodCondition, PodStatus,
 };
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{OwnerReference, Time};
 use zeabur_builder_api::build::{
     ArchiveSource, BuildSpec, GitHubAppSource, GitSource, NotifyTarget, NotifyType, OutputSpec,
     SourceSpec, TriggerSpec,
@@ -72,6 +72,10 @@ fn run(name: &str, revision: &str, phase: Option<Phase>, at: &str) -> BuildRun {
         },
     );
     run.metadata.creation_timestamp = Some(Time(at.parse().unwrap()));
+    run.metadata.annotations = Some(BTreeMap::from([(
+        annotations::BUILD_GENERATION.to_owned(),
+        "1".to_owned(),
+    )]));
     run.status = Some(BuildRunStatus {
         phase,
         completion_time: is_finished(phase).then(|| ts(at)),
@@ -1444,24 +1448,40 @@ fn failures_name_their_phase() {
 }
 
 #[test]
-fn a_job_is_used_once_its_run_records_it() {
+fn a_job_of_the_run_is_adopted_at_once() {
     let mut job = job(None);
     job.metadata.name = Some("app-x1".to_owned());
     job.metadata.creation_timestamp = Some(Time(now()));
-    let unrecorded = BuildRunStatus::default();
-    assert_eq!(recorded(unrecorded.clone(), &job, now()), None);
 
     let started = BuildRunStatus {
         job_ref: Some("app-x1".to_owned()),
         buildkitd_instance: Some("buildkitd-0".to_owned()),
         ..BuildRunStatus::default()
     };
-    assert_eq!(recorded(started.clone(), &job, now()), Some(started));
+    assert_eq!(recorded(started.clone(), &job), started);
 
-    let later = now() + START_GRACE;
-    let adopted = recorded(unrecorded, &job, later).unwrap();
+    let adopted = recorded(BuildRunStatus::default(), &job);
     assert_eq!(adopted.job_ref.as_deref(), Some("app-x1"));
     assert_eq!(adopted.start_time, Some(now()));
+}
+
+#[test]
+fn a_run_controls_only_a_job_that_names_its_uid() {
+    let mut run = run("app-x1", A, Some(Phase::Pending), "2026-10-22T01:00:00Z");
+    run.metadata.uid = Some("uid-new".to_owned());
+    let owned_by = |uid: &str, controller: bool| {
+        let mut job = job(None);
+        job.metadata.owner_references = Some(vec![OwnerReference {
+            uid: uid.to_owned(),
+            controller: Some(controller),
+            ..OwnerReference::default()
+        }]);
+        job
+    };
+    assert!(controls(&run, &owned_by("uid-new", true)));
+    assert!(!controls(&run, &owned_by("uid-old", true)));
+    assert!(!controls(&run, &owned_by("uid-new", false)));
+    assert!(!controls(&run, &job(None)));
 }
 
 #[test]
@@ -1481,6 +1501,9 @@ fn a_run_name_follows_the_build_the_commit_and_the_rebuild_value() {
         "1".to_owned(),
     )]));
     assert_ne!(name, run_name(&rebuilt, A), "a rebuild");
+    let mut edited = build.clone();
+    edited.metadata.generation = Some(2);
+    assert_ne!(name, run_name(&edited, A), "a spec edit");
     let mut recreated = build;
     recreated.metadata.uid = Some("uid-2".to_owned());
     assert_ne!(name, run_name(&recreated, A), "a Build created again");
@@ -1665,7 +1688,7 @@ fn holding(namespace: &str, name: &str, at: &str) -> BuildRun {
     run
 }
 
-fn unschedulable(message: &str) -> Pod {
+fn unschedulable_pod(message: &str) -> Pod {
     Pod {
         status: Some(PodStatus {
             conditions: Some(vec![PodCondition {
@@ -1683,14 +1706,13 @@ fn unschedulable(message: &str) -> Pod {
 }
 
 #[test]
-fn a_pod_is_short_of_resources_only_when_the_scheduler_says_so() {
+fn a_pod_is_unschedulable_when_the_scheduler_says_so() {
     let memory = "0/1 nodes are available: 1 Insufficient memory.";
-    assert_eq!(short_of_resources(&unschedulable(memory)), Some(now()));
-    let cpu = "0/1 nodes are available: 1 Insufficient cpu.";
-    assert_eq!(short_of_resources(&unschedulable(cpu)), Some(now()));
-    let taint = "0/1 nodes are available: 1 node(s) had untolerated taint.";
-    assert_eq!(short_of_resources(&unschedulable(taint)), None);
-    assert_eq!(short_of_resources(&Pod::default()), None);
+    assert_eq!(
+        unschedulable(&unschedulable_pod(memory)),
+        Some((now(), memory.to_owned()))
+    );
+    assert_eq!(unschedulable(&Pod::default()), None);
 }
 
 #[test]
@@ -1743,6 +1765,98 @@ fn ready_names_the_outcome_of_the_latest_finished_run() {
         failed.status.as_mut().unwrap().reason = Some(reason);
         assert_eq!(ready(&[failed.clone()]), written);
     }
+}
+
+#[test]
+fn ready_waits_for_a_run_of_the_current_generation() {
+    let conditions = |runs: &[BuildRun], generation: i64, before: &[Condition]| {
+        let mut status = BuildStatus {
+            conditions: before.to_vec(),
+            ..BuildStatus::default()
+        };
+        summarise(&mut status, runs, now(), Some(generation));
+        status.conditions
+    };
+    let kinds = |c: &[Condition]| {
+        c.iter()
+            .map(|c| (c.kind, c.status))
+            .collect::<Vec<(ConditionType, ConditionStatus)>>()
+    };
+    let old = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+
+    // The spec was edited: the old success is not the current spec's.
+    let edited = conditions(std::slice::from_ref(&old), 2, &[]);
+    assert_eq!(
+        kinds(&edited),
+        [(ConditionType::Ready, ConditionStatus::Unknown)]
+    );
+
+    // A run of the new generation is under way, then succeeds.
+    let mut building = run("api-2", A, Some(Phase::Building), "2026-10-22T02:00:00Z");
+    building.metadata.annotations = Some(BTreeMap::from([(
+        annotations::BUILD_GENERATION.to_owned(),
+        "2".to_owned(),
+    )]));
+    let under_way = conditions(&[old.clone(), building.clone()], 2, &edited);
+    assert_eq!(
+        kinds(&under_way),
+        [
+            (ConditionType::Ready, ConditionStatus::Unknown),
+            (ConditionType::Reconciling, ConditionStatus::True)
+        ]
+    );
+    building.status = run("api-2", A, Some(Phase::Succeeded), "2026-10-22T03:00:00Z").status;
+    let done = conditions(&[old, building], 2, &under_way);
+    assert_eq!(
+        kinds(&done),
+        [(ConditionType::Ready, ConditionStatus::True)]
+    );
+    assert_eq!(done[0].observed_generation, Some(2));
+}
+
+#[test]
+fn a_build_is_stalled_while_its_source_or_builder_is_not_ready() {
+    let mut status = BuildStatus::default();
+    set_condition(
+        &mut status.conditions,
+        ConditionType::SourceReady,
+        ConditionStatus::False,
+        ConditionReason::RefNotFound,
+        "no such ref",
+        now(),
+        Some(1),
+    );
+    summarise(&mut status, &[], now(), Some(1));
+    let stalled = status
+        .conditions
+        .iter()
+        .find(|c| c.kind == ConditionType::Stalled)
+        .unwrap();
+    assert_eq!(
+        (
+            stalled.status,
+            stalled.reason.as_str(),
+            stalled.message.as_str()
+        ),
+        (ConditionStatus::True, "RefNotFound", "no such ref")
+    );
+
+    set_condition(
+        &mut status.conditions,
+        ConditionType::SourceReady,
+        ConditionStatus::True,
+        ConditionReason::Resolved,
+        "",
+        now(),
+        Some(1),
+    );
+    summarise(&mut status, &[], now(), Some(1));
+    assert!(
+        status
+            .conditions
+            .iter()
+            .all(|c| c.kind != ConditionType::Stalled)
+    );
 }
 
 #[test]

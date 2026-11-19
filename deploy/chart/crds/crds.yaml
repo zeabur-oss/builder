@@ -832,7 +832,7 @@
                     "type": "array"
                   },
                   "conditions": {
-                    "description": "`SourceReady`, `BuilderReady` and `Ready`.",
+                    "description": "`Ready`, `Reconciling` and `Stalled` as kstatus reads them, with `SourceReady` and\n`BuilderReady` as the causes. `Ready` is `True` only when the newest run of the current\n`metadata.generation` succeeded. A `Build` with no `observedGeneration` is a new one, and\nits first status write marks that the controller has cleared its repositories.",
                     "items": {
                       "description": "A status condition, as `metav1.Condition`.",
                       "properties": {
