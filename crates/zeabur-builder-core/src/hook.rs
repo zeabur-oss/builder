@@ -169,12 +169,15 @@ pub fn parse(provider: Provider, event: Option<&str>, body: &[u8]) -> Result<Del
             .collect(),
         Provider::Generic => text("/repository").map(str::to_owned).into_iter().collect(),
     };
-    let mut repositories: Vec<RepoKey> = Vec::new();
-    for key in urls.iter().filter_map(|u| RepoKey::parse(u).ok()) {
-        if !repositories.contains(&key) {
-            repositories.push(key);
-        }
-    }
+    let repositories = urls.iter().filter_map(|u| RepoKey::parse(u).ok()).fold(
+        Vec::<RepoKey>::new(),
+        |mut keys, key| {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+            keys
+        },
+    );
     let refs = if kind == Event::Push {
         pushed_refs(provider, &json)?
     } else {

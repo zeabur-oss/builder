@@ -217,12 +217,7 @@ pub(crate) fn archive_source(
 }
 
 /// `status` with the conditions of its phase and the run's rebuild request, as every write of a
-/// run's status records them.
-///
-/// The conditions follow kstatus ([kstatus]): `Reconciling` and `Stalled` are "abnormal-true"
-/// and are present only while they hold; `Ready` is always present. Each carries the run's
-/// `metadata.generation`, and keeps the `lastTransitionTime` stored on `run` while its status
-/// does not change. The conditions in `status` are ignored.
+/// run's status records them. The conditions follow kstatus ([kstatus]).
 ///
 /// [kstatus]: https://github.com/kubernetes-sigs/cli-utils/blob/5895ad6c17dd06b99c1e5c8af17e2b12a3504fad/pkg/kstatus/README.md#conditions
 pub(crate) fn run_status(
@@ -367,12 +362,7 @@ fn answered_rebuild(runs: &[BuildRun]) -> Option<&BuildRun> {
 }
 
 /// The `Build`'s `rebuild` value when it differs from the one on the newest run that records
-/// one. Every run the controller creates records the value of that moment, so a value set before
-/// a build asks for nothing more once that build starts.
-///
-/// A suspended `Build` has none pending: it asks for no build, the rebuild among them.
-/// The request is kept and runs when `suspend` is cleared; a `BuildRun` created by hand still
-/// runs while suspended.
+/// one. A suspended `Build` has none pending.
 pub(crate) fn pending_rebuild<'a>(build: &'a Build, runs: &[BuildRun]) -> Option<&'a str> {
     if build.spec.suspend {
         return None;
@@ -387,23 +377,18 @@ const NAME_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
 
 /// The name of the run the `Build` reconciler creates for `revision`: `<build>-` and five
 /// characters from a SHA-256 of the `Build`'s UID and generation, the commit and the `rebuild`
-/// value. A spec edit thus builds again, and its run is the one `Ready` waits for.
-///
-/// Two replicas that decide the same run give it the same name, so the second create gets
-/// `409 Conflict`. The trigger is not in the hash: a poll and a webhook that find the same commit
-/// name the same run. The suffix has the length of a `generateName` suffix, so the name fits a Job
-/// for the same `Build` names as before.
+/// value, so two replicas that decide the same run give it the same name and the second create
+/// gets `409 Conflict`.
 pub(crate) fn run_name(build: &Build, revision: &str) -> String {
-    let mut input = Vec::new();
-    for part in [
+    let input: Vec<u8> = [
         build.metadata.uid.as_deref().unwrap_or_default(),
         &build.metadata.generation.unwrap_or_default().to_string(),
         revision,
         rebuild_value(&build.metadata).unwrap_or_default(),
-    ] {
-        input.extend_from_slice(part.as_bytes());
-        input.push(0);
-    }
+    ]
+    .into_iter()
+    .flat_map(|part| part.bytes().chain([0]))
+    .collect();
     let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &input);
     let mut seed = digest
         .as_ref()
@@ -433,13 +418,10 @@ pub(crate) struct NextRun {
 
 /// Decides whether `remote` needs a build.
 ///
-/// A commit that already has a `BuildRun`, in any phase, gets no other: a failed build is not
-/// retried by itself, which would loop on a broken commit. A spec edit is the exception: when the
-/// last run was created for another generation, the commit builds again, as `Manual`. Nor does the
-/// commit of the last run created, once that run is deleted: deleting a run cancels it. A [pending
-/// rebuild](pending_rebuild) builds it again, as `Manual`, under the same concurrency rules as a
-/// new commit. A new commit is built with `found_by`: `Poll`, or `Webhook` when a delivery asked
-/// for the poll.
+/// A commit that already has a `BuildRun`, in any phase, gets no other, so a broken commit is not
+/// retried by itself. A spec edit is the exception: when the last run was created for another
+/// generation, the commit builds again, as `Manual`. A [pending rebuild](pending_rebuild) does the
+/// same. A new commit is built with `found_by`.
 pub(crate) fn next_run(
     build: &Build,
     remote: &str,
@@ -491,10 +473,8 @@ fn finished_at(run: &BuildRun) -> Option<Timestamp> {
 
 /// The successful run created last, the image `status.latestImage` names and Keel is told of.
 ///
-/// Runs are ordered by creation, the order in which the reconcile found their commits on the
-/// ref, as the default tag's `.UnixTime` is; never by when they finished. A run of an older commit
-/// that finishes after a newer one so never replaces the newer image. Runs created in the same
-/// second are ordered by when they finished.
+/// Runs are ordered by creation, never by when they finished, so an older commit that finishes
+/// late does not replace the newer image.
 pub(crate) fn latest_success(runs: &[BuildRun]) -> Option<&BuildRun> {
     runs.iter()
         .filter(|r| phase(r) == Some(Phase::Succeeded))
@@ -835,28 +815,23 @@ pub(crate) fn release_slot(
     );
     let (_, _, created, name) = queue_key(run);
     let given_back: QueueKey<'_> = (true, Some(now), created, name);
-    for other in runs {
+    runs.iter().any(|other| {
         let namespace = other.metadata.namespace.as_deref();
-        if (namespace, other.metadata.name.as_deref()) == me || !queued(other) {
-            continue;
-        }
-        if queue_key(other) >= given_back {
-            continue;
+        if (namespace, other.metadata.name.as_deref()) == me
+            || !queued(other)
+            || queue_key(other) >= given_back
+        {
+            return false;
         }
         let Some(limit) = namespace.and_then(|n| ready.get(n)) else {
-            continue;
+            return false;
         };
-        let mut holding = 0;
-        for held in runs {
-            if held.metadata.namespace.as_deref() == namespace && holds_slot(held) {
-                holding += 1;
-            }
-        }
-        if holding < u64::from(*limit) {
-            return true;
-        }
-    }
-    false
+        let holding = runs
+            .iter()
+            .filter(|held| held.metadata.namespace.as_deref() == namespace && holds_slot(held))
+            .count();
+        u32::try_from(holding).is_ok_and(|holding| holding < *limit)
+    })
 }
 
 /// The namespace whose daemon is up, not `mine`, and has no admitted run, that has gone longest
@@ -869,26 +844,19 @@ pub(crate) fn idlest<'a>(
     now: Timestamp,
     quiet: Duration,
 ) -> Option<&'a str> {
-    let mut found: Option<(&str, Option<Timestamp>)> = None;
-    for namespace in up {
-        if namespace == mine {
-            continue;
-        }
-        let mut busy = false;
-        let mut last = None;
-        for run in runs {
-            if run.metadata.namespace.as_deref() != Some(namespace.as_str()) {
-                continue;
-            }
-            busy |= holds_slot(run);
-            last = last.max(last_activity(run));
-        }
-        let fresh = last.is_some_and(|l| now.duration_since(l).unsigned_abs() < quiet);
-        if !busy && !fresh && found.is_none_or(|(_, oldest)| last < oldest) {
-            found = Some((namespace, last));
-        }
-    }
-    found.map(|(namespace, _)| namespace)
+    up.iter()
+        .filter(|namespace| *namespace != mine)
+        .filter_map(|namespace| {
+            let own = || {
+                runs.iter()
+                    .filter(|run| run.metadata.namespace.as_deref() == Some(namespace.as_str()))
+            };
+            let last = own().map(|run| last_activity(run)).max().flatten();
+            let fresh = last.is_some_and(|l| now.duration_since(l).unsigned_abs() < quiet);
+            (!own().any(|run| holds_slot(run)) && !fresh).then_some((namespace.as_str(), last))
+        })
+        .min_by_key(|&(_, last)| last)
+        .map(|(namespace, _)| namespace)
 }
 
 /// Whether another run of the `Build` still has a Job, or a Pod that has not stopped, which a
@@ -954,14 +922,13 @@ pub(crate) fn idle<'a>(
     now: Timestamp,
     after: Duration,
 ) -> bool {
-    let mut last = None;
-    for run in runs {
-        if !is_finished(phase(run)) {
-            return false;
-        }
-        last = last.max(last_activity(run));
-    }
-    last.is_none_or(|last| now.duration_since(last).unsigned_abs() >= after)
+    runs.into_iter()
+        .try_fold(None, |last, run| {
+            is_finished(phase(run)).then(|| last.max(last_activity(run)))
+        })
+        .is_some_and(|last| {
+            last.is_none_or(|last| now.duration_since(last).unsigned_abs() >= after)
+        })
 }
 
 /// The image repository a `Build` pushes to.

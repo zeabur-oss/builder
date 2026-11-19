@@ -246,11 +246,9 @@ fn spec_hash(set: &StatefulSet) -> Option<&String> {
     set.annotations().get(annotations::SPEC_HASH)
 }
 
-/// Deletes the daemon's `StatefulSet` in the foreground: it stays, with a `deletionTimestamp`,
-/// until its Pod and cache claim are gone, since the `StatefulSet` controller makes itself their
-/// owner with `blockOwnerDeletion` ([`updateClaimOwnerRefForSetAndPod`]). Until then a new one of
-/// the same name would take over the old claim. The `uid` and `resourceVersion` preconditions
-/// spare a `StatefulSet` created or scaled up after the read.
+/// Deletes the daemon's `StatefulSet` in the foreground, so a new one of the same name cannot take
+/// over the old cache claim ([`updateClaimOwnerRefForSetAndPod`]). The `uid` and `resourceVersion`
+/// preconditions spare a `StatefulSet` created or scaled up after the read.
 ///
 /// [`updateClaimOwnerRefForSetAndPod`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/controller/statefulset/stateful_set_utils.go#L305-L350
 async fn replace(sets: &Api<StatefulSet>, old: &StatefulSet) -> Result<(), kube::Error> {
@@ -310,13 +308,12 @@ pub(crate) async fn free_one(
     let sets = sets
         .list(&ListParams::default().labels(&selector()))
         .await?;
-    let mut up = Vec::new();
-    for set in &sets.items {
-        let replicas = set.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
-        if let (true, Some(namespace)) = (replicas > 0, set.labels().get(labels::NAMESPACE)) {
-            up.push(namespace.clone());
-        }
-    }
+    let up: Vec<String> = sets
+        .items
+        .iter()
+        .filter(|set| set.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0) > 0)
+        .filter_map(|set| set.labels().get(labels::NAMESPACE).cloned())
+        .collect();
     let Some(namespace) = decide::idlest(&up, runs, mine, Timestamp::now(), quiet) else {
         return Ok(None);
     };
@@ -344,13 +341,12 @@ pub(crate) async fn ready_namespaces(
     let pods = pods
         .list(&ListParams::default().labels(&selector()))
         .await?;
-    let mut ready = BTreeSet::new();
-    for pod in &pods.items {
-        if let (true, Some(namespace)) = (pod_ready(pod), pod.labels().get(labels::NAMESPACE)) {
-            ready.insert(namespace.clone());
-        }
-    }
-    Ok(ready)
+    Ok(pods
+        .items
+        .iter()
+        .filter(|pod| pod_ready(pod))
+        .filter_map(|pod| pod.labels().get(labels::NAMESPACE).cloned())
+        .collect())
 }
 
 /// One pass: scales idle daemons to zero. The runs come from the `BuildRun` reconciler's cache.

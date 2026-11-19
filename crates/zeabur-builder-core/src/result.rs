@@ -211,18 +211,9 @@ impl BuildResult {
 
     /// Writes the message as JSON of at most [`MAX_MESSAGE_BYTES`] bytes.
     ///
-    /// First `message` is cut to [`MAX_DETAIL_BYTES`], the lists to [`MAX_BASE_IMAGES`],
-    /// [`MAX_EXPOSED_PORTS`] and the last [`MAX_STEPS`] steps, and step names and messages to
-    /// [`MAX_STEP_TEXT`] characters. While the JSON is still too long, it drops, one at a time:
-    ///
-    /// 1. the oldest step, counted in `omittedSteps`;
-    /// 2. the last base image;
-    /// 3. the last exposed port;
-    /// 4. every tag but the first;
-    /// 5. `message`;
-    /// 6. the phase times and the tags.
-    ///
-    /// `result`, `reason`, `digest`, `cache` and `failedStep` are always kept.
+    /// The fields are cut to their limits first, then dropped in a fixed order (oldest step, base
+    /// images, ports, tags, `message`, phase times) until the JSON fits. `result`, `reason`,
+    /// `digest`, `cache` and `failedStep` are always kept.
     #[must_use]
     pub fn encode(&self) -> String {
         let mut result = self.clone();

@@ -602,12 +602,12 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
     let mut buildctl = buildctl(inputs, &metadata);
     buildctl.extend(["--local".to_owned(), format!("context={context}")]);
     frontend_args(inputs, &context, &mut wrapper, &mut buildctl)?;
-    for var in &inputs.build.spec.env {
-        buildctl.extend([
+    buildctl.extend(inputs.build.spec.env.iter().flat_map(|var| {
+        [
             "--secret".to_owned(),
             format!("id={},env={SECRET_ENV_PREFIX}{}", var.name, var.name),
-        ]);
-    }
+        ]
+    }));
     if non_root {
         buildctl.extend(output(inputs, repo, &[inputs.image.to_owned()], true));
     } else {
@@ -752,12 +752,12 @@ fn frontend_args(
                 // Railpack reads build arguments only under `build-arg:`; the wrapper hashes the
                 // secret values into `build-arg:secrets-hash` so a changed value invalidates the
                 // cache without the value entering the cache key or image metadata.
-                for var in &inputs.build.spec.env {
-                    wrapper.extend([
+                wrapper.extend(inputs.build.spec.env.iter().flat_map(|var| {
+                    [
                         "--secrets-hash-env".to_owned(),
                         format!("{SECRET_ENV_PREFIX}{}", var.name),
-                    ]);
-                }
+                    ]
+                }));
                 buildctl.extend([
                     "--opt".to_owned(),
                     format!("build-arg:cache-key={}", cache_key(inputs)),
@@ -765,9 +765,13 @@ fn frontend_args(
             }
         }
     }
-    for (key, value) in &builder.frontend.opts {
-        buildctl.extend(["--opt".to_owned(), format!("{key}={value}")]);
-    }
+    buildctl.extend(
+        builder
+            .frontend
+            .opts
+            .iter()
+            .flat_map(|(key, value)| ["--opt".to_owned(), format!("{key}={value}")]),
+    );
     Ok(())
 }
 
