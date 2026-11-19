@@ -4,6 +4,7 @@
 
 mod agent;
 mod budget;
+mod federation;
 mod http;
 mod output;
 mod plan;

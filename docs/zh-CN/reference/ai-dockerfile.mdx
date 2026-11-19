@@ -110,6 +110,82 @@ zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
 2. `--previous` 指定的上一份结果还能构建：直接沿用，不调用模型。
 3. 其他情况由模型编写。上一份结果已经无法构建时，模型从那份 Dockerfile 和构建错误出发修改。
 
+## 用服务账号令牌代替 API 密钥
+
+使用 Anthropic 和 OpenAI 时，工具可以用 Kubernetes 服务账号令牌换取短期有效的访问令牌，集群就不用保存 API 密钥。这个机制叫工作负载身份联合（[Anthropic](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation)、[OpenAI](https://developers.openai.com/api/docs/guides/workload-identity-federation)）。工具读取的环境变量和厂商 SDK 相同；设置了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` 时，工具改用密钥。
+
+下面的步骤适用于服务账号签发者（issuer）无法从互联网访问的集群，例如默认的 k3s 集群。
+
+<Steps>
+
+<Step>
+
+### 复制集群的签发者和密钥
+
+```sh
+kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+kubectl get --raw /openid/v1/jwks
+```
+
+</Step>
+
+<Step>
+
+### 在厂商那边登记集群
+
+| | Anthropic | OpenAI |
+| --- | --- | --- |
+| 位置 | Console：创建签发者、服务账号和联合规则 | 组织设置的 Security：创建工作负载身份提供方和映射 |
+| 签发者 | 上一步拿到的签发者 | 上一步拿到的签发者 |
+| 密钥 | 内联 JWKS：填入 `keys` 数组 | 上传 JWKS：填入整个对象 |
+| 受众（audience） | `https://api.anthropic.com` | `https://api.openai.com/v1` |
+| 主体（subject） | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` |
+
+厂商那边存了一份密钥。集群轮换服务账号的签名密钥前，先把新的 JWKS 上传到厂商。Anthropic 的规则只需要 `workspace:inference` 范围。
+
+</Step>
+
+<Step>
+
+### 挂载令牌并设置环境变量
+
+用上一步的受众挂载投射令牌（projected token）。以 Anthropic 为例：
+
+```yaml
+spec:
+  serviceAccountName: builder-agent
+  containers:
+    - name: agent
+      env:
+        - name: ANTHROPIC_FEDERATION_RULE_ID
+          value: fdrl_…
+        - name: ANTHROPIC_ORGANIZATION_ID
+          value: …
+        - name: ANTHROPIC_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/anthropic.com/token
+      volumeMounts:
+        - name: model-token
+          mountPath: /var/run/secrets/anthropic.com
+          readOnly: true
+  volumes:
+    - name: model-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: https://api.anthropic.com
+              expirationSeconds: 3600
+              path: token
+```
+
+| 厂商 | 环境变量 |
+| --- | --- |
+| Anthropic | `ANTHROPIC_FEDERATION_RULE_ID`、`ANTHROPIC_ORGANIZATION_ID`、`ANTHROPIC_IDENTITY_TOKEN_FILE`。规则涵盖多个工作区时，加上 `ANTHROPIC_WORKSPACE_ID`。`ANTHROPIC_SERVICE_ACCOUNT_ID` 可以不设。 |
+| OpenAI | `OPENAI_IDENTITY_PROVIDER_ID`、`OPENAI_SERVICE_ACCOUNT_ID`、`OPENAI_IDENTITY_TOKEN_FILE` |
+
+</Step>
+
+</Steps>
+
 ## 看懂结果
 
 工具会在标准输出打印 Dockerfile，并写入：
@@ -167,7 +243,7 @@ CMD ["node", "server.js"]
 
 | `reason` | 怎么做 |
 | --- | --- |
-| `ModelKeyMissing` | 设置 `detail` 指出的变量，例如 `ANTHROPIC_API_KEY`。 |
+| `ModelKeyMissing` | 设置 `detail` 指出的变量，例如 `ANTHROPIC_API_KEY`。厂商拒绝服务账号令牌时，`detail` 会说明要检查什么。 |
 | `ModelFailed` | 模型 API 拒绝了请求，或调用失败。按 `detail` 里 API 返回的消息检查厂商、模型名称、密钥或额度。 |
 | `NoAppFound` | 目录里没有可构建的应用，例如只有 README。加入应用代码，或把 `--context` 指向应用所在目录。 |
 | `SeveralApps` | 目录里有多个应用，例如 monorepo。把 `--context` 指向其中一个。 |

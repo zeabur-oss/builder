@@ -27,6 +27,12 @@ the provider's own variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` …) and the 
 `--base-url`, else the provider's variable where it has one (`ANTHROPIC_BASE_URL`,
 `OPENAI_BASE_URL`). Requests go through hyper and rustls with the system's CA bundle.
 
+Without an API key, `anthropic` and `openai` can use workload identity federation: the run
+exchanges a service account token for a short-lived access token, with the variables the
+vendor's SDKs read (`ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
+`ANTHROPIC_IDENTITY_TOKEN_FILE`; `OPENAI_IDENTITY_PROVIDER_ID`, `OPENAI_SERVICE_ACCOUNT_ID`,
+`OPENAI_IDENTITY_TOKEN_FILE`).
+
 ## Limits
 
 The host keeps them, not the prompt: 40 model calls, 4 failed builds, 10 minutes per build, 20
