@@ -3,7 +3,7 @@ title: Build a repository without a Dockerfile
 description: Turn on the agent builder so a model writes a Dockerfile that builds, then reuse it or commit it to the repository.
 ---
 
-Set a Build's `builderRef` to `agent`, and Zeabur Builder builds a Git repository that has no Dockerfile. A model reads the code, writes a Dockerfile and trial-builds it. Then the run builds and pushes the image as usual. Later runs can reuse that Dockerfile without calling the model.
+Set a Build's `builderRef` to `agent`, and Zeabur Builder builds a Git repository that has no Dockerfile. A model reads the code, writes a Dockerfile and trial-builds it. Then the run builds and pushes the image as usual. Later runs reuse that Dockerfile and do not call the model.
 
 <Steps>
 
@@ -94,18 +94,18 @@ Each run that writes a new Dockerfile pushes its plan, the Dockerfile and what t
 kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
 ```
 
-By default, every run calls the model again. To build later runs with the saved plan, annotate the Build:
+Later runs build that Dockerfile and do not call the model. Such a run reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the run that wrote it. Its `spec.plan` is the plan's digest.
+
+If the saved Dockerfile no longer builds, for example after a dependency changed, the run fails. To have the model write a new one, annotate the Build with `fresh`:
 
 ```sh
-kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=reuse
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=fresh
 ```
 
-A run that reuses the plan reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the run that wrote it. Its `spec.plan` is the plan's digest.
-
-If the saved Dockerfile no longer builds, for example after a dependency changed, the run fails. Set the annotation to `fresh`, and the next run calls the model again. When it has built, set it back to `reuse`:
+While the annotation is set, every run calls the model. After a run has built, remove it, and later runs reuse the new Dockerfile:
 
 ```sh
-kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=fresh --overwrite
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan-
 ```
 
 ## Commit the Dockerfile to the repository
