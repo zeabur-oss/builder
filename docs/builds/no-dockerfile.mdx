@@ -3,7 +3,7 @@ title: Build a repository without a Dockerfile
 description: Turn on the agent builder so a model writes a Dockerfile that builds, then reuse it or commit it to the repository.
 ---
 
-Set a Build's `builderRef` to `agent`, and Zeabur Builder builds a Git repository that has no Dockerfile. A model reads the code, writes a Dockerfile and trial-builds it. Then the run builds and pushes the image as usual. Later runs try the same Dockerfile first and call the model only when it no longer builds.
+Set a Build's `builderRef` to `agent`, and Zeabur Builder builds a Git repository that has no Dockerfile. A model reads the code, writes a Dockerfile and trial-builds it. Then the run builds and pushes the image as usual. Later runs can reuse that Dockerfile without calling the model.
 
 <Steps>
 
@@ -88,13 +88,25 @@ What the model may read and its limits are in [Write a Dockerfile with AI](../re
 
 ## Later runs
 
-After each run that builds, the run pushes its plan, the Dockerfile and what the agent reported, next to the Build's images, tagged `zeabur-plan-<Build uid>`. The Build records it in `status.plan`:
+Each run that writes a new Dockerfile pushes its plan, the Dockerfile and what the agent reported, next to the Build's images, tagged `zeabur-plan-<Build uid>`. The Build records it in `status.plan`:
 
 ```sh
 kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
 ```
 
-The next run builds that Dockerfile first. If it builds, the run reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the first run. If it no longer builds, for example after a dependency changed, the model writes a new one.
+By default, every run calls the model again. To build later runs with the saved plan, annotate the Build:
+
+```sh
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=reuse
+```
+
+A run that reuses the plan reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the run that wrote it. Its `spec.plan` is the plan's digest.
+
+If the saved Dockerfile no longer builds, for example after a dependency changed, the run fails. Set the annotation to `fresh`, and the next run calls the model again. When it has built, set it back to `reuse`:
+
+```sh
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=fresh --overwrite
+```
 
 ## Commit the Dockerfile to the repository
 

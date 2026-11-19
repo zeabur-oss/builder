@@ -3,7 +3,7 @@ title: 建置沒有 Dockerfile 的儲存庫
 description: 啟用 agent 建置器，讓模型寫出能建置的 Dockerfile，之後的建置會沿用，也可以放進儲存庫。
 ---
 
-把 Build 的 `builderRef` 設為 `agent`，Zeabur Builder 就能建置沒有 Dockerfile 的 Git 儲存庫：模型讀取程式碼、寫出 Dockerfile 並試著建置，接著照常建置並推送映像檔。之後的建置會先用同一份 Dockerfile，建置不了才再呼叫模型。
+把 Build 的 `builderRef` 設為 `agent`，Zeabur Builder 就能建置沒有 Dockerfile 的 Git 儲存庫：模型讀取程式碼、寫出 Dockerfile 並試著建置，接著照常建置並推送映像檔。之後的建置可以沿用這份 Dockerfile，不必再呼叫模型。
 
 <Steps>
 
@@ -88,13 +88,25 @@ kubectl -n team-a logs job/<run> -c plan
 
 ## 之後的建置
 
-每次建置成功後，都會把這次的 plan（Dockerfile 和 agent 回報的內容）推送到 Build 的映像檔旁邊，標籤是 `zeabur-plan-<Build uid>`，Build 也會記在 `status.plan`：
+每次寫出新的 Dockerfile 並建置成功後，都會把這次的 plan（Dockerfile 和 agent 回報的內容）推送到 Build 的映像檔旁邊，標籤是 `zeabur-plan-<Build uid>`，Build 也會記在 `status.plan`：
 
 ```sh
 kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
 ```
 
-下次建置會先用這份 Dockerfile。建置成功的話，結果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，連接埠、語言和變數也和第一次一樣；建置不了的話，例如相依套件改了，模型會重寫一份。
+預設每次建置都會重新呼叫模型。要讓之後的建置直接用存下來的 plan，替 Build 加上 annotation：
+
+```sh
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=reuse
+```
+
+沿用 plan 的建置，結果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，連接埠、語言和變數也和寫出這份 Dockerfile 的那次一樣。BuildRun 的 `spec.plan` 是這份 plan 的 digest。
+
+如果存下來的 Dockerfile 已經建置不了，例如相依套件改了，這次建置會失敗。把 annotation 改成 `fresh`，下次建置就會重新呼叫模型；建置成功後再改回 `reuse`：
+
+```sh
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=fresh --overwrite
+```
 
 ## 把 Dockerfile 放進儲存庫
 
