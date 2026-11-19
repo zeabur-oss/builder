@@ -405,7 +405,8 @@ const AGENT_PLAN_SCRIPT: &str = r#"set -u
 start=$(date +%s)
 "$@"
 code=$?
-cp /workspace/plan/info.json /dev/termination-log 2>/dev/null || :
+# BusyBox cp does not overwrite /dev/termination-log.
+cat /workspace/plan/info.json > /dev/termination-log
 echo "{\"plan\":$(( $(date +%s) - start ))}" > /workspace/out/plan.json
 exit "$code"
 "#;

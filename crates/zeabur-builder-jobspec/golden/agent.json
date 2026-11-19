@@ -203,7 +203,7 @@
             "command": [
               "sh",
               "-c",
-              "set -u\nstart=$(date +%s)\n\"$@\"\ncode=$?\ncp /workspace/plan/info.json /dev/termination-log 2>/dev/null || :\necho \"{\\\"plan\\\":$(( $(date +%s) - start ))}\" > /workspace/out/plan.json\nexit \"$code\"\n",
+              "set -u\nstart=$(date +%s)\n\"$@\"\ncode=$?\n# BusyBox cp does not overwrite /dev/termination-log.\ncat /workspace/plan/info.json > /dev/termination-log\necho \"{\\\"plan\\\":$(( $(date +%s) - start ))}\" > /workspace/out/plan.json\nexit \"$code\"\n",
               "plan"
             ],
             "env": [
