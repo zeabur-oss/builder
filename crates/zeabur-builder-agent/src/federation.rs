@@ -10,7 +10,8 @@
 //! - OpenAI: `POST https://auth.openai.com/oauth/token` with the RFC 8693 token exchange grant
 //!   ([OpenAI guide], [OpenAI reference]). The access token takes the API key's place.
 //!
-//! A run lasts at most 20 minutes, so one exchange per run is enough.
+//! An access token can last less than a run, so [`Federated`] exchanges the service account token
+//! again once three quarters of the access token's lifetime have passed.
 //!
 //! [guide]: https://platform.claude.com/docs/en/manage-claude/workload-identity-federation
 //! [reference]: https://platform.claude.com/docs/en/manage-claude/wif-reference
@@ -18,15 +19,23 @@
 //! [OpenAI reference]: https://developers.openai.com/api/reference/workload-identity-federation
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
+use bytes::Bytes;
 use http::StatusCode;
 use rig_core::DynModel;
 use rig_core::catalog::{Catalog, ModelSpec};
-use rig_core::http_client::{DynHttpClient, HttpClientExt};
+use rig_core::http_client::{
+    DynHttpClient, Error, HttpClientExt, LazyBody, MultipartForm, Request, Response,
+    StreamingResponse,
+};
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::wire::{ANTHROPIC, AnthropicConfig, Auth};
 use rig_core::providers::registry::{ConnectOptions, ProviderConfig};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+use tokio::time::Instant;
 
 use crate::http::HyperClient;
 use crate::plan::Reason;
@@ -35,6 +44,8 @@ const ANTHROPIC_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 /// The most of an error reply a detail keeps.
 const MAX_DETAIL: usize = 1024;
+/// The longest one exchange may take.
+const EXCHANGE_TIME: Duration = Duration::from_secs(30);
 
 /// How a run gets its access token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +124,24 @@ impl Federation {
         http: HyperClient,
         base_url: Option<&str>,
     ) -> Result<DynModel<Completion>, (Reason, String)> {
+        let access = self.exchange(&http, token_url(self), EXCHANGE_TIME).await?;
+        let token = access.token.clone();
+        let client = Federated {
+            federation: Arc::new(self.clone()),
+            http,
+            access: Arc::new(Mutex::new(access)),
+        };
+        self.model(token, catalog, spec, client, base_url)
+    }
+
+    /// An access token for the service account token, from the token endpoint at `url`, in at
+    /// most `limit`.
+    async fn exchange(
+        &self,
+        http: &HyperClient,
+        url: &str,
+        limit: Duration,
+    ) -> Result<Access, (Reason, String)> {
         let token_file = match self {
             Self::Anthropic { token_file, .. } | Self::OpenAi { token_file, .. } => token_file,
         };
@@ -125,13 +154,21 @@ impl Federation {
                 ),
             )
         })?;
-        let (url, body) = self.request(jwt.trim());
-        let (status, reply) = http
-            .post_json(url, body)
+        let started = Instant::now();
+        let reply = tokio::time::timeout(limit, http.post_json(url, self.request(jwt.trim())))
             .await
-            .map_err(|e| (Reason::ModelFailed, format!("{url}: {e}")))?;
+            .map_err(|_elapsed| {
+                (
+                    Reason::ModelFailed,
+                    format!("{url} did not answer in {} s", limit.as_secs()),
+                )
+            })?;
+        let (status, reply) = reply.map_err(|e| (Reason::ModelFailed, format!("{url}: {e}")))?;
         let token = self.access_token(status, &reply)?;
-        self.model(token, catalog, spec, http, base_url)
+        Ok(Access {
+            renew_at: started + Duration::from_secs(token.expires_in.saturating_mul(3) / 4),
+            token: token.access_token,
+        })
     }
 
     /// The model `spec` names, sending `token` as the credential.
@@ -169,8 +206,8 @@ impl Federation {
         }
     }
 
-    /// The token endpoint and the JSON body that exchanges `jwt`.
-    fn request(&self, jwt: &str) -> (&'static str, Vec<u8>) {
+    /// The JSON body that exchanges `jwt`.
+    fn request(&self, jwt: &str) -> Vec<u8> {
         let body = match self {
             Self::Anthropic {
                 rule,
@@ -198,16 +235,12 @@ impl Federation {
                 service_account_id: service_account,
             }),
         };
-        let url = match self {
-            Self::Anthropic { .. } => ANTHROPIC_TOKEN_URL,
-            Self::OpenAi { .. } => OPENAI_TOKEN_URL,
-        };
         // Strings only, so serialization cannot fail.
-        (url, body.unwrap_or_default())
+        body.unwrap_or_default()
     }
 
     /// The access token in a reply, or what the user checks.
-    fn access_token(&self, status: StatusCode, reply: &[u8]) -> Result<String, (Reason, String)> {
+    fn access_token(&self, status: StatusCode, reply: &[u8]) -> Result<Token, (Reason, String)> {
         let (vendor, check) = match self {
             Self::Anthropic { .. } => (
                 "Anthropic",
@@ -222,7 +255,6 @@ impl Federation {
         };
         if status.is_success() {
             return serde_json::from_slice::<Token>(reply)
-                .map(|token| token.access_token)
                 .map_err(|e| (Reason::ModelFailed, format!("{vendor}'s token reply: {e}")));
         }
         let text = String::from_utf8_lossy(reply);
@@ -264,9 +296,99 @@ struct TokenExchange<'a> {
 }
 
 /// The part of an RFC 6749 token reply the run uses.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 struct Token {
     access_token: String,
+    /// Seconds the access token lasts.
+    expires_in: u64,
+}
+
+/// An access token and when to exchange again.
+#[derive(Debug)]
+struct Access {
+    token: String,
+    renew_at: Instant,
+}
+
+/// Sends model requests with an access token that it renews before it expires.
+#[derive(Debug, Clone)]
+struct Federated {
+    federation: Arc<Federation>,
+    http: HyperClient,
+    access: Arc<Mutex<Access>>,
+}
+
+impl Federated {
+    /// `req` with the current access token as its bearer token.
+    #[expect(
+        clippy::result_large_err,
+        reason = "Rig's HTTP error type is what the trait returns"
+    )]
+    async fn authorize<B>(&self, mut req: Request<B>) -> Result<Request<B>, Error> {
+        let token = {
+            let mut access = self.access.lock().await;
+            if Instant::now() >= access.renew_at {
+                let url = token_url(&self.federation);
+                *access = self
+                    .federation
+                    .exchange(&self.http, url, EXCHANGE_TIME)
+                    .await
+                    .map_err(|(_, detail)| Error::instance(std::io::Error::other(detail)))?;
+            }
+            access.token.clone()
+        };
+        let mut value = http::HeaderValue::try_from(format!("Bearer {token}"))?;
+        value.set_sensitive(true);
+        req.headers_mut().insert(http::header::AUTHORIZATION, value);
+        req.headers_mut().remove("x-api-key");
+        Ok(req)
+    }
+}
+
+/// The token endpoint of `federation`.
+const fn token_url(federation: &Federation) -> &'static str {
+    match federation {
+        Federation::Anthropic { .. } => ANTHROPIC_TOKEN_URL,
+        Federation::OpenAi { .. } => OPENAI_TOKEN_URL,
+    }
+}
+
+impl HttpClientExt for Federated {
+    fn send<T, U>(
+        &self,
+        req: Request<T>,
+    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
+    where
+        T: Into<Bytes> + Send,
+        U: From<Bytes> + Send + 'static,
+    {
+        let this = self.clone();
+        let req = req.map(Into::<Bytes>::into);
+        async move { this.http.send(this.authorize(req).await?).await }
+    }
+
+    fn send_multipart<U>(
+        &self,
+        req: Request<MultipartForm>,
+    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
+    where
+        U: From<Bytes> + Send + 'static,
+    {
+        let this = self.clone();
+        async move { this.http.send_multipart(this.authorize(req).await?).await }
+    }
+
+    fn send_streaming<T>(
+        &self,
+        req: Request<T>,
+    ) -> impl Future<Output = Result<StreamingResponse, Error>> + Send
+    where
+        T: Into<Bytes> + Send,
+    {
+        let this = self.clone();
+        let req = req.map(Into::<Bytes>::into);
+        async move { this.http.send_streaming(this.authorize(req).await?).await }
+    }
 }
 
 #[cfg(test)]
@@ -320,8 +442,11 @@ mod tests {
     }
 
     fn body(federation: &Federation) -> (&'static str, Value) {
-        let (url, body) = federation.request("jwt");
-        (url, serde_json::from_slice(&body).unwrap())
+        let body = federation.request("jwt");
+        (
+            token_url(federation),
+            serde_json::from_slice(&body).unwrap(),
+        )
     }
 
     #[test]
@@ -394,7 +519,10 @@ mod tests {
         });
         assert_eq!(
             anthropic().access_token(StatusCode::OK, reply.to_string().as_bytes()),
-            Ok("sk-ant-oat01-abc".to_owned())
+            Ok(Token {
+                access_token: "sk-ant-oat01-abc".to_owned(),
+                expires_in: 600,
+            })
         );
         let reply = json!({
             "access_token": "eyJ",
@@ -405,7 +533,10 @@ mod tests {
         });
         assert_eq!(
             openai().access_token(StatusCode::OK, reply.to_string().as_bytes()),
-            Ok("eyJ".to_owned())
+            Ok(Token {
+                access_token: "eyJ".to_owned(),
+                expires_in: 3600,
+            })
         );
     }
 
@@ -432,6 +563,78 @@ mod tests {
         let headers = replay.headers.lock().unwrap().clone();
         assert_eq!(headers[0]["authorization"], "Bearer sk-ant-oat01-abc");
         assert!(headers[0].get("x-api-key").is_none());
+    }
+
+    fn federated(renew_at: Instant) -> Federated {
+        Federated {
+            federation: Arc::new(anthropic()),
+            http: HyperClient::new().unwrap(),
+            access: Arc::new(Mutex::new(Access {
+                token: "sk-ant-oat01-abc".to_owned(),
+                renew_at,
+            })),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_access_token_replaces_the_key() {
+        let req = Request::post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", "placeholder")
+            .body(Bytes::new())
+            .unwrap();
+        let federated = federated(Instant::now() + Duration::from_secs(60));
+
+        let req = federated.authorize(req).await.unwrap();
+
+        assert_eq!(req.headers()["authorization"], "Bearer sk-ant-oat01-abc");
+        assert!(req.headers().get("x-api-key").is_none());
+    }
+
+    #[tokio::test]
+    async fn an_aging_access_token_is_exchanged_again() {
+        let req = Request::post("https://api.anthropic.com/v1/messages")
+            .body(Bytes::new())
+            .unwrap();
+        let federated = federated(Instant::now());
+
+        // The token file does not exist here, so the renewal fails while reading it.
+        let error = federated.authorize(req).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot read the service account token"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_token_endpoint_ends_the_exchange() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let token_file = std::env::temp_dir().join(format!("federation-{}", std::process::id()));
+        tokio::fs::write(&token_file, "jwt").await.unwrap();
+        let federation = Federation::OpenAi {
+            provider: "idp_1".to_owned(),
+            service_account: "svc_1".to_owned(),
+            token_file: token_file.clone(),
+        };
+
+        let result = federation
+            .exchange(
+                &HyperClient::new().unwrap(),
+                &url,
+                Duration::from_millis(200),
+            )
+            .await;
+        tokio::fs::remove_file(&token_file).await.unwrap();
+        drop(listener);
+
+        let Err((reason, detail)) = result else {
+            panic!("exchanged");
+        };
+        assert_eq!(reason, Reason::ModelFailed);
+        assert!(detail.contains("did not answer"), "{detail}");
     }
 
     #[test]
