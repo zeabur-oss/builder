@@ -2,7 +2,8 @@
 //!
 //! Every path is relative to the context and resolves inside it, symbolic links included. Hidden
 //! entries (version control, dependency directories, credentials) are neither listed, read nor
-//! searched, and [`BUILD_IGNORE`] keeps the credentials out of every build context too. Each result
+//! searched, after symbolic links resolve too, and [`dockerignore`] keeps the credentials out of
+//! every build context. Each result
 //! is at most [`MAX_RESULT`] bytes and says how to read on.
 
 use std::fmt::Write as _;
@@ -36,8 +37,8 @@ const HIDDEN_DIRS: &[&str] = &[
     "vendor",
 ];
 
-/// `.dockerignore` rules every build starts with, so a `COPY . .` never takes credentials.
-pub(crate) const BUILD_IGNORE: &str = "\
+/// `.dockerignore` rules every build ends with, so a `COPY . .` never takes credentials.
+const BUILD_IGNORE: &str = "\
 **/.git
 **/.env
 **/.env.*
@@ -54,6 +55,25 @@ pub(crate) const BUILD_IGNORE: &str = "\
 **/id_ecdsa*
 **/id_ed25519*
 ";
+
+/// The `.dockerignore` of a build with `rules`. The last matching rule wins, so [`BUILD_IGNORE`]
+/// goes last and a rule such as `!.env` cannot take credentials back in.
+pub(crate) fn dockerignore(rules: &str) -> String {
+    format!("{}\n{BUILD_IGNORE}", rules.trim())
+}
+
+/// The rules of a `.dockerignore` that [`dockerignore`] wrote.
+pub(crate) fn rules_of(dockerignore: &str) -> &str {
+    dockerignore
+        .strip_suffix(BUILD_IGNORE)
+        .unwrap_or(dockerignore)
+        .trim()
+}
+
+/// Whether no tool shows an entry named `name`.
+fn hidden(name: &str) -> bool {
+    HIDDEN_DIRS.contains(&name) || secret_file(name)
+}
 
 /// Whether a file name holds credentials, matching [`BUILD_IGNORE`].
 fn secret_file(name: &str) -> bool {
@@ -109,7 +129,7 @@ impl Repo {
             match component {
                 Component::Normal(name) => {
                     let name = name.to_string_lossy();
-                    if HIDDEN_DIRS.contains(&name.as_ref()) || secret_file(&name) {
+                    if hidden(&name) {
                         return Err(RepoError::Denied(path.to_owned()));
                     }
                     joined.push(name.as_ref());
@@ -123,7 +143,13 @@ impl Repo {
         let real = joined
             .canonicalize()
             .map_err(|_missing| RepoError::NotFound(path.to_owned()))?;
-        if real.starts_with(&self.root) {
+        // A link such as `config.txt -> .env` passes the checks above, so check where it leads.
+        let inside = real.strip_prefix(&self.root).is_ok_and(|relative| {
+            relative
+                .components()
+                .all(|component| !hidden(&component.as_os_str().to_string_lossy()))
+        });
+        if inside {
             Ok(real)
         } else {
             Err(RepoError::Denied(path.to_owned()))
@@ -339,6 +365,33 @@ mod tests {
             Err(RepoError::Denied("etc/hosts".to_owned()))
         );
         assert!(!repo.list(".", 1).unwrap().contains("etc"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_link_to_a_hidden_file() {
+        let (dir, repo) = repo();
+        std::os::unix::fs::symlink(".env", dir.path().join("config.txt")).unwrap();
+        std::os::unix::fs::symlink(".git", dir.path().join("history")).unwrap();
+        for path in ["config.txt", "history/config"] {
+            assert_eq!(
+                repo.read(path, 0),
+                Err(RepoError::Denied(path.to_owned())),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            repo.grep("SECRET", "config.txt"),
+            Err(RepoError::Denied("config.txt".to_owned()))
+        );
+    }
+
+    #[test]
+    fn credentials_stay_ignored_after_the_model_s_rules() {
+        let file = dockerignore("dist\n!**\n!.env\n");
+        assert!(file.starts_with("dist\n!**\n!.env\n"));
+        assert!(file.ends_with(BUILD_IGNORE));
+        assert_eq!(rules_of(&file), "dist\n!**\n!.env");
     }
 
     #[test]

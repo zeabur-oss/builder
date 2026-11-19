@@ -10,7 +10,7 @@ use crate::budget::{Limits, Spent};
 use crate::http::HyperClient;
 use crate::output;
 use crate::plan::{Details, Info, Outcome, Plan, Reason, Source};
-use crate::repo::{BUILD_IGNORE, Repo};
+use crate::repo::{Repo, dockerignore, rules_of};
 use crate::trial::{Attempt, Buildctl, TrialBuild};
 
 /// Writes a Dockerfile for a repository and trial-builds it on a buildkitd.
@@ -84,15 +84,10 @@ async fn read_previous(dir: &Path) -> Option<Files> {
     let dockerfile = tokio::fs::read_to_string(dir.join("Dockerfile"))
         .await
         .ok()?;
-    let dockerignore = tokio::fs::read_to_string(dir.join("Dockerfile.dockerignore"))
+    let ignore = tokio::fs::read_to_string(dir.join("Dockerfile.dockerignore"))
         .await
         .unwrap_or_default();
-    let dockerignore = dockerignore
-        .strip_prefix(BUILD_IGNORE)
-        .unwrap_or(&dockerignore)
-        .trim()
-        .to_owned();
-    Some((dockerfile, dockerignore))
+    Some((dockerfile, rules_of(&ignore).to_owned()))
 }
 
 /// `model` of `provider`, sending through [`HyperClient`]. Rig reads the key from the
@@ -218,11 +213,7 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
             write("Dockerfile", plan.dockerfile).await?;
             // The repository's own Dockerfile keeps the repository's `.dockerignore`.
             if plan.source != Source::Repository {
-                write(
-                    "Dockerfile.dockerignore",
-                    format!("{BUILD_IGNORE}{}\n", plan.dockerignore),
-                )
-                .await?;
+                write("Dockerfile.dockerignore", dockerignore(&plan.dockerignore)).await?;
             }
             info.source = Some(plan.source);
             info.details = (plan.source == Source::Agent).then_some(plan.details);
@@ -379,8 +370,7 @@ mod tests {
 
         let read = |name: &str| std::fs::read_to_string(out.path().join(name)).unwrap();
         assert_eq!(read("Dockerfile"), "FROM busybox\n");
-        assert!(read("Dockerfile.dockerignore").starts_with(BUILD_IGNORE));
-        assert!(read("Dockerfile.dockerignore").ends_with("dist\n"));
+        assert_eq!(read("Dockerfile.dockerignore"), dockerignore("dist"));
         let info: serde_json::Value = serde_json::from_str(&read("info.json")).unwrap();
         assert_eq!(
             info,

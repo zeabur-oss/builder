@@ -13,8 +13,8 @@
 //!   `--security=insecure`.
 //!
 //! The Dockerfile's `.dockerignore` is written next to it as `Dockerfile.dockerignore`, which the
-//! frontend reads before the context's own ([`frontend/dockerui/config.go`]), and starts with
-//! [`BUILD_IGNORE`].
+//! frontend reads before the context's own ([`frontend/dockerui/config.go`]), and ends with the
+//! credential rules of [`dockerignore`].
 //!
 //! [`frontend/dockerfile/builder/build.go`]: https://github.com/moby/buildkit/blob/d1e95fa/frontend/dockerfile/builder/build.go
 //! [`frontend/dockerui/config.go`]: https://github.com/moby/buildkit/blob/d1e95fa/frontend/dockerui/config.go
@@ -31,7 +31,7 @@ use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
 use zeabur_builder_core::progress::SolveStatus;
 
-use crate::repo::BUILD_IGNORE;
+use crate::repo::dockerignore;
 
 /// The largest Dockerfile a build accepts.
 pub(crate) const MAX_DOCKERFILE: usize = 64 * 1024;
@@ -56,7 +56,7 @@ pub(crate) enum Attempt {
 
 /// Something that trial-builds a Dockerfile.
 pub(crate) trait TrialBuild: Send + Sync {
-    /// Builds `dockerfile` with `dockerignore` (after [`BUILD_IGNORE`]).
+    /// Builds `dockerfile` with the `.dockerignore` rules `dockerignore`.
     fn build(&self, dockerfile: &str, dockerignore: &str) -> impl Future<Output = Attempt> + Send;
 }
 
@@ -109,12 +109,12 @@ impl Buildctl {
         args
     }
 
-    async fn write(&self, dockerfile: &str, dockerignore: &str) -> std::io::Result<()> {
+    async fn write(&self, dockerfile: &str, rules: &str) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&self.work).await?;
         tokio::fs::write(self.work.join("Dockerfile"), dockerfile).await?;
         tokio::fs::write(
             self.work.join("Dockerfile.dockerignore"),
-            format!("{BUILD_IGNORE}{dockerignore}\n"),
+            dockerignore(rules),
         )
         .await?;
         let policy =
