@@ -10,7 +10,9 @@ use k8s_openapi::api::core::v1::{ContainerStatus, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::Serialize;
-use zeabur_builder_api::build::{ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason};
+use zeabur_builder_api::build::{
+    ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason, SavedPlan,
+};
 use zeabur_builder_api::build_run::{
     self as run_api, BuildRun, BuildRunStatus, CacheStats, DockerfileSource, Phase, PlanReport,
     PlanSource, PlanStop, Reason, StepState, Trigger,
@@ -1087,11 +1089,33 @@ pub(crate) fn tags(build: &Build, run: &BuildRun) -> Result<Vec<String>, TagErro
     Ok(tags)
 }
 
-/// `Build.status` fields that follow from its runs.
+/// The digest of the saved plan a new run of `build` builds with: only when the `Build` asks to
+/// reuse its plan and the plan comes from the builder it names now.
+pub(crate) fn reused_plan(build: &Build) -> Option<String> {
+    if build
+        .metadata
+        .annotations
+        .as_ref()?
+        .get(annotations::PLAN)?
+        != annotations::PLAN_REUSE
+    {
+        return None;
+    }
+    let saved = build.status.as_ref()?.plan.as_ref()?;
+    if saved.builder != build.spec.builder_ref {
+        return None;
+    }
+    let (_, digest) = saved.image.rsplit_once('@')?;
+    result::is_digest(digest).then(|| digest.to_owned())
+}
+
+/// `Build.status` fields that follow from its runs. `builder` is the `ClusterBuilder` the `Build`
+/// names.
 pub(crate) fn summarise(
     status: &mut BuildStatus,
     runs: &[BuildRun],
     image: &str,
+    builder: &str,
     now: Timestamp,
     generation: Option<i64>,
 ) {
@@ -1103,7 +1127,10 @@ pub(crate) fn summarise(
         }
         status.exposed_ports = run_status.exposed_ports;
         if let Some(digest) = run_status.plan_digest {
-            status.plan = Some(format!("{image}@{digest}"));
+            status.plan = Some(SavedPlan {
+                image: format!("{image}@{digest}"),
+                builder: builder.to_owned(),
+            });
         }
     }
     status.last_build_run_ref = runs

@@ -77,6 +77,12 @@ pub struct BuildRunSpec {
     /// What started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<Trigger>,
+    /// The digest of the saved plan the run builds with, in the `Build`'s own repository. The
+    /// controller sets it from `Build.status.plan` when the `Build` asks to reuse its plan
+    /// (`builder.zeabur.com/plan: reuse`). Without it, the planner runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
+    pub plan: Option<String>,
 }
 
 /// What started a `BuildRun`.
@@ -121,7 +127,8 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 16), inner(length(max = 128)))]
     pub tags: Vec<String>,
-    /// The plan image this run pushed, when the builder has a planner.
+    /// The plan image this run's planner wrote, when the builder has a planner and the run did
+    /// not reuse a saved plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
     pub plan_digest: Option<String>,

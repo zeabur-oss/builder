@@ -2,6 +2,6 @@
 default: minor
 ---
 
-# Builds record their plan, and the agent builder reuses its last good Dockerfile
+# A Build can reuse its last plan instead of running the planner
 
-After a run of a builder with a planner (`railpack` or `agent`) builds and pushes its image, the build step pushes the folder the planner wrote beside the Build's images, tagged `zeabur-plan-<Build uid>`, and the controller records it in `Build.status.plan` as `<repository>@<digest>`. The next run unpacks it into `/workspace/previous` before its planner starts. The `agent` builder builds that plan first, with the port, language and variables the agent reported, and calls the model only when it no longer builds. The planner no longer gets registry credentials.
+After a run of a builder with a planner (`railpack` or `agent`) plans and builds, the build step pushes the plan folder (`/workspace/plan`) beside the Build's images, tagged `zeabur-plan-<Build uid>`, and the controller records it in `Build.status.plan` with the builder that wrote it. A Build with the annotation `builder.zeabur.com/plan: reuse` then builds its next runs with that plan: the controller sets `BuildRun.spec.plan` to its digest, and the run unpacks the plan instead of running the planner, so the `agent` builder calls no model. Without the annotation, or after the Build names another builder, every run plans as before. Railpack's non-root rewrite now goes to `/workspace/out/non-root`, and the agent's trial builds to a temporary folder, so the plan folder holds only the plan.

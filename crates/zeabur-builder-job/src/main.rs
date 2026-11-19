@@ -1,19 +1,19 @@
 //! `zeabur-builder-job`: the build container's entry point.
 //!
 //! ```text
-//! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …] [--save-plan buildctl … build …]
+//! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root PLAN OUT] -- buildctl … build … [--then buildctl … build …] [--save-plan buildctl … build …]
 //! zeabur-builder-job fetch-archive [--plain-http] <repository> <digest> <dir>
-//! zeabur-builder-job fetch-plan [--plain-http] <repository> <digest> <dir> -- <command>…
+//! zeabur-builder-job restore-plan [--plain-http] <repository> <digest> <dir>
 //! ```
 //!
 //! `fetch-archive` is the `fetch` container of an archive source: it pulls the archive
 //! ([`registry`]) and unpacks it into `<dir>` ([`unpack`]). It writes errors to stderr, which the
 //! controller shows as the run's message.
 //!
-//! `fetch-plan` runs first in the `fetch` container: it pulls the plan the last run saved
-//! ([`zeabur_builder_core::plan`]) the same way, then runs `<command>`, the source fetch, and exits
-//! with its code. The plan cannot fail the run: on an error it writes it to stderr and leaves
-//! `<dir>` empty, and the planner starts without a last plan.
+//! `restore-plan` is the `plan` container of a run that reuses a saved plan
+//! ([`zeabur_builder_core::plan`]): it pulls the plan the same way into `<dir>`. When the plan has
+//! the agent's `info.json`, it writes it to `/dev/termination-log` as reused. An error fails the
+//! run.
 //!
 //! Runs the `buildctl` commands it is given (built by `zeabur-builder-jobspec`) one after the
 //! other, prints their `rawjson` progress for people, counts cached steps, records the steps, reads
@@ -30,9 +30,9 @@
 //! `--opt build-arg:secrets-hash=…` on the first command, so Railpack's frontend invalidates the
 //! steps that use a secret when its value changes, without the value entering the cache key.
 //!
-//! `--non-root DIR` makes a Railpack image run as a non-root user
-//! ([`zeabur_builder_core::railpack`]): it rewrites `DIR/railpack-plan.json` and writes the second
-//! build's `DIR/non-root/Dockerfile`.
+//! `--non-root PLAN OUT` makes a Railpack image run as a non-root user
+//! ([`zeabur_builder_core::railpack`]): it writes `PLAN/railpack-plan.json`, rewritten, and the
+//! second build's `Dockerfile` into `OUT`, and leaves the plan folder as the planner wrote it.
 //!
 //! The command after `--save-plan` pushes the planner's folder, `/workspace/plan`, as the plan
 //! image ([`zeabur_builder_core::plan`]): after a success it writes
@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncBufReadExt as _;
 use zeabur_builder_core::archive::{self, MAX_UNPACKED_BYTES};
-use zeabur_builder_core::plan::{SAVED_CONFIG_MEDIA_TYPE, SAVED_DOCKERFILE};
+use zeabur_builder_core::plan::{Info, SAVED_CONFIG_MEDIA_TYPE, SAVED_DOCKERFILE, Source};
 use zeabur_builder_core::progress::{CacheCounter, StepLog};
 use zeabur_builder_core::railpack;
 use zeabur_builder_core::result::{BuildResult, FailureReason, Outcome, PlanSource};
@@ -72,7 +72,7 @@ const DIGEST: &str = "{digest}";
 struct Args {
     plain_http: bool,
     secrets_hash_env: Vec<String>,
-    non_root: Option<String>,
+    non_root: Option<(String, String)>,
     commands: Vec<Vec<String>>,
     save_plan: Option<Vec<String>>,
 }
@@ -89,7 +89,10 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 secrets_hash_env.push(name.clone());
             }
             Some("--non-root") => {
-                non_root = Some(rest.next().ok_or("--non-root needs a directory")?.clone());
+                let (Some(plan), Some(out)) = (rest.next(), rest.next()) else {
+                    return Err("--non-root needs the plan folder and an output folder".to_owned());
+                };
+                non_root = Some((plan.clone(), out.clone()));
             }
             Some("--plain-http") => plain_http = true,
             Some("--") => break,
@@ -230,8 +233,8 @@ const IMAGE_PORTS_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long pushing the plan image may take; the plan only saves a model call on the next run.
 const SAVE_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long `fetch-plan` waits for the last plan before the planner starts without it.
-const FETCH_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long `restore-plan` waits for the saved plan.
+const RESTORE_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The ports the pushed image declares, read back from the registry the build pushed to.
 async fn image_ports(
@@ -260,19 +263,19 @@ fn open_repository(repository: &str, plain_http: bool) -> Result<registry::Repos
     registry::Repository::new(client, repository, plain_http, credentials)
 }
 
-/// Rewrites the Railpack plan in `dir` and writes the second build's Dockerfile.
-fn prepare_non_root(dir: &str) -> Result<(), String> {
-    let path = format!("{dir}/railpack-plan.json");
+/// Writes the Railpack plan of `plan`, rewritten, and the second build's Dockerfile into `out`.
+fn prepare_non_root(plan: &str, out: &str) -> Result<(), String> {
+    let path = format!("{plan}/railpack-plan.json");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let mut plan: serde_json::Value =
+    let mut value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("cannot parse {path}: {e}"))?;
-    railpack::own_deploy_layers(&mut plan);
-    let text = serde_json::to_string(&plan).map_err(|e| format!("cannot write {path}: {e}"))?;
+    railpack::own_deploy_layers(&mut value);
+    std::fs::create_dir_all(out).map_err(|e| format!("cannot create {out}: {e}"))?;
+    let path = format!("{out}/railpack-plan.json");
+    let text = serde_json::to_string(&value).map_err(|e| format!("cannot write {path}: {e}"))?;
     std::fs::write(&path, text).map_err(|e| format!("cannot write {path}: {e}"))?;
-    let non_root = format!("{dir}/non-root");
-    std::fs::create_dir_all(&non_root).map_err(|e| format!("cannot create {non_root}: {e}"))?;
-    std::fs::write(format!("{non_root}/Dockerfile"), railpack::dockerfile())
-        .map_err(|e| format!("cannot write {non_root}/Dockerfile: {e}"))
+    std::fs::write(format!("{out}/Dockerfile"), railpack::dockerfile())
+        .map_err(|e| format!("cannot write {out}/Dockerfile: {e}"))
 }
 
 /// Runs one `buildctl` command and returns the digest it reports.
@@ -349,8 +352,8 @@ async fn run(args: &Args) -> BuildResult {
     if result.phases.contains_key("plan") {
         result.plan_source = Some(PlanSource::Generated);
     }
-    if let Some(dir) = &args.non_root
-        && let Err(message) = prepare_non_root(dir)
+    if let Some((plan, out)) = &args.non_root
+        && let Err(message) = prepare_non_root(plan, out)
     {
         result.reason = Some(FailureReason::BuildFailed);
         result.message = message;
@@ -447,7 +450,7 @@ fn with_digest(command: &[String], previous: Option<&str>) -> Vec<String> {
     )
 }
 
-/// The arguments of `fetch-archive` and `fetch-plan`.
+/// The arguments of `fetch-archive` and `restore-plan`.
 #[derive(Debug, PartialEq, Eq)]
 struct FetchArgs {
     plain_http: bool,
@@ -463,7 +466,8 @@ fn parse_fetch(args: &[String]) -> Result<FetchArgs, String> {
     };
     let [repository, digest, dir] = rest else {
         return Err(
-            "usage: fetch-archive|fetch-plan [--plain-http] <repository> <digest> <dir>".to_owned(),
+            "usage: fetch-archive|restore-plan [--plain-http] <repository> <digest> <dir>"
+                .to_owned(),
         );
     };
     Ok(FetchArgs {
@@ -506,79 +510,61 @@ async fn pull(args: &FetchArgs, artifact_type: &str, file: &str) -> Result<(), S
     Ok(())
 }
 
-/// Pulls the last plan into `args.dir`. An error or a registry that stalls leaves the folder
-/// empty: the planner then starts without a last plan.
-async fn fetch_plan(args: &FetchArgs) {
-    let pulled = tokio::time::timeout(
-        FETCH_PLAN_TIMEOUT,
-        pull(args, SAVED_CONFIG_MEDIA_TYPE, "plan.tar.gz"),
-    )
-    .await
-    .unwrap_or_else(|_elapsed| Err(format!("no answer in {} s", FETCH_PLAN_TIMEOUT.as_secs())));
-    if let Err(message) = pulled {
-        drop(std::fs::remove_file(
-            std::path::Path::new(WORKSPACE).join("plan.tar.gz"),
-        ));
-        drop(writeln!(
-            std::io::stderr().lock(),
-            "cannot read the last plan: {message}"
-        ));
-        drop(std::fs::remove_dir_all(&args.dir));
+/// Pulls the saved plan into `args.dir` and, when it has the agent's `info.json`, writes it to the
+/// termination message as reused, for `BuildRun.status.plan`.
+/// Removes `dir` if it is empty, because the unpack makes its own folder. The fetch container
+/// makes an empty plan folder for planners. A folder with files is an error.
+fn remove_empty(dir: &str) -> Result<(), String> {
+    match std::fs::remove_dir(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("cannot remove the empty {dir}: {e}"))
+        }
+        Ok(()) | Err(_) => Ok(()),
     }
 }
 
-/// Runs `command` with this process's stdio and returns its exit code.
-async fn run_then(command: &[String]) -> ExitCode {
-    let Some((program, args)) = command.split_first() else {
-        drop(writeln!(
-            std::io::stderr().lock(),
-            "fetch-plan: no command after --"
-        ));
-        return ExitCode::FAILURE;
-    };
-    match tokio::process::Command::new(program)
-        .args(args)
-        .status()
-        .await
-    {
-        Ok(status) => status
-            .code()
-            .and_then(|code| u8::try_from(code).ok())
-            .map_or(ExitCode::FAILURE, ExitCode::from),
-        Err(e) => {
-            drop(writeln!(
-                std::io::stderr().lock(),
-                "cannot run {program}: {e}"
-            ));
-            ExitCode::FAILURE
-        }
+async fn restore_plan(args: &FetchArgs) -> Result<(), String> {
+    let start = Instant::now();
+    remove_empty(&args.dir)?;
+    tokio::time::timeout(
+        RESTORE_PLAN_TIMEOUT,
+        pull(args, SAVED_CONFIG_MEDIA_TYPE, "plan.tar.gz"),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| Err(format!("no answer in {} s", RESTORE_PLAN_TIMEOUT.as_secs())))
+    .map_err(|e| {
+        format!(
+            "cannot read the saved plan {}: {e}. Set the Build's annotation \
+             builder.zeabur.com/plan to fresh to plan again.",
+            args.digest
+        )
+    })?;
+    let info = std::path::Path::new(&args.dir).join("info.json");
+    if let Ok(text) = std::fs::read_to_string(&info) {
+        let mut info =
+            Info::decode(&text).map_err(|e| format!("cannot parse {}: {e}", info.display()))?;
+        info.source = Some(Source::Previous);
+        info.model_called = false;
+        info.input_tokens = 0;
+        info.output_tokens = 0;
+        std::fs::write(TERMINATION_LOG, info.encode())
+            .map_err(|e| format!("cannot write {TERMINATION_LOG}: {e}"))?;
     }
+    std::fs::write(
+        format!("{OUT}/plan.json"),
+        format!("{{\"plan\":{}}}", start.elapsed().as_secs()),
+    )
+    .map_err(|e| format!("cannot write {OUT}/plan.json: {e}"))
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if let Some((first, rest)) = raw.split_first()
-        && first == "fetch-plan"
-    {
-        let Some(split) = rest.iter().position(|arg| arg == "--") else {
-            drop(writeln!(
-                std::io::stderr().lock(),
-                "usage: fetch-plan [--plain-http] <repository> <digest> <dir> -- <command>…"
-            ));
-            return ExitCode::FAILURE;
-        };
-        let (own, then) = rest.split_at(split);
-        match parse_fetch(own) {
-            Ok(args) => fetch_plan(&args).await,
-            Err(message) => drop(writeln!(std::io::stderr().lock(), "{message}")),
-        }
-        return run_then(then.get(1..).unwrap_or_default()).await;
-    }
-    if let Some((first, rest)) = raw.split_first()
-        && first == "fetch-archive"
+        && (first == "fetch-archive" || first == "restore-plan")
     {
         let fetched = match parse_fetch(rest) {
+            Ok(args) if first == "restore-plan" => restore_plan(&args).await,
             Ok(args) => fetch_archive(&args).await,
             Err(message) => Err(message),
         };
@@ -639,6 +625,7 @@ mod tests {
             parse_args(&strings(&[
                 "--non-root",
                 "/workspace/plan",
+                "/workspace/out/non-root",
                 "--",
                 "buildctl",
                 "build",
@@ -651,7 +638,10 @@ mod tests {
             Ok(Args {
                 plain_http: false,
                 secrets_hash_env: Vec::new(),
-                non_root: Some("/workspace/plan".to_owned()),
+                non_root: Some((
+                    "/workspace/plan".to_owned(),
+                    "/workspace/out/non-root".to_owned()
+                )),
                 commands: vec![
                     strings(&["buildctl", "build"]),
                     strings(&[
@@ -737,20 +727,34 @@ mod tests {
             "deploy": {"inputs": [{"step": "build", "include": ["."]}]}
         });
         std::fs::write(dir.join("railpack-plan.json"), plan.to_string()).unwrap();
-        prepare_non_root(dir.to_str().unwrap()).unwrap();
+        let out = dir.join("out");
+        let (plan_dir, out_dir) = (dir.to_str().unwrap(), out.to_str().unwrap());
+        prepare_non_root(plan_dir, out_dir).unwrap();
+        let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap();
         let written: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("railpack-plan.json")).unwrap())
-                .unwrap();
+            serde_json::from_str(&read(out.join("railpack-plan.json"))).unwrap();
         assert_eq!(
             written["steps"][0]["commands"][1]["cmd"],
             railpack::OWN_COMMAND
         );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("non-root/Dockerfile")).unwrap(),
-            railpack::dockerfile()
-        );
+        assert_eq!(read(out.join("Dockerfile")), railpack::dockerfile());
+        assert_eq!(read(dir.join("railpack-plan.json")), plan.to_string());
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(prepare_non_root(dir.to_str().unwrap()).is_err());
+        assert!(prepare_non_root(plan_dir, out_dir).is_err());
+    }
+
+    #[test]
+    fn a_restore_takes_the_empty_plan_folder_but_not_one_with_files() {
+        let dir = std::env::temp_dir().join(format!("zeabur-builder-plan-{}", std::process::id()));
+        let path = dir.to_str().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        remove_empty(path).unwrap();
+        assert!(!dir.exists());
+        remove_empty(path).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch").unwrap();
+        assert!(remove_empty(path).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

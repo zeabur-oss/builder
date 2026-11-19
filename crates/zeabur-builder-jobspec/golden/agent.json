@@ -212,8 +212,6 @@
               "/etc/zeabur-builder/buildkit",
               "--out",
               "/workspace/plan",
-              "--previous",
-              "/workspace/previous",
               "--provider",
               "anthropic",
               "--model",

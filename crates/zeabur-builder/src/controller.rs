@@ -531,7 +531,14 @@ async fn reconcile_build(build: Arc<Build>, ctx: Arc<Context>) -> Result<Action,
 
     answer_upload_request(&ctx, &build, &mut status, at).await?;
     let image = decide::image(&build, &ctx.settings.default_registry);
-    decide::summarise(&mut status, &runs, &image, at, generation);
+    decide::summarise(
+        &mut status,
+        &runs,
+        &image,
+        &build.spec.builder_ref,
+        at,
+        generation,
+    );
     status.observed_generation = generation;
     let unchanged = build.status.as_ref().is_some_and(|old| {
         BuildStatus {
@@ -760,6 +767,7 @@ async fn create_run(
             revision: sha.to_owned(),
             git_ref,
             trigger: Some(trigger),
+            plan: decide::reused_plan(build),
         },
         status: None,
     };

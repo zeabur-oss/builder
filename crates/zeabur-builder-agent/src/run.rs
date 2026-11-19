@@ -34,8 +34,8 @@ pub(crate) struct Args {
     /// Where the plan is written.
     #[arg(long, default_value = "/workspace/plan")]
     out: PathBuf,
-    /// A directory with the last plan's `Dockerfile`, `Dockerfile.dockerignore` and `info.json`,
-    /// tried before the agent.
+    /// A directory with the last plan's `Dockerfile` (and `Dockerfile.dockerignore`), tried
+    /// before the agent.
     #[arg(long)]
     previous: Option<PathBuf>,
     /// The provider, by Rig's name: `anthropic`, `openai`, `gcp.gemini`, `openrouter` …. It sets
@@ -66,7 +66,8 @@ pub(crate) async fn run(args: Args) -> Result<bool, String> {
         addr: args.buildkit.clone(),
         tlsdir: args.tlsdir.clone(),
         context: args.context.clone(),
-        work: args.out.join("attempt"),
+        // Outside `out`, so the plan folder holds only the plan.
+        work: std::env::temp_dir().join(format!("zeabur-builder-agent-{}", std::process::id())),
         registries: args.registries.clone(),
         timeout: limits.per_build,
     };
@@ -91,32 +92,17 @@ pub(crate) async fn run(args: Args) -> Result<bool, String> {
     report(&args.out, outcome, spent.as_ref()).await
 }
 
-/// The last plan: its Dockerfile, `.dockerignore` and what the agent reported when it wrote it.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct Previous {
-    pub(crate) dockerfile: String,
-    pub(crate) dockerignore: String,
-    pub(crate) details: Details,
-}
+/// A Dockerfile and its `.dockerignore`.
+type Files = (String, String);
 
-async fn read_previous(dir: &Path) -> Option<Previous> {
+async fn read_previous(dir: &Path) -> Option<Files> {
     let dockerfile = tokio::fs::read_to_string(dir.join("Dockerfile"))
         .await
         .ok()?;
     let ignore = tokio::fs::read_to_string(dir.join("Dockerfile.dockerignore"))
         .await
         .unwrap_or_default();
-    let details = tokio::fs::read_to_string(dir.join("info.json"))
-        .await
-        .ok()
-        .and_then(|text| Info::decode(&text).ok())
-        .and_then(|info| info.details)
-        .unwrap_or_default();
-    Some(Previous {
-        dockerfile,
-        dockerignore: rules_of(&ignore).to_owned(),
-        details,
-    })
+    Some((dockerfile, rules_of(&ignore).to_owned()))
 }
 
 /// `model` of `provider`, sending through [`HyperClient`], with `key`. Without it, Rig reads the
@@ -175,7 +161,7 @@ async fn connect(
 pub(crate) async fn plan<B, C>(
     repo: &Repo,
     builder: &B,
-    previous: Option<Previous>,
+    previous: Option<Files>,
     limits: Limits,
     connect: C,
 ) -> (Outcome, Option<Spent>)
@@ -194,25 +180,19 @@ where
         return (Outcome::Ready(plan), None);
     }
     let mut hint = None;
-    if let Some(previous) = previous {
-        match builder
-            .build(&previous.dockerfile, &previous.dockerignore)
-            .await
-        {
+    if let Some((dockerfile, dockerignore)) = previous {
+        match builder.build(&dockerfile, &dockerignore).await {
             Attempt::Built => {
                 let plan = Plan {
                     source: Source::Previous,
-                    dockerfile: previous.dockerfile,
-                    dockerignore: previous.dockerignore,
-                    details: previous.details,
+                    dockerfile,
+                    dockerignore,
+                    details: Details::default(),
                 };
                 return (Outcome::Ready(plan), None);
             }
             Attempt::Failed { summary, .. } => {
-                hint = Some(format!(
-                    "```dockerfile\n{}\n```\n\n{summary}",
-                    previous.dockerfile
-                ));
+                hint = Some(format!("```dockerfile\n{dockerfile}\n```\n\n{summary}"));
             }
         }
     }
@@ -230,7 +210,7 @@ where
     (run.outcome, Some(run.spent))
 }
 
-/// Prints the outcome and writes it into `out`; returns whether there is a plan.
+/// Prints and writes the outcome; returns whether there is a plan.
 async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<bool, String> {
     let write = |name: &str, text: String| {
         let path = out.join(name);
@@ -272,7 +252,7 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
                 write("Dockerfile.dockerignore", dockerignore(&plan.dockerignore)).await?;
             }
             info.source = Some(plan.source);
-            info.details = (plan.source != Source::Repository).then_some(plan.details);
+            info.details = (plan.source == Source::Agent).then_some(plan.details);
             true
         }
         Outcome::NeedsUser { reason, detail } => {
@@ -305,10 +285,7 @@ mod tests {
         let dir = Dir::new();
         dir.write("Dockerfile", "FROM scratch\n");
         let repo = Repo::new(dir.path()).unwrap();
-        let previous = Some(Previous {
-            dockerfile: "FROM busybox\n".to_owned(),
-            ..Previous::default()
-        });
+        let previous = Some(("FROM busybox\n".to_owned(), String::new()));
 
         let (outcome, spent) = plan(
             &repo,
@@ -333,16 +310,7 @@ mod tests {
     async fn the_last_plan_is_reused_while_it_builds() {
         let dir = Dir::new();
         let repo = Repo::new(dir.path()).unwrap();
-        let details = Details {
-            port: Some(5006),
-            language: "Node.js".to_owned(),
-            ..Details::default()
-        };
-        let previous = Some(Previous {
-            dockerfile: "FROM busybox\n".to_owned(),
-            dockerignore: "dist\n".to_owned(),
-            details: details.clone(),
-        });
+        let previous = Some(("FROM busybox\n".to_owned(), "dist\n".to_owned()));
 
         let (outcome, spent) = plan(
             &repo,
@@ -358,7 +326,6 @@ mod tests {
         };
         assert_eq!(plan.source, Source::Previous);
         assert_eq!(plan.dockerignore, "dist\n");
-        assert_eq!(plan.details, details);
         assert!(spent.is_none());
     }
 
@@ -366,10 +333,7 @@ mod tests {
     async fn a_last_plan_that_fails_is_the_agent_s_hint() {
         let dir = Dir::new();
         let repo = Repo::new(dir.path()).unwrap();
-        let previous = Some(Previous {
-            dockerfile: "FROM node:20.1-alpine\n".to_owned(),
-            ..Previous::default()
-        });
+        let previous = Some(("FROM node:20.1-alpine\n".to_owned(), String::new()));
         let replay = Replay::new([tool_use(
             "1",
             "stop",
@@ -468,32 +432,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_saved_plan_comes_back_with_its_details() {
-        let out = Dir::new();
-        let details = Details {
-            port: Some(5006),
-            language: "Node.js".to_owned(),
-            runtime_variables: vec!["PORT".to_owned()],
-            ..Details::default()
-        };
-        let plan = Plan {
-            source: Source::Agent,
-            dockerfile: "FROM node:24-alpine\n".to_owned(),
-            dockerignore: "dist".to_owned(),
-            details: details.clone(),
-        };
-        report(out.path(), Outcome::Ready(plan), None)
-            .await
-            .unwrap();
-
-        let previous = read_previous(out.path()).await.unwrap();
-
-        assert_eq!(previous.dockerfile, "FROM node:24-alpine\n");
-        assert_eq!(previous.dockerignore, "dist");
-        assert_eq!(previous.details, details);
-    }
-
-    #[tokio::test]
     async fn writes_the_plan_and_its_info() {
         let out = Dir::new();
         let plan = Plan {
@@ -515,13 +453,7 @@ mod tests {
         let info: serde_json::Value = serde_json::from_str(&read("info.json")).unwrap();
         assert_eq!(
             info,
-            json!({
-                "source": "previous",
-                "details": Details::default(),
-                "modelCalled": false,
-                "inputTokens": 0,
-                "outputTokens": 0,
-            })
+            json!({"source": "previous", "modelCalled": false, "inputTokens": 0, "outputTokens": 0})
         );
     }
 }

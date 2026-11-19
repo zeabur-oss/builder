@@ -6,8 +6,7 @@ use std::collections::BTreeMap;
 
 use pretty_assertions::assert_eq;
 use zeabur_builder_api::build::{
-    ArchiveSource, BuildSpec, BuildStatus, Concurrency, EnvVarSource, GitSource, SourceSpec,
-    TriggerSpec,
+    ArchiveSource, BuildSpec, Concurrency, EnvVarSource, GitSource, SourceSpec, TriggerSpec,
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{FrontendSpec, ModelSpec, PlannerSpec};
@@ -79,6 +78,7 @@ fn build_run() -> BuildRun {
             revision: SHA.to_owned(),
             git_ref: None,
             trigger: Some(Trigger::Webhook),
+            plan: None,
         },
     );
     run.metadata.namespace = Some("team-a".to_owned());
@@ -273,75 +273,73 @@ fn agent_with_a_model_key() {
 }
 
 #[test]
-fn the_last_plan_is_pulled_from_the_build_s_own_repository_and_never_by_the_planner() {
-    let run = build_run();
+fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning() {
+    let mut run = build_run();
     let mut build = build("https://github.com/acme/web", None, Vec::new());
+    build.metadata.uid = Some("0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b".to_owned());
     let builder = agent();
     let tags = tags();
-    let init_containers = |build: &Build| {
+    let pod = |run: &BuildRun| {
         let job = job(&inputs(
-            &run,
-            build,
+            run,
+            &build,
             "agent",
             &builder,
             &tags,
             GitAuth::Anonymous,
         ))
         .unwrap();
-        job.spec
-            .unwrap()
-            .template
-            .spec
-            .unwrap()
-            .init_containers
+        job.spec.unwrap().template.spec.unwrap()
+    };
+    let plan_of = |spec: &PodSpec| {
+        spec.init_containers
+            .iter()
+            .flatten()
+            .find(|c| c.name == "plan")
+            .cloned()
             .unwrap()
     };
-    let named =
-        |containers: &[Container], name: &str| containers.iter().find(|c| c.name == name).cloned();
     let reads_registry = |c: &Container| {
         c.volume_mounts
             .iter()
             .flatten()
             .any(|m| m.name == "registry-auth")
     };
+    let saves = |spec: &PodSpec| {
+        spec.containers
+            .iter()
+            .flat_map(|c| c.command.iter().flatten())
+            .any(|a| a == "--save-plan")
+    };
 
-    let first = init_containers(&build);
-    let fetch = named(&first, "fetch").unwrap();
-    assert_eq!(fetch.command.unwrap().first().unwrap(), "sh");
-    assert!(!reads_registry(&named(&first, "plan").unwrap()));
+    let fresh = pod(&run);
+    let planner = plan_of(&fresh);
+    assert_eq!(
+        planner.image.as_deref(),
+        Some(builder.planner.as_ref().unwrap().image.as_str())
+    );
+    assert!(!reads_registry(&planner));
+    assert!(saves(&fresh));
 
     let digest = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
-    build.status = Some(BuildStatus {
-        plan: Some(format!("registry.example.com/other/repo@{digest}")),
-        ..BuildStatus::default()
-    });
-    let later = init_containers(&build);
-    let order: Vec<_> = later.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(order, ["fetch", "plan"]);
-    let fetch = named(&later, "fetch").unwrap();
-    assert!(reads_registry(&fetch));
-    let command = fetch.command.unwrap();
+    run.spec.plan = Some(digest.to_owned());
+    let reused = pod(&run);
+    let restore = plan_of(&reused);
     assert_eq!(
-        &command[..7],
+        restore.command.as_deref().unwrap(),
         [
             "zeabur-builder-job",
-            "fetch-plan",
+            "restore-plan",
             "registry.internal/team-a/api",
             digest,
-            "/workspace/previous",
-            "--",
-            "sh",
+            "/workspace/plan",
         ]
     );
-    assert_eq!(
-        &command[command.len() - 2..],
-        ["https://github.com/acme/web", run.spec.revision.as_str()]
-    );
-    assert!(fetch.args.is_none());
-    assert!(!reads_registry(&named(&later, "plan").unwrap()));
+    assert!(reads_registry(&restore));
+    assert!(!saves(&reused));
     // The kubelet splits 12 KiB of termination messages over the Pod's containers, and the build
     // result needs 4096 bytes: the build container and at most two init containers.
-    assert!(later.len() <= 2);
+    assert!(reused.init_containers.unwrap().len() <= 2);
 }
 
 #[test]

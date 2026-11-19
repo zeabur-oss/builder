@@ -65,6 +65,7 @@ fn run(name: &str, revision: &str, phase: Option<Phase>, at: &str) -> BuildRun {
             revision: revision.to_owned(),
             git_ref: None,
             trigger: None,
+            plan: None,
         },
     );
     run.metadata.creation_timestamp = Some(Time(at.parse().unwrap()));
@@ -871,14 +872,28 @@ fn summary_points_at_the_newest_success() {
         s.message = Some("exit code: 2".to_owned());
     }
     let mut status = BuildStatus::default();
-    summarise(&mut status, &[ok.clone()], "r/team-a/api", now(), Some(1));
+    summarise(
+        &mut status,
+        &[ok.clone()],
+        "r/team-a/api",
+        "railpack",
+        now(),
+        Some(1),
+    );
     assert_eq!(
         status.latest_image.as_deref(),
         Some(format!("r/team-a/api:main-1-3e1a9c2@{DIGEST}").as_str())
     );
     assert_eq!(status.conditions[0].status, ConditionStatus::True);
 
-    summarise(&mut status, &[ok, bad], "r/team-a/api", now(), Some(1));
+    summarise(
+        &mut status,
+        &[ok, bad],
+        "r/team-a/api",
+        "railpack",
+        now(),
+        Some(1),
+    );
     assert_eq!(status.latest_revision.as_deref(), Some(A));
     assert_eq!(status.last_build_run_ref.as_deref(), Some("api-2"));
     assert_eq!(status.conditions[0].status, ConditionStatus::False);
@@ -940,7 +955,14 @@ fn an_older_commit_finishing_late_does_not_replace_the_newer_image() {
     let runs = [older, newer];
 
     let mut status = BuildStatus::default();
-    summarise(&mut status, &runs, "r/team-a/api", now(), Some(1));
+    summarise(
+        &mut status,
+        &runs,
+        "r/team-a/api",
+        "railpack",
+        now(),
+        Some(1),
+    );
     assert_eq!(status.latest_revision.as_deref(), Some(B));
     assert_eq!(
         status.latest_image.as_deref(),
@@ -1077,10 +1099,24 @@ fn exposed_ports_reach_the_build_status_from_the_newest_success() {
         s.image_digest = Some(DIGEST.to_owned());
     }
     let mut status = BuildStatus::default();
-    summarise(&mut status, &[ok.clone()], "r/team-a/api", now(), Some(1));
+    summarise(
+        &mut status,
+        &[ok.clone()],
+        "r/team-a/api",
+        "railpack",
+        now(),
+        Some(1),
+    );
     assert_eq!(status.exposed_ports, ["3000/tcp", "53/udp"]);
 
-    summarise(&mut status, &[ok, portless], "r/team-a/api", now(), Some(1));
+    summarise(
+        &mut status,
+        &[ok, portless],
+        "r/team-a/api",
+        "railpack",
+        now(),
+        Some(1),
+    );
     assert_eq!(status.exposed_ports, Vec::<String>::new());
 }
 
@@ -1105,12 +1141,51 @@ fn the_plan_a_run_saved_stays_until_a_newer_one() {
     }
 
     let mut status = BuildStatus::default();
-    summarise(&mut status, &[planned], "r/team-a/api", now(), Some(1));
-    let recorded = format!("r/team-a/api@{PLAN}");
-    assert_eq!(status.plan.as_deref(), Some(recorded.as_str()));
+    summarise(
+        &mut status,
+        &[planned],
+        "r/team-a/api",
+        "railpack",
+        now(),
+        Some(1),
+    );
+    let recorded = Some(SavedPlan {
+        image: format!("r/team-a/api@{PLAN}"),
+        builder: "railpack".to_owned(),
+    });
+    assert_eq!(status.plan, recorded);
 
-    summarise(&mut status, &[replayed], "r/team-a/api", now(), Some(1));
-    assert_eq!(status.plan.as_deref(), Some(recorded.as_str()));
+    summarise(
+        &mut status,
+        &[replayed],
+        "r/team-a/api",
+        "railpack",
+        now(),
+        Some(1),
+    );
+    assert_eq!(status.plan, recorded);
+}
+
+#[test]
+fn a_run_reuses_the_saved_plan_only_when_asked_and_from_the_same_builder() {
+    let mut build = build();
+    build.status = Some(BuildStatus {
+        plan: Some(SavedPlan {
+            image: format!("r/team-a/api@{PLAN}"),
+            builder: "dockerfile".to_owned(),
+        }),
+        ..BuildStatus::default()
+    });
+    assert_eq!(reused_plan(&build), None);
+
+    build.metadata.annotations = Some(BTreeMap::from([(
+        annotations::PLAN.to_owned(),
+        annotations::PLAN_REUSE.to_owned(),
+    )]));
+    assert_eq!(reused_plan(&build).as_deref(), Some(PLAN));
+
+    build.spec.builder_ref = "agent".to_owned();
+    assert_eq!(reused_plan(&build), None);
 }
 
 #[test]
@@ -1584,7 +1659,14 @@ fn the_longest_idle_daemon_goes_first() {
 fn ready_names_the_outcome_of_the_latest_finished_run() {
     let ready = |runs: &[BuildRun]| {
         let mut status = BuildStatus::default();
-        summarise(&mut status, runs, "r/team-a/api", now(), Some(1));
+        summarise(
+            &mut status,
+            runs,
+            "r/team-a/api",
+            "railpack",
+            now(),
+            Some(1),
+        );
         status.conditions[0].reason.clone()
     };
     assert_eq!(ready(&[]), "NotBuilt");

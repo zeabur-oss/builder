@@ -96,7 +96,7 @@ cp ./plan/Dockerfile ./plan/Dockerfile.dockerignore ./my-app/
 
 ## 下次沿用結果
 
-如果沒有把 Dockerfile 放進儲存庫，下次可用 `--previous` 指定上次的輸出資料夾，資料夾裡要有 `Dockerfile` 和 `Dockerfile.dockerignore`，有 `info.json` 的話也會帶回 `details`：
+如果沒有把 Dockerfile 放進儲存庫，下次可用 `--previous` 指定上次的輸出資料夾，資料夾裡要有 `Dockerfile` 和 `Dockerfile.dockerignore`：
 
 ```sh
 zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
@@ -224,7 +224,7 @@ CMD ["node", "server.js"]
 | 欄位 | 內容 |
 | --- | --- |
 | `source` | `repository` 表示使用儲存庫的 Dockerfile，`previous` 表示沿用上一份結果，`agent` 表示由模型撰寫。 |
-| `details` | `port`、`language`、`version`、`versionSource`、`buildVariables`、`runtimeVariables`、`notes`。模型撰寫 Dockerfile 時會附上，沿用 `--previous` 的結果時也會帶回。 |
+| `details` | 模型撰寫 Dockerfile 時附上的 `port`、`language`、`version`、`versionSource`、`buildVariables`、`runtimeVariables`、`notes`。 |
 | `reason`、`detail` | 工具停止時的原因與詳細訊息。 |
 | `modelCalled` | 是否呼叫過模型。 |
 | `inputTokens`、`outputTokens` | 模型輸入與輸出的 token 數。 |

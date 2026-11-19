@@ -5,11 +5,12 @@
 //! keeps at most [`MAX_MESSAGE_BYTES`] of a termination message, so [`Info::encode`] cuts the
 //! free text until it fits.
 //!
-//! A saved plan is the folder any planner writes, `/workspace/plan`. After a run with a planner
-//! builds and pushes its image, the build step pushes that folder as an image of its own
-//! ([`SAVED_DOCKERFILE`], tagged [`saved_tag`]) and reports its digest. The controller records it
-//! in `Build.status.plan`. The next run unpacks it into `/workspace/previous` before its planner
-//! starts, and the planner decides how to use it: the agent builds it before it calls the model.
+//! A build is two steps: a planner turns the source into a plan, the folder `/workspace/plan`,
+//! and the build turns the source and the plan into an image. After a planner runs and the build
+//! pushes its image, the build step pushes the plan folder as an image of its own
+//! ([`SAVED_DOCKERFILE`], tagged [`saved_tag`]) and reports its digest; the controller records it
+//! in `Build.status.plan`. A `Build` with `builder.zeabur.com/plan: reuse` skips the planner: its
+//! next runs unpack that plan into `/workspace/plan` and build with it.
 
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +38,7 @@ pub fn saved_tag(build_uid: &str) -> String {
 pub enum Source {
     /// The repository has one; it is used as is.
     Repository,
-    /// The plan an earlier run recorded, built again.
+    /// A plan built before: the agent's `--previous`, or the plan an earlier run saved.
     Previous,
     /// The agent wrote it in this run.
     Agent,
@@ -100,7 +101,7 @@ pub struct Info {
     /// Where the Dockerfile came from, when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
-    /// What the agent reported when it wrote the Dockerfile, in this run or the earlier one.
+    /// What the agent reported when it wrote the Dockerfile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Details>,
     /// Why the run stopped, when it has no plan.

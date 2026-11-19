@@ -11,8 +11,7 @@ ANTHROPIC_API_KEY=… zeabur-builder-agent --context <dir> --buildkit <addr> [--
 It takes the first of:
 
 1. The repository's `Dockerfile`, as is.
-2. The last plan (`--previous <dir>`), when it still builds, with the details the agent
-   reported for it. In a build Job this is the plan the last run saved (`Build.status.plan`).
+2. The last plan (`--previous`), when it still builds.
 3. A Dockerfile the agent writes. The agent reads the repository with `list`, `read` and
    `grep`, builds with `build`, pages through a failed build's log with `read_build_log`, and
    ends with `finish` after a build succeeded or `stop` with a reason.

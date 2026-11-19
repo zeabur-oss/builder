@@ -934,10 +934,25 @@
                     "type": "integer"
                   },
                   "plan": {
-                    "description": "The plan image of the last successful run with a planner, `<repository>@<digest>`: the\nfolder its planner wrote. The next run's planner gets it in `/workspace/previous`; the\n`agent` builder builds it before it calls the model.",
-                    "maxLength": 1024,
+                    "description": "The plan of the newest successful run with a planner. A run reuses it when the `Build`\nasks (`builder.zeabur.com/plan: reuse`) and still names the builder that made it.",
                     "nullable": true,
-                    "type": "string"
+                    "properties": {
+                      "builder": {
+                        "description": "The `ClusterBuilder` whose planner wrote it.",
+                        "maxLength": 253,
+                        "type": "string"
+                      },
+                      "image": {
+                        "description": "The plan image, `<repository>@<digest>`.",
+                        "maxLength": 1024,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "builder",
+                      "image"
+                    ],
+                    "type": "object"
                   },
                   "remoteRevision": {
                     "description": "The commit the ref points at, or the archive's digest.",
@@ -1088,6 +1103,13 @@
                     "description": "The `Build`.",
                     "maxLength": 253,
                     "minLength": 1,
+                    "type": "string"
+                  },
+                  "plan": {
+                    "description": "The digest of the saved plan the run builds with, in the `Build`'s own repository. The\ncontroller sets it from `Build.status.plan` when the `Build` asks to reuse its plan\n(`builder.zeabur.com/plan: reuse`). Without it, the planner runs.",
+                    "maxLength": 71,
+                    "nullable": true,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
                     "type": "string"
                   },
                   "ref": {
@@ -1448,7 +1470,7 @@
                     "type": "object"
                   },
                   "planDigest": {
-                    "description": "The plan image this run pushed, when the builder has a planner.",
+                    "description": "The plan image this run's planner wrote, when the builder has a planner and the run did\nnot reuse a saved plan.",
                     "maxLength": 71,
                     "nullable": true,
                     "pattern": "^sha256:[0-9a-f]{64}$",
