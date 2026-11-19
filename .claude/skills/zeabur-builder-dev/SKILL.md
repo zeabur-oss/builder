@@ -10,7 +10,7 @@ description: What is special about Zeabur Builder — its extra checks, how the 
 ## Checks CI runs beyond fmt, clippy, tests and `cargo deny`
 
 ```sh
-nix develop -c ./scripts/check-levels.sh
+nix develop -c bash -c "bun install --frozen-lockfile && node_modules/.bin/zeabur-oss-levels"
 nix develop -c ./scripts/check-chart.sh
 ```
 

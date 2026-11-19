@@ -10,7 +10,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.metadata.levels]
-# A crate may depend only on crates of a lower level (scripts/check-levels.sh).
+# A crate may depend only on crates of a lower level (zeabur-oss-levels).
 zeabur-builder-core = 0
 zeabur-builder-api = 1
 zeabur-builder-jobspec = 2
@@ -21,6 +21,19 @@ zeabur-builder-agent = 3
 [workspace.metadata.pure]
 # No I/O, no clock, no randomness: the controller's decisions are functions of their inputs.
 crates = ["zeabur-builder-core", "zeabur-builder-api", "zeabur-builder-jobspec"]
+# The third-party crates a pure crate may use: data types and hashing, no I/O.
+third-party = [
+  "jiff",
+  "k8s-openapi",
+  "kube",
+  "kube_quantity",
+  "pretty_assertions",
+  "schemars",
+  "serde",
+  "serde_json",
+  "sha2",
+  "thiserror",
+]
 
 [workspace.dependencies]
 # Workspace crates, levelled from the bottom up.
