@@ -61,7 +61,7 @@ const WORKSPACE: &str = "/workspace";
 const SRC: &str = "/workspace/src";
 const PLAN: &str = "/workspace/plan";
 const OUT: &str = "/workspace/out";
-/// Where `zeabur-builder-job --non-root` writes the Railpack plan it rewrites and the second
+/// Where `zeabur-builder-job build --non-root` writes the Railpack plan it rewrites and the second
 /// build's Dockerfile, so the plan folder keeps what the planner wrote.
 const NON_ROOT: &str = "/workspace/out/non-root";
 const GIT_CREDENTIALS: &str = "/etc/zeabur-builder/git";
