@@ -45,7 +45,8 @@
           {
             "command": [
               "zeabur-builder-job",
-              "--",
+              "build",
+              "--build",
               "buildctl",
               "--addr",
               "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",

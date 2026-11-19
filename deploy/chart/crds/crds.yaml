@@ -943,7 +943,7 @@
                         "type": "string"
                       },
                       "image": {
-                        "description": "The plan image, `<repository>@<digest>`.",
+                        "description": "The plan artifact, `<repository>@<digest>`.",
                         "maxLength": 1024,
                         "type": "string"
                       }
@@ -1470,7 +1470,7 @@
                     "type": "object"
                   },
                   "planDigest": {
-                    "description": "The plan image this run's planner wrote, when the builder has a planner and the run did\nnot reuse a saved plan.",
+                    "description": "The plan artifact this run's planner wrote, when the builder has a planner and the run did\nnot reuse a saved plan.",
                     "maxLength": 71,
                     "nullable": true,
                     "pattern": "^sha256:[0-9a-f]{64}$",

@@ -420,7 +420,7 @@ pub struct BuildStatus {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedPlan {
-    /// The plan image, `<repository>@<digest>`.
+    /// The plan artifact, `<repository>@<digest>`.
     #[schemars(length(max = 1024))]
     pub image: String,
     /// The `ClusterBuilder` whose planner wrote it.

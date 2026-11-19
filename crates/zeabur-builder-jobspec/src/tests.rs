@@ -15,6 +15,8 @@ use zeabur_builder_api::common::SecretKeyRef;
 use super::*;
 
 const SHA: &str = "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c";
+/// The `Build`'s uid, which names its saved plan.
+const UID: &str = "0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b";
 const DIGEST: &str = "sha256:5d2a8f1c0b9e7d6a4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d";
 const RAILPACK: &str = "v0.43.0";
 
@@ -257,7 +259,7 @@ fn railpack_with_secrets() {
 fn agent_with_a_model_key() {
     let run = build_run();
     let mut build = build("https://github.com/acme/web", None, Vec::new());
-    build.metadata.uid = Some("0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b".to_owned());
+    build.metadata.uid = Some(UID.to_owned());
     let builder = agent();
     let tags = tags();
     let job = job(&inputs(
@@ -276,7 +278,7 @@ fn agent_with_a_model_key() {
 fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning() {
     let mut run = build_run();
     let mut build = build("https://github.com/acme/web", None, Vec::new());
-    build.metadata.uid = Some("0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b".to_owned());
+    build.metadata.uid = Some(UID.to_owned());
     let builder = agent();
     let tags = tags();
     let pod = |run: &BuildRun| {
@@ -309,7 +311,12 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
         spec.containers
             .iter()
             .flat_map(|c| c.command.iter().flatten())
-            .any(|a| a == "--save-plan")
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|w| {
+                w[0] == "--save-plan"
+                    && *w[1] == format!("registry.internal/team-a/api:zeabur-plan-{UID}")
+            })
     };
 
     let fresh = pod(&run);
@@ -329,7 +336,8 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
         restore.command.as_deref().unwrap(),
         [
             "zeabur-builder-job",
-            "restore-plan",
+            "plan",
+            "restore",
             "registry.internal/team-a/api",
             digest,
             "/workspace/plan",
@@ -346,7 +354,7 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
 fn every_builder_with_a_planner_saves_its_plan() {
     let run = build_run();
     let mut build = build("https://github.com/acme/web", None, Vec::new());
-    build.metadata.uid = Some("0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b".to_owned());
+    build.metadata.uid = Some(UID.to_owned());
     let tags = tags();
     let saves = |name: &str, builder: &ClusterBuilderSpec| {
         let job = job(&inputs(
@@ -427,7 +435,7 @@ fn an_archive_is_read_only_from_the_runs_own_namespace() {
         let fetch = &pod.init_containers.unwrap()[0];
         let command = fetch.command.as_ref().unwrap();
         assert_eq!(
-            command[2..],
+            command[3..],
             [
                 format!("registry.internal/{namespace}/api/source"),
                 DIGEST.to_owned(),

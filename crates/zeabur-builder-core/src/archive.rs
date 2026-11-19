@@ -119,8 +119,7 @@ pub fn hex(hash: &[u8]) -> String {
 /// Checks a manifest against `digest` and returns its one layer.
 ///
 /// The manifest's `artifactType`, or else its config's media type, must be `artifact_type`:
-/// [`ARTIFACT_TYPE`] for an archive source, [`crate::plan::SAVED_CONFIG_MEDIA_TYPE`] for a saved
-/// plan.
+/// [`ARTIFACT_TYPE`] for an archive source, [`crate::plan::ARTIFACT_TYPE`] for a saved plan.
 ///
 /// # Errors
 ///
@@ -232,18 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_plan_is_read_by_its_config_media_type_only() {
-        let plan = crate::plan::SAVED_CONFIG_MEDIA_TYPE;
-        let body = format!(
-            r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_MEDIA_TYPE}",
-            "config":{{"mediaType":"{plan}","digest":"{LAYER}","size":3}},
-            "layers":[{}]}}"#,
-            layer_json(LAYER_MEDIA_TYPE, 1234)
-        );
-        let digest = digest(body.as_bytes());
+    fn a_saved_plan_and_a_source_are_not_read_as_each_other() {
+        let plan = crate::plan::ARTIFACT_TYPE;
+        let saved = manifest(plan, &layer_json(LAYER_MEDIA_TYPE, 1234));
+        let source = manifest(ARTIFACT_TYPE, &layer_json(LAYER_MEDIA_TYPE, 1234));
 
-        assert!(layer(body.as_bytes(), &digest, plan).is_ok());
-        assert!(layer(body.as_bytes(), &digest, ARTIFACT_TYPE).is_err());
+        assert!(layer(saved.as_bytes(), &digest(saved.as_bytes()), plan).is_ok());
+        assert!(layer(saved.as_bytes(), &digest(saved.as_bytes()), ARTIFACT_TYPE).is_err());
+        assert!(layer(source.as_bytes(), &digest(source.as_bytes()), plan).is_err());
     }
 
     #[test]

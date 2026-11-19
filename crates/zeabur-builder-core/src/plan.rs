@@ -7,23 +7,20 @@
 //!
 //! A build is two steps: a planner turns the source into a plan, the folder `/workspace/plan`,
 //! and the build turns the source and the plan into an image. After a planner runs and the build
-//! pushes its image, the build step pushes the plan folder as an image of its own
-//! ([`SAVED_DOCKERFILE`], tagged [`saved_tag`]) and reports its digest; the controller records it
-//! in `Build.status.plan`. Later runs of the `Build` skip the planner: they unpack that plan into
-//! `/workspace/plan` and build with it, unless the `Build` has `builder.zeabur.com/plan: fresh`.
+//! pushes its image, the build step pushes the plan folder as an artifact ([`ARTIFACT_TYPE`],
+//! tagged [`saved_tag`]) and reports its digest; the controller records it in `Build.status.plan`.
+//! Later runs of the `Build` skip the planner: they unpack that plan into `/workspace/plan` and
+//! build with it, unless the `Build` has `builder.zeabur.com/plan: fresh`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::result::{MAX_DETAIL_BYTES, MAX_MESSAGE_BYTES, truncate};
 
-/// The Dockerfile of a plan image: every file of the planner's folder, in one layer.
-pub const SAVED_DOCKERFILE: &str = "FROM scratch\nCOPY . /\n";
+/// The `artifactType` of a saved plan: the planner's folder as one gzip tar layer, in the form of
+/// an archive source ([`crate::archive`]).
+pub const ARTIFACT_TYPE: &str = "application/vnd.zeabur.plan.v1+tar";
 
-/// The config media type of a plan image, which BuildKit writes with `oci-mediatypes=true`. A
-/// run pulls the plan as an artifact of this type ([`crate::archive::layer`]).
-pub const SAVED_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1+json";
-
-/// The tag of a `Build`'s plan image, beside its images.
+/// The tag of a `Build`'s plan artifact, beside its images.
 ///
 /// Runs pull the image by digest; the tag only keeps it from the registry's garbage collection.
 /// One tag per `Build`, so `Build`s that push to one repository do not replace each other's plan.

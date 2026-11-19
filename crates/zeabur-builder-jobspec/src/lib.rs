@@ -5,9 +5,9 @@
 //!
 //! | container | image | does |
 //! |---|---|---|
-//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch-archive` |
-//! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the run reuses a saved plan (`BuildRun.spec.plan`), the job image's `zeabur-builder-job restore-plan` unpacks it there instead |
-//! | `build` | job image | `zeabur-builder-job -- buildctl build …`; after a planner ran, then the plan image of `/workspace/plan` (`--save-plan`) |
+//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch archive` |
+//! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the run reuses a saved plan (`BuildRun.spec.plan`), the job image's `zeabur-builder-job plan restore` unpacks it there instead |
+//! | `build` | job image | `zeabur-builder-job build --build buildctl build …`; after a planner ran, it pushes `/workspace/plan` as the plan artifact (`--save-plan`) |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
 //! Dockerfile build `FROM` it that makes it run as a non-root user and pushes the tags
@@ -61,8 +61,6 @@ const WORKSPACE: &str = "/workspace";
 const SRC: &str = "/workspace/src";
 const PLAN: &str = "/workspace/plan";
 const OUT: &str = "/workspace/out";
-/// The folder of the plan image's Dockerfile; `zeabur-builder-job --save-plan` writes it.
-const SAVED_PLAN: &str = "/workspace/out/saved-plan";
 /// Where `zeabur-builder-job --non-root` writes the Railpack plan it rewrites and the second
 /// build's Dockerfile, so the plan folder keeps what the planner wrote.
 const NON_ROOT: &str = "/workspace/out/non-root";
@@ -367,7 +365,11 @@ fn fetch_container(inputs: &JobInputs<'_>, url: &str) -> Container {
 fn archive_container(inputs: &JobInputs<'_>, namespace: &str) -> Container {
     let repository =
         archive::repository(inputs.registry, namespace, &inputs.build_run.spec.build_ref);
-    let mut command = vec!["zeabur-builder-job".to_owned(), "fetch-archive".to_owned()];
+    let mut command = vec![
+        "zeabur-builder-job".to_owned(),
+        "fetch".to_owned(),
+        "archive".to_owned(),
+    ];
     if inputs.registry_http {
         command.push("--plain-http".to_owned());
     }
@@ -443,11 +445,15 @@ fn reused_plan<'a>(inputs: &JobInputs<'a>) -> Option<&'a str> {
     }
 }
 
-/// `zeabur-builder-job restore-plan`, which unpacks the saved plan into `/workspace/plan`, with
+/// `zeabur-builder-job plan restore`, which unpacks the saved plan into `/workspace/plan`, with
 /// the run's push credentials. Only the digest comes from the run; the repository is the
 /// `Build`'s own, so a run never reads another repository with them.
 fn restore_container(inputs: &JobInputs<'_>) -> Container {
-    let mut command = vec!["zeabur-builder-job".to_owned(), "restore-plan".to_owned()];
+    let mut command = vec![
+        "zeabur-builder-job".to_owned(),
+        "plan".to_owned(),
+        "restore".to_owned(),
+    ];
     if inputs.registry_http {
         command.push("--plain-http".to_owned());
     }
@@ -572,7 +578,7 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
 fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Container, JobError> {
     let context = context_path(inputs);
     let non_root = non_root(inputs.builder);
-    let mut wrapper = vec!["zeabur-builder-job".to_owned()];
+    let mut wrapper = vec!["zeabur-builder-job".to_owned(), "build".to_owned()];
     if inputs.registry_http {
         wrapper.push("--plain-http".to_owned());
     }
@@ -602,15 +608,14 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
             NON_ROOT.to_owned(),
         ]);
     }
-    wrapper.push("--".to_owned());
+    if let Some(name) = saved_plan_name(inputs) {
+        wrapper.extend(["--save-plan".to_owned(), literal(&name)]);
+    }
+    wrapper.push("--build".to_owned());
     wrapper.extend(buildctl.iter().map(|arg| literal(arg)));
     if non_root {
-        wrapper.push("--then".to_owned());
+        wrapper.push("--build".to_owned());
         wrapper.extend(non_root_build(inputs, repo).iter().map(|arg| literal(arg)));
-    }
-    if let Some(save) = save_plan_build(inputs, repo) {
-        wrapper.push("--save-plan".to_owned());
-        wrapper.extend(save.iter().map(|arg| literal(arg)));
     }
 
     let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
@@ -675,10 +680,9 @@ fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String>
     buildctl
 }
 
-/// The push of the plan image ([`zeabur_builder_core::plan`]) of a builder with a planner: the
-/// folder `/workspace/plan`, with the Dockerfile `zeabur-builder-job --save-plan` writes, tagged
-/// for the `Build`.
-fn save_plan_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Option<Vec<String>> {
+/// Where a builder with a planner saves the plan it wrote ([`zeabur_builder_core::plan`]):
+/// `<image>:zeabur-plan-<Build uid>`. None for `dockerfile` and for a run that reused a plan.
+fn saved_plan_name(inputs: &JobInputs<'_>) -> Option<String> {
     match inputs.builder.kind {
         BuilderType::Dockerfile => return None,
         BuilderType::Railpack | BuilderType::Agent => {}
@@ -687,18 +691,7 @@ fn save_plan_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Option<Vec
         return None;
     }
     let uid = inputs.build.metadata.uid.as_deref()?;
-    let name = format!("{}:{}", inputs.image, plan::saved_tag(uid));
-    let mut buildctl = buildctl(inputs, &format!("{OUT}/plan-metadata.json"));
-    buildctl.extend([
-        "--frontend".to_owned(),
-        "dockerfile.v0".to_owned(),
-        "--local".to_owned(),
-        format!("context={PLAN}"),
-        "--local".to_owned(),
-        format!("dockerfile={SAVED_PLAN}"),
-    ]);
-    buildctl.extend(output(inputs, repo, &[name], false));
-    Some(buildctl)
+    Some(format!("{}:{}", inputs.image, plan::saved_tag(uid)))
 }
 
 /// `--frontend`, the plan's location and the frontend options.

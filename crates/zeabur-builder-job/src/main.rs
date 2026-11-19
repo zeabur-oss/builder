@@ -1,26 +1,28 @@
-//! `zeabur-builder-job`: the build container's entry point.
+//! `zeabur-builder-job`: the job image's entry point, one subcommand for each step of a run.
 //!
 //! ```text
-//! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root PLAN OUT] -- buildctl … build … [--then buildctl … build …] [--save-plan buildctl … build …]
-//! zeabur-builder-job fetch-archive [--plain-http] <repository> <digest> <dir>
-//! zeabur-builder-job restore-plan [--plain-http] <repository> <digest> <dir>
+//! zeabur-builder-job fetch archive [--plain-http] <repository> <digest> <dir>
+//! zeabur-builder-job plan restore [--plain-http] <repository> <digest> <dir>
+//! zeabur-builder-job build [--plain-http] [--secrets-hash-env NAME]… [--non-root PLAN OUT]
+//!                          [--save-plan <repository>:<tag>] --build buildctl … [--build buildctl …]
 //! ```
 //!
-//! `fetch-archive` is the `fetch` container of an archive source: it pulls the archive
+//! `fetch archive` is the `fetch` container of an archive source: it pulls the archive
 //! ([`registry`]) and unpacks it into `<dir>` ([`unpack`]). It writes errors to stderr, which the
 //! controller shows as the run's message.
 //!
-//! `restore-plan` is the `plan` container of a run that reuses a saved plan
+//! `plan restore` is the `plan` container of a run that reuses a saved plan
 //! ([`zeabur_builder_core::plan`]): it pulls the plan the same way into `<dir>`. When the plan has
 //! the agent's `info.json`, it writes it to `/dev/termination-log` as reused. An error fails the
 //! run.
 //!
-//! Runs the `buildctl` commands it is given (built by `zeabur-builder-jobspec`) one after the
-//! other, prints their `rawjson` progress for people, counts cached steps, records the steps, reads
-//! each digest from its `--metadata-file`, and writes the result to `/dev/termination-log`, where
-//! the controller reads it from the Pod's status ([`zeabur_builder_core::result`]). The same JSON
-//! is the last line on stdout. The result is the last command's digest and tags; `{digest}` in a
-//! command stands for the digest of the one before it.
+//! `build` is the `build` container. It runs each `--build` command (built by
+//! `zeabur-builder-jobspec`) in order, prints their `rawjson` progress for people, counts cached
+//! steps, records the steps, reads each digest from its `--metadata-file`, and writes the result to
+//! `/dev/termination-log`, where the controller reads it from the Pod's status
+//! ([`zeabur_builder_core::result`]). The same JSON is the last line on stdout. The image is the
+//! last command's digest and tags; `{digest}` in a command stands for the digest of the one before
+//! it.
 //!
 //! After a success it reads the pushed image's config from the registry (`--plain-http` if the
 //! registry speaks http) and reports its `ExposedPorts`; failing to read them does not fail the
@@ -32,13 +34,13 @@
 //!
 //! `--non-root PLAN OUT` makes a Railpack image run as a non-root user
 //! ([`zeabur_builder_core::railpack`]): it writes `PLAN/railpack-plan.json`, rewritten, and the
-//! second build's `Dockerfile` into `OUT`, and leaves the plan folder as the planner wrote it.
+//! second build's `Dockerfile` into `OUT`, and leaves the plan folder as the planner wrote it. The
+//! second `--build` builds on the first.
 //!
-//! The command after `--save-plan` pushes the planner's folder, `/workspace/plan`, as the plan
-//! image ([`zeabur_builder_core::plan`]): after a success it writes
-//! `/workspace/out/saved-plan/Dockerfile` and runs the command, and the result reports the digest
-//! as `planDigest`. Failing to push it does not fail the build; the next run starts without a last
-//! plan.
+//! `--save-plan` pushes the planner's folder, `/workspace/plan`, after a success, as the plan
+//! artifact ([`zeabur_builder_core::plan`]) tagged `<tag>`, and the result reports its digest as
+//! `planDigest`. Failing to push it does not fail the build; the `Build` keeps the plan it saved
+//! before.
 
 mod progress;
 mod registry;
@@ -52,7 +54,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncBufReadExt as _;
 use zeabur_builder_core::archive::{self, MAX_UNPACKED_BYTES};
-use zeabur_builder_core::plan::{Info, SAVED_CONFIG_MEDIA_TYPE, SAVED_DOCKERFILE, Source};
+use zeabur_builder_core::plan::{self, Info, Source};
 use zeabur_builder_core::progress::{CacheCounter, StepLog};
 use zeabur_builder_core::railpack;
 use zeabur_builder_core::result::{BuildResult, FailureReason, Outcome, PlanSource};
@@ -61,11 +63,9 @@ const TERMINATION_LOG: &str = "/dev/termination-log";
 const WORKSPACE: &str = "/workspace";
 const OUT: &str = "/workspace/out";
 const PLAN: &str = "/workspace/plan";
-/// The folder of the plan image's Dockerfile, outside the folder it copies.
-const SAVED_PLAN: &str = "/workspace/out/saved-plan";
 /// The registry's CA, PEM (`zeabur_builder_jobspec::REGISTRY_CA_ENV`).
 const REGISTRY_CA_ENV: &str = "ZB_REGISTRY_CA";
-/// In a command after `--then`, the digest of the command before it.
+/// In a `--build` command after the first, the digest of the one before it.
 const DIGEST: &str = "{digest}";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -73,14 +73,16 @@ struct Args {
     plain_http: bool,
     secrets_hash_env: Vec<String>,
     non_root: Option<(String, String)>,
+    save_plan: Option<String>,
     commands: Vec<Vec<String>>,
-    save_plan: Option<Vec<String>>,
 }
 
+/// Parses the arguments of `build`.
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut secrets_hash_env = Vec::new();
     let mut non_root = None;
     let mut plain_http = false;
+    let mut save_plan = None;
     let mut rest = args.iter();
     loop {
         match rest.next().map(String::as_str) {
@@ -95,34 +97,29 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 non_root = Some((plan.clone(), out.clone()));
             }
             Some("--plain-http") => plain_http = true,
-            Some("--") => break,
+            Some("--save-plan") => {
+                let name = rest.next().ok_or("--save-plan needs <repository>:<tag>")?;
+                save_plan = Some(name.clone());
+            }
+            Some("--build") => break,
             Some(other) => return Err(format!("unexpected argument `{other}`")),
-            None => return Err("missing `-- buildctl …`".to_owned()),
+            None => return Err("missing `--build buildctl …`".to_owned()),
         }
     }
     let rest: Vec<String> = rest.cloned().collect();
-    let at = rest
-        .iter()
-        .position(|arg| arg == "--save-plan")
-        .unwrap_or(rest.len());
-    let (rest, save) = rest.split_at(at);
-    let save_plan = save.split_first().map(|(_, command)| command.to_vec());
-    if save_plan.as_ref().is_some_and(Vec::is_empty) {
-        return Err("missing a command after `--save-plan`".to_owned());
-    }
     let commands: Vec<Vec<String>> = rest
-        .split(|arg| arg == "--then")
+        .split(|arg| arg == "--build")
         .map(<[String]>::to_vec)
         .collect();
     if commands.iter().any(Vec::is_empty) {
-        return Err("missing a command after `--` or `--then`".to_owned());
+        return Err("missing a command after `--build`".to_owned());
     }
     Ok(Args {
         plain_http,
         secrets_hash_env,
         non_root,
-        commands,
         save_plan,
+        commands,
     })
 }
 
@@ -230,10 +227,10 @@ fn pushed_repository(command: &[String]) -> Option<String> {
 /// How long reading the pushed image's ports may take; the ports are only a hint.
 const IMAGE_PORTS_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long pushing the plan image may take; the plan only saves a model call on the next run.
+/// How long pushing the plan may take; the plan only saves planning on the next run.
 const SAVE_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long `restore-plan` waits for the saved plan.
+/// How long `plan restore` waits for the saved plan.
 const RESTORE_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The ports the pushed image declares, read back from the registry the build pushed to.
@@ -395,16 +392,18 @@ async fn run(args: &Args) -> BuildResult {
                     )),
                 }
             }
-            if let Some(command) = &args.save_plan {
-                match tokio::time::timeout(SAVE_PLAN_TIMEOUT, save_plan(command)).await {
+            if let Some(name) = &args.save_plan {
+                match tokio::time::timeout(SAVE_PLAN_TIMEOUT, save_plan(name, args.plain_http))
+                    .await
+                {
                     Ok(Ok(digest)) => result.plan_digest = Some(digest),
                     Ok(Err(e)) => drop(writeln!(
                         std::io::stderr().lock(),
-                        "cannot push the plan image: {e}"
+                        "cannot push the plan: {e}"
                     )),
                     Err(_elapsed) => drop(writeln!(
                         std::io::stderr().lock(),
-                        "cannot push the plan image: no answer in {} s",
+                        "cannot push the plan: no answer in {} s",
                         SAVE_PLAN_TIMEOUT.as_secs()
                     )),
                 }
@@ -422,19 +421,40 @@ async fn run(args: &Args) -> BuildResult {
     result
 }
 
-/// Pushes the planner's folder as the plan image with `command` and returns its digest.
-async fn save_plan(command: &[String]) -> Result<String, String> {
-    std::fs::create_dir_all(SAVED_PLAN).map_err(|e| format!("cannot create {SAVED_PLAN}: {e}"))?;
-    std::fs::write(format!("{SAVED_PLAN}/Dockerfile"), SAVED_DOCKERFILE)
-        .map_err(|e| format!("cannot write {SAVED_PLAN}/Dockerfile: {e}"))?;
-    build(
-        command,
-        &mut progress::Renderer::default(),
-        &mut CacheCounter::default(),
-        &mut StepLog::default(),
-    )
-    .await
-    .map_err(|(_, message)| message)
+/// Pushes the planner's folder as the plan artifact `name` (`<repository>:<tag>`) and returns
+/// its digest.
+async fn save_plan(name: &str, plain_http: bool) -> Result<String, String> {
+    let (repository, tag) = name
+        .rsplit_once(':')
+        .filter(|(_, tag)| !tag.contains('/'))
+        .ok_or_else(|| format!("`{name}` is not <repository>:<tag>"))?;
+    let layer = pack(PLAN)?;
+    let mut repository = open_repository(repository, plain_http)?;
+    repository
+        .push_artifact(tag, plan::ARTIFACT_TYPE, layer.into())
+        .await
+}
+
+/// `dir` as a gzip tar, with its entries below `.`, links kept as links, and no owners or times.
+fn pack(dir: &str) -> Result<Vec<u8>, String> {
+    let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut tar = tar::Builder::new(gzip);
+    tar.mode(tar::HeaderMode::Deterministic);
+    tar.follow_symlinks(false);
+    tar.append_dir_all(".", dir)
+        .map_err(|e| format!("cannot pack {dir}: {e}"))?;
+    let packed = tar
+        .into_inner()
+        .and_then(flate2::write::GzEncoder::finish)
+        .map_err(|e| format!("cannot pack {dir}: {e}"))?;
+    if u64::try_from(packed.len()).unwrap_or(u64::MAX) > archive::MAX_LAYER_BYTES {
+        return Err(format!(
+            "{dir} packs to {} bytes; the limit is {}",
+            packed.len(),
+            archive::MAX_LAYER_BYTES
+        ));
+    }
+    Ok(packed)
 }
 
 /// `command` with [`DIGEST`] replaced by the previous command's digest.
@@ -450,7 +470,7 @@ fn with_digest(command: &[String], previous: Option<&str>) -> Vec<String> {
     )
 }
 
-/// The arguments of `fetch-archive` and `restore-plan`.
+/// The arguments of `fetch archive` and `plan restore`.
 #[derive(Debug, PartialEq, Eq)]
 struct FetchArgs {
     plain_http: bool,
@@ -466,7 +486,7 @@ fn parse_fetch(args: &[String]) -> Result<FetchArgs, String> {
     };
     let [repository, digest, dir] = rest else {
         return Err(
-            "usage: fetch-archive|restore-plan [--plain-http] <repository> <digest> <dir>"
+            "usage: fetch archive|plan restore [--plain-http] <repository> <digest> <dir>"
                 .to_owned(),
         );
     };
@@ -510,8 +530,6 @@ async fn pull(args: &FetchArgs, artifact_type: &str, file: &str) -> Result<(), S
     Ok(())
 }
 
-/// Pulls the saved plan into `args.dir` and, when it has the agent's `info.json`, writes it to the
-/// termination message as reused, for `BuildRun.status.plan`.
 /// Removes `dir` if it is empty, because the unpack makes its own folder. The fetch container
 /// makes an empty plan folder for planners. A folder with files is an error.
 fn remove_empty(dir: &str) -> Result<(), String> {
@@ -523,12 +541,14 @@ fn remove_empty(dir: &str) -> Result<(), String> {
     }
 }
 
+/// Pulls the saved plan into `args.dir` and, when it has the agent's `info.json`, writes it to the
+/// termination message as reused, for `BuildRun.status.plan`.
 async fn restore_plan(args: &FetchArgs) -> Result<(), String> {
     let start = Instant::now();
     remove_empty(&args.dir)?;
     tokio::time::timeout(
         RESTORE_PLAN_TIMEOUT,
-        pull(args, SAVED_CONFIG_MEDIA_TYPE, "plan.tar.gz"),
+        pull(args, plan::ARTIFACT_TYPE, "plan.tar.gz"),
     )
     .await
     .unwrap_or_else(|_elapsed| Err(format!("no answer in {} s", RESTORE_PLAN_TIMEOUT.as_secs())))
@@ -560,15 +580,26 @@ async fn restore_plan(args: &FetchArgs) -> Result<(), String> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    if let Some((first, rest)) = raw.split_first()
-        && (first == "fetch-archive" || first == "restore-plan")
-    {
-        let fetched = match parse_fetch(rest) {
-            Ok(args) if first == "restore-plan" => restore_plan(&args).await,
-            Ok(args) => fetch_archive(&args).await,
-            Err(message) => Err(message),
-        };
-        return match fetched {
+    let pulled = match raw.as_slice() {
+        [step, what, rest @ ..] if step == "fetch" && what == "archive" => {
+            Some(match parse_fetch(rest) {
+                Ok(args) => fetch_archive(&args).await,
+                Err(message) => Err(message),
+            })
+        }
+        [step, what, rest @ ..] if step == "plan" && what == "restore" => {
+            Some(match parse_fetch(rest) {
+                Ok(args) => restore_plan(&args).await,
+                Err(message) => Err(message),
+            })
+        }
+        [step, ..] if step == "build" => None,
+        _ => Some(Err(
+            "usage: zeabur-builder-job fetch archive|plan restore|build …".to_owned(),
+        )),
+    };
+    if let Some(pulled) = pulled {
+        return match pulled {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 drop(writeln!(std::io::stderr().lock(), "{message}"));
@@ -576,7 +607,7 @@ async fn main() -> ExitCode {
             }
         };
     }
-    let result = match parse_args(&raw) {
+    let result = match parse_args(raw.get(1..).unwrap_or_default()) {
         Ok(args) => run(&args).await,
         Err(message) => BuildResult {
             reason: Some(FailureReason::BuildFailed),
@@ -609,7 +640,7 @@ mod tests {
             parse_args(&strings(&[
                 "--secrets-hash-env",
                 "ZB_SECRET_A",
-                "--",
+                "--build",
                 "buildctl",
                 "build"
             ])),
@@ -617,8 +648,8 @@ mod tests {
                 plain_http: false,
                 secrets_hash_env: strings(&["ZB_SECRET_A"]),
                 non_root: None,
-                commands: vec![strings(&["buildctl", "build"])],
                 save_plan: None,
+                commands: vec![strings(&["buildctl", "build"])],
             })
         );
         assert_eq!(
@@ -626,10 +657,12 @@ mod tests {
                 "--non-root",
                 "/workspace/plan",
                 "/workspace/out/non-root",
-                "--",
+                "--save-plan",
+                "r/a:zeabur-plan-1",
+                "--build",
                 "buildctl",
                 "build",
-                "--then",
+                "--build",
                 "buildctl",
                 "build",
                 "--opt",
@@ -642,6 +675,7 @@ mod tests {
                     "/workspace/plan".to_owned(),
                     "/workspace/out/non-root".to_owned()
                 )),
+                save_plan: Some("r/a:zeabur-plan-1".to_owned()),
                 commands: vec![
                     strings(&["buildctl", "build"]),
                     strings(&[
@@ -651,41 +685,33 @@ mod tests {
                         "context:app=docker-image://r/a@{digest}"
                     ]),
                 ],
-                save_plan: None,
             })
         );
-        assert_eq!(
-            parse_args(&strings(&[
-                "--",
-                "buildctl",
-                "build",
-                "--save-plan",
-                "buildctl",
-                "build",
-                "--local",
-                "context=/workspace/plan",
-            ])),
-            Ok(Args {
-                plain_http: false,
-                secrets_hash_env: Vec::new(),
-                non_root: None,
-                commands: vec![strings(&["buildctl", "build"])],
-                save_plan: Some(strings(&[
-                    "buildctl",
-                    "build",
-                    "--local",
-                    "context=/workspace/plan"
-                ])),
-            })
-        );
-        assert!(parse_args(&strings(&["--", "buildctl", "--save-plan"])).is_err());
-        assert!(parse_args(&strings(&["--", "--save-plan", "buildctl"])).is_err());
         assert!(parse_args(&strings(&["buildctl"])).is_err());
-        assert!(parse_args(&strings(&["--"])).is_err());
+        assert!(parse_args(&strings(&["--build"])).is_err());
+        assert!(parse_args(&strings(&["--save-plan"])).is_err());
         assert!(parse_args(&strings(&["--secrets-hash-env"])).is_err());
         assert!(parse_args(&strings(&["--non-root"])).is_err());
-        assert!(parse_args(&strings(&["--", "buildctl", "--then"])).is_err());
-        assert!(parse_args(&strings(&["--", "--then", "buildctl"])).is_err());
+        assert!(parse_args(&strings(&["--build", "buildctl", "--build"])).is_err());
+        assert!(parse_args(&strings(&["--build", "--build", "buildctl"])).is_err());
+    }
+
+    #[test]
+    fn a_packed_plan_unpacks_to_the_same_files() {
+        let dir = std::env::temp_dir().join(format!("zeabur-builder-pack-{}", std::process::id()));
+        let plan = dir.join("plan");
+        std::fs::create_dir_all(plan.join("sub")).unwrap();
+        std::fs::write(plan.join("Dockerfile"), "FROM scratch").unwrap();
+        std::fs::write(plan.join("sub/info.json"), "{}").unwrap();
+        let packed = pack(plan.to_str().unwrap()).unwrap();
+        assert_eq!(packed, pack(plan.to_str().unwrap()).unwrap());
+
+        let out = dir.join("out");
+        unpack::unpack(packed.as_slice(), &out, MAX_UNPACKED_BYTES).unwrap();
+        let read = |p: &str| std::fs::read_to_string(out.join(p)).unwrap();
+        assert_eq!(read("Dockerfile"), "FROM scratch");
+        assert_eq!(read("sub/info.json"), "{}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -802,7 +828,7 @@ mod tests {
 
     #[test]
     fn plain_http_flag() {
-        let args = parse_args(&strings(&["--plain-http", "--", "buildctl"])).unwrap();
+        let args = parse_args(&strings(&["--plain-http", "--build", "buildctl"])).unwrap();
         assert!(args.plain_http);
     }
 }

@@ -50,7 +50,7 @@ pub struct BuildResult {
     /// The tags pushed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// The plan image pushed after the build, when the builder has a planner.
+    /// The plan artifact pushed after the build, when the builder has a planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_digest: Option<String>,
     /// Where the plan came from.
