@@ -16,6 +16,7 @@ use super::*;
 const A: &str = "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c";
 const B: &str = "0123456789abcdef0123456789abcdef01234567";
 const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const PLAN: &str = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
 fn set_ref(build: &mut Build, git_ref: &str) {
     if let Some(git) = &mut build.spec.source.git {
@@ -1081,6 +1082,35 @@ fn exposed_ports_reach_the_build_status_from_the_newest_success() {
 
     summarise(&mut status, &[ok, portless], "r/team-a/api", now(), Some(1));
     assert_eq!(status.exposed_ports, Vec::<String>::new());
+}
+
+#[test]
+fn the_plan_a_run_saved_stays_until_a_newer_one() {
+    let message = format!(
+        r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"],"planDigest":"{PLAN}"}}"#
+    );
+    let done = pod(
+        vec![container("fetch", terminated(0, None))],
+        vec![container("build", terminated(0, Some(&message)))],
+    );
+    let Observed::Finished(run_status) = observe(&job(Some(("Complete", ""))), Some(&done)) else {
+        panic!("finished expected")
+    };
+    let mut planned = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+    planned.status = Some(*run_status);
+    let mut replayed = run("api-2", B, Some(Phase::Succeeded), "2026-10-22T02:00:00Z");
+    if let Some(s) = replayed.status.as_mut() {
+        s.tags = vec!["main-2-aaaaaaa".to_owned()];
+        s.image_digest = Some(DIGEST.to_owned());
+    }
+
+    let mut status = BuildStatus::default();
+    summarise(&mut status, &[planned], "r/team-a/api", now(), Some(1));
+    let recorded = format!("r/team-a/api@{PLAN}");
+    assert_eq!(status.plan.as_deref(), Some(recorded.as_str()));
+
+    summarise(&mut status, &[replayed], "r/team-a/api", now(), Some(1));
+    assert_eq!(status.plan.as_deref(), Some(recorded.as_str()));
 }
 
 #[test]

@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use pretty_assertions::assert_eq;
 use zeabur_builder_api::build::{
-    ArchiveSource, BuildSpec, Concurrency, EnvVarSource, GitSource, SourceSpec, TriggerSpec,
+    ArchiveSource, BuildSpec, BuildStatus, Concurrency, EnvVarSource, GitSource, SourceSpec,
+    TriggerSpec,
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{FrontendSpec, ModelSpec, PlannerSpec};
@@ -255,7 +256,8 @@ fn railpack_with_secrets() {
 #[test]
 fn agent_with_a_model_key() {
     let run = build_run();
-    let build = build("https://github.com/acme/web", None, Vec::new());
+    let mut build = build("https://github.com/acme/web", None, Vec::new());
+    build.metadata.uid = Some("0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b".to_owned());
     let builder = agent();
     let tags = tags();
     let job = job(&inputs(
@@ -268,6 +270,52 @@ fn agent_with_a_model_key() {
     ))
     .unwrap();
     golden("agent", include_str!("../golden/agent.json"), &job);
+}
+
+#[test]
+fn only_a_run_with_a_recorded_plan_reads_the_registry_while_it_plans() {
+    let run = build_run();
+    let mut build = build("https://github.com/acme/web", None, Vec::new());
+    let builder = agent();
+    let tags = tags();
+    let plan_container = |build: &Build| {
+        let job = job(&inputs(
+            &run,
+            build,
+            "agent",
+            &builder,
+            &tags,
+            GitAuth::Anonymous,
+        ))
+        .unwrap();
+        let spec = job.spec.unwrap().template.spec.unwrap();
+        spec.init_containers
+            .unwrap()
+            .into_iter()
+            .find(|c| c.name == "plan")
+            .unwrap()
+    };
+    let reads_registry = |c: &Container| {
+        c.volume_mounts
+            .iter()
+            .flatten()
+            .any(|m| m.name == "registry-auth")
+    };
+
+    let first = plan_container(&build);
+    assert!(!first.args.iter().flatten().any(|a| a == "--previous-plan"));
+    assert!(!reads_registry(&first));
+
+    let recorded = "registry.example.com/team-a/web@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    build.status = Some(BuildStatus {
+        plan: Some(recorded.to_owned()),
+        ..BuildStatus::default()
+    });
+    let replay = plan_container(&build);
+    let args = replay.args.clone().unwrap();
+    let at = args.iter().position(|a| a == "--previous-plan").unwrap();
+    assert_eq!(args.get(at + 1).map(String::as_str), Some(recorded));
+    assert!(reads_registry(&replay));
 }
 
 #[test]

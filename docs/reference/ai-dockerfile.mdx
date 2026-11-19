@@ -96,7 +96,7 @@ For the builder, see [Create your first Build](../get-started/first-build.mdx).
 
 ## Reuse the result next time
 
-If you did not commit the Dockerfile, pass the last output folder with `--previous` next time. The folder must hold `Dockerfile` and `Dockerfile.dockerignore`:
+If you did not commit the Dockerfile, pass the last output folder with `--previous` next time. The folder must hold `Dockerfile` and `Dockerfile.dockerignore`; its `info.json` brings back the `details`:
 
 ```sh
 zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
@@ -224,7 +224,7 @@ The `info.json` of the same run:
 | Field | Content |
 | --- | --- |
 | `source` | `repository` for the repository's Dockerfile, `previous` for the last result, `agent` when the model wrote it. |
-| `details` | When the model wrote the Dockerfile: `port`, `language`, `version`, `versionSource`, `buildVariables`, `runtimeVariables` and `notes`. |
+| `details` | When the model wrote the Dockerfile, in this run or for the `--previous` result: `port`, `language`, `version`, `versionSource`, `buildVariables`, `runtimeVariables` and `notes`. |
 | `reason`, `detail` | Why the tool stopped, and what to check. |
 | `modelCalled` | Whether the model was called. |
 | `inputTokens`, `outputTokens` | How many tokens the model read and wrote. |

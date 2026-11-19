@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch-archive` |
 //! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile` |
-//! | `build` | job image | `zeabur-builder-job -- buildctl build …` |
+//! | `build` | job image | `zeabur-builder-job -- buildctl build …`; for `agent`, then the plan image (`--save-plan`) |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
 //! Dockerfile build `FROM` it that makes it run as a non-root user and pushes the tags
@@ -52,7 +52,7 @@ use zeabur_builder_api::cluster_builder::{
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::repo::{RepoKey, RepoUrlError};
 use zeabur_builder_core::result::is_digest;
-use zeabur_builder_core::{archive, is_commit_sha};
+use zeabur_builder_core::{archive, is_commit_sha, plan};
 
 /// The user the Pod runs as; `moby/buildkit` would otherwise run as root.
 pub const RUN_AS: i64 = 1000;
@@ -462,7 +462,8 @@ fn railpack_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Containe
 
 /// `zeabur-builder-agent`, which trial-builds on the namespace's buildkitd and writes the
 /// Dockerfile into `/workspace/plan`, with the model API key from the namespace's Secret in
-/// `ZB_MODEL_API_KEY`.
+/// `ZB_MODEL_API_KEY`. When `Build.status.plan` names a plan image, it pulls it with the run's
+/// registry credentials and builds it before it calls the model.
 fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Container, JobError> {
     let model = planner
         .model
@@ -488,6 +489,25 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
     }
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
+    let mut env_vars = vec![env("HOME", "/tmp")];
+    let previous = inputs.build.status.as_ref().and_then(|s| s.plan.as_deref());
+    if let Some(previous) = previous {
+        args.extend(["--previous-plan".to_owned(), literal(previous)]);
+        mounts.push(mount("registry-auth", REGISTRY_AUTH));
+        env_vars.push(env("DOCKER_CONFIG", REGISTRY_AUTH));
+    }
+    env_vars.push(EnvVar {
+        name: "ZB_MODEL_API_KEY".to_owned(),
+        value: None,
+        value_from: Some(EnvVarSource {
+            secret_key_ref: Some(SecretKeySelector {
+                name: model.api_key_secret.name.clone(),
+                key: model.api_key_secret.key.clone(),
+                optional: Some(false),
+            }),
+            ..EnvVarSource::default()
+        }),
+    });
     Ok(Container {
         name: "plan".to_owned(),
         image: Some(planner.image.clone()),
@@ -498,21 +518,7 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
             "plan".to_owned(),
         ]),
         args: Some(args),
-        env: Some(vec![
-            env("HOME", "/tmp"),
-            EnvVar {
-                name: "ZB_MODEL_API_KEY".to_owned(),
-                value: None,
-                value_from: Some(EnvVarSource {
-                    secret_key_ref: Some(SecretKeySelector {
-                        name: model.api_key_secret.name.clone(),
-                        key: model.api_key_secret.key.clone(),
-                        optional: Some(false),
-                    }),
-                    ..EnvVarSource::default()
-                }),
-            },
-        ]),
+        env: Some(env_vars),
         volume_mounts: Some(mounts),
         termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
         ..hardened()
@@ -553,6 +559,10 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
     if non_root {
         wrapper.push("--then".to_owned());
         wrapper.extend(non_root_build(inputs, repo).iter().map(|arg| literal(arg)));
+    }
+    if let Some(save) = save_plan_build(inputs, repo) {
+        wrapper.push("--save-plan".to_owned());
+        wrapper.extend(save.iter().map(|arg| literal(arg)));
     }
 
     let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
@@ -615,6 +625,28 @@ fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String>
     ]);
     buildctl.extend(output(inputs, repo, &tagged(inputs), false));
     buildctl
+}
+
+/// The push of an `agent` run's plan image ([`zeabur_builder_core::plan`]) from the files in
+/// `/workspace/plan` and the Dockerfile `zeabur-builder-job --save-plan` writes, tagged for the
+/// `Build`.
+fn save_plan_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Option<Vec<String>> {
+    if inputs.builder.kind != BuilderType::Agent {
+        return None;
+    }
+    let uid = inputs.build.metadata.uid.as_deref()?;
+    let name = format!("{}:{}", inputs.image, plan::saved_tag(uid));
+    let mut buildctl = buildctl(inputs, &format!("{OUT}/plan-metadata.json"));
+    buildctl.extend([
+        "--frontend".to_owned(),
+        "dockerfile.v0".to_owned(),
+        "--local".to_owned(),
+        format!("context={PLAN}"),
+        "--local".to_owned(),
+        format!("dockerfile={PLAN}/saved"),
+    ]);
+    buildctl.extend(output(inputs, repo, &[name], false));
+    Some(buildctl)
 }
 
 /// `--frontend`, the plan's location and the frontend options.

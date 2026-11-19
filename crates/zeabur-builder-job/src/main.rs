@@ -1,7 +1,7 @@
 //! `zeabur-builder-job`: the build container's entry point.
 //!
 //! ```text
-//! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …]
+//! zeabur-builder-job [--plain-http] [--secrets-hash-env NAME]… [--non-root DIR] -- buildctl … build … [--then buildctl … build …] [--save-plan buildctl … build …]
 //! zeabur-builder-job fetch-archive [--plain-http] <repository> <digest> <dir>
 //! ```
 //!
@@ -27,6 +27,12 @@
 //! `--non-root DIR` makes a Railpack image run as a non-root user
 //! ([`zeabur_builder_core::railpack`]): it rewrites `DIR/railpack-plan.json` and writes the second
 //! build's `DIR/non-root/Dockerfile`.
+//!
+//! The command after `--save-plan` pushes the plan image of an `agent` run
+//! ([`zeabur_builder_core::plan`]): after a success, when `/workspace/plan/info.json` says the
+//! agent wrote the Dockerfile in this run, it writes `/workspace/plan/saved/Dockerfile` and runs
+//! the command, and the result reports the digest as `planDigest`. Failing to push it does not fail
+//! the build; the next run calls the model again.
 
 mod progress;
 mod registry;
@@ -40,6 +46,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncBufReadExt as _;
 use zeabur_builder_core::archive::MAX_UNPACKED_BYTES;
+use zeabur_builder_core::plan::{Info, SAVED_DOCKERFILE, Source};
 use zeabur_builder_core::progress::{CacheCounter, StepLog};
 use zeabur_builder_core::railpack;
 use zeabur_builder_core::result::{BuildResult, FailureReason, Outcome, PlanSource};
@@ -59,6 +66,7 @@ struct Args {
     secrets_hash_env: Vec<String>,
     non_root: Option<String>,
     commands: Vec<Vec<String>>,
+    save_plan: Option<Vec<String>>,
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
@@ -82,6 +90,15 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         }
     }
     let rest: Vec<String> = rest.cloned().collect();
+    let at = rest
+        .iter()
+        .position(|arg| arg == "--save-plan")
+        .unwrap_or(rest.len());
+    let (rest, save) = rest.split_at(at);
+    let save_plan = save.split_first().map(|(_, command)| command.to_vec());
+    if save_plan.as_ref().is_some_and(Vec::is_empty) {
+        return Err("missing a command after `--save-plan`".to_owned());
+    }
     let commands: Vec<Vec<String>> = rest
         .split(|arg| arg == "--then")
         .map(<[String]>::to_vec)
@@ -94,6 +111,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         secrets_hash_env,
         non_root,
         commands,
+        save_plan,
     })
 }
 
@@ -359,6 +377,15 @@ async fn run(args: &Args) -> BuildResult {
                     )),
                 }
             }
+            if let Some(command) = &args.save_plan {
+                match save_plan(command).await {
+                    Ok(digest) => result.plan_digest = digest,
+                    Err(e) => drop(writeln!(
+                        std::io::stderr().lock(),
+                        "cannot push the plan image: {e}"
+                    )),
+                }
+            }
         }
         (Ok(()), None) => {
             result.reason = Some(FailureReason::BuildFailed);
@@ -370,6 +397,30 @@ async fn run(args: &Args) -> BuildResult {
         }
     }
     result
+}
+
+/// Pushes the plan image with `command` when the agent wrote the Dockerfile in this run, and
+/// returns its digest.
+async fn save_plan(command: &[String]) -> Result<Option<String>, String> {
+    let path = format!("{PLAN}/info.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let info = Info::decode(&text).map_err(|e| format!("cannot parse {path}: {e}"))?;
+    if info.source != Some(Source::Agent) {
+        return Ok(None);
+    }
+    let dir = format!("{PLAN}/saved");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {dir}: {e}"))?;
+    std::fs::write(format!("{dir}/Dockerfile"), SAVED_DOCKERFILE)
+        .map_err(|e| format!("cannot write {dir}/Dockerfile: {e}"))?;
+    let digest = build(
+        command,
+        &mut progress::Renderer::default(),
+        &mut CacheCounter::default(),
+        &mut StepLog::default(),
+    )
+    .await
+    .map_err(|(_, message)| message)?;
+    Ok(Some(digest))
 }
 
 /// `command` with [`DIGEST`] replaced by the previous command's digest.
@@ -495,6 +546,7 @@ mod tests {
                 secrets_hash_env: strings(&["ZB_SECRET_A"]),
                 non_root: None,
                 commands: vec![strings(&["buildctl", "build"])],
+                save_plan: None,
             })
         );
         assert_eq!(
@@ -523,8 +575,35 @@ mod tests {
                         "context:app=docker-image://r/a@{digest}"
                     ]),
                 ],
+                save_plan: None,
             })
         );
+        assert_eq!(
+            parse_args(&strings(&[
+                "--",
+                "buildctl",
+                "build",
+                "--save-plan",
+                "buildctl",
+                "build",
+                "--local",
+                "context=/workspace/plan",
+            ])),
+            Ok(Args {
+                plain_http: false,
+                secrets_hash_env: Vec::new(),
+                non_root: None,
+                commands: vec![strings(&["buildctl", "build"])],
+                save_plan: Some(strings(&[
+                    "buildctl",
+                    "build",
+                    "--local",
+                    "context=/workspace/plan"
+                ])),
+            })
+        );
+        assert!(parse_args(&strings(&["--", "buildctl", "--save-plan"])).is_err());
+        assert!(parse_args(&strings(&["--", "--save-plan", "buildctl"])).is_err());
         assert!(parse_args(&strings(&["buildctl"])).is_err());
         assert!(parse_args(&strings(&["--"])).is_err());
         assert!(parse_args(&strings(&["--secrets-hash-env"])).is_err());

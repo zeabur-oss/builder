@@ -4,10 +4,29 @@
 //! termination message, where the controller reads it into `BuildRun.status.plan`. The kubelet
 //! keeps at most [`MAX_MESSAGE_BYTES`] of a termination message, so [`Info::encode`] cuts the
 //! free text until it fits.
+//!
+//! After a run whose agent wrote the Dockerfile builds and pushes its image, the build step pushes
+//! the plan as an image of its own ([`SAVED_DOCKERFILE`], tagged [`saved_tag`]) and reports its
+//! digest. The controller records it in `Build.status.plan`, and the next run builds that plan
+//! before it calls the model.
 
 use serde::{Deserialize, Serialize};
 
 use crate::result::{MAX_DETAIL_BYTES, MAX_MESSAGE_BYTES, truncate};
+
+/// The Dockerfile of a plan image: the files a later run needs to build the plan again and to
+/// report its details.
+pub const SAVED_DOCKERFILE: &str =
+    "FROM scratch\nCOPY Dockerfile Dockerfile.dockerignore info.json /\n";
+
+/// The tag of a `Build`'s plan image, beside its images.
+///
+/// Runs pull the image by digest; the tag only keeps it from the registry's garbage collection.
+/// One tag per `Build`, so `Build`s that push to one repository do not replace each other's plan.
+#[must_use]
+pub fn saved_tag(build_uid: &str) -> String {
+    format!("zeabur-plan-{build_uid}")
+}
 
 /// Where a Dockerfile came from, in the order a run tries them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +34,7 @@ use crate::result::{MAX_DETAIL_BYTES, MAX_MESSAGE_BYTES, truncate};
 pub enum Source {
     /// The repository has one; it is used as is.
     Repository,
-    /// The last plan of this service built again.
+    /// The plan an earlier run recorded, built again.
     Previous,
     /// The agent wrote it in this run.
     Agent,
@@ -78,7 +97,7 @@ pub struct Info {
     /// Where the Dockerfile came from, when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,
-    /// What the agent reported, when it wrote the Dockerfile.
+    /// What the agent reported when it wrote the Dockerfile, in this run or the earlier one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Details>,
     /// Why the run stopped, when it has no plan.

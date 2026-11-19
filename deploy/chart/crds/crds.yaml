@@ -933,6 +933,12 @@
                     "nullable": true,
                     "type": "integer"
                   },
+                  "plan": {
+                    "description": "The plan image of the last Dockerfile the `agent` builder wrote that built,\n`<repository>@<digest>`. Runs build it before they call the model.",
+                    "maxLength": 1024,
+                    "nullable": true,
+                    "type": "string"
+                  },
                   "remoteRevision": {
                     "description": "The commit the ref points at, or the archive's digest.",
                     "maxLength": 71,
@@ -1442,7 +1448,7 @@
                     "type": "object"
                   },
                   "planDigest": {
-                    "description": "The plan used.",
+                    "description": "The plan image this run pushed, when the `agent` builder wrote a new Dockerfile.",
                     "maxLength": 71,
                     "nullable": true,
                     "pattern": "^sha256:[0-9a-f]{64}$",

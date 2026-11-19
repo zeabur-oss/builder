@@ -96,7 +96,7 @@ cp ./plan/Dockerfile ./plan/Dockerfile.dockerignore ./my-app/
 
 ## 下次沿用结果
 
-如果没有把 Dockerfile 提交进仓库，下次可以用 `--previous` 指定上次运行的输出目录，目录里要有 `Dockerfile` 和 `Dockerfile.dockerignore`：
+如果没有把 Dockerfile 提交进仓库，下次可以用 `--previous` 指定上次运行的输出目录，目录里要有 `Dockerfile` 和 `Dockerfile.dockerignore`，有 `info.json` 的话也会带回 `details`：
 
 ```sh
 zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
@@ -224,7 +224,7 @@ CMD ["node", "server.js"]
 | 字段 | 内容 |
 | --- | --- |
 | `source` | `repository` 表示用了仓库的 Dockerfile，`previous` 表示沿用上一份结果，`agent` 表示由模型编写。 |
-| `details` | 模型编写 Dockerfile 时附带的 `port`、`language`、`version`、`versionSource`、`buildVariables`、`runtimeVariables`、`notes`。 |
+| `details` | `port`、`language`、`version`、`versionSource`、`buildVariables`、`runtimeVariables`、`notes`。模型编写 Dockerfile 时会附带，沿用 `--previous` 的结果时也会带回。 |
 | `reason`、`detail` | 工具停止的原因和要检查的内容。 |
 | `modelCalled` | 是否调用过模型。 |
 | `inputTokens`、`outputTokens` | 模型输入和输出的 token 数。 |

@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -78,8 +78,8 @@ pub(crate) struct Buildctl {
 }
 
 impl Buildctl {
-    /// The `buildctl` arguments of one attempt.
-    fn args(&self) -> Vec<String> {
+    /// `--addr`, `--tlsdir` and `build` of the bundled Dockerfile frontend, with `progress`.
+    fn build_args(&self, progress: &str, context: &Path, dockerfile: &Path) -> Vec<String> {
         let mut args = vec!["--addr".to_owned(), self.addr.clone()];
         if let Some(tlsdir) = &self.tlsdir {
             args.extend(["--tlsdir".to_owned(), tlsdir.display().to_string()]);
@@ -88,7 +88,7 @@ impl Buildctl {
             [
                 "build",
                 "--progress",
-                "rawjson",
+                progress,
                 "--frontend",
                 "dockerfile.v0",
                 "--opt",
@@ -100,13 +100,61 @@ impl Buildctl {
         );
         args.extend([
             "--local".to_owned(),
-            format!("context={}", self.context.display()),
+            format!("context={}", context.display()),
             "--local".to_owned(),
-            format!("dockerfile={}", self.work.display()),
+            format!("dockerfile={}", dockerfile.display()),
+        ]);
+        args
+    }
+
+    /// The `buildctl` arguments of one attempt.
+    fn args(&self) -> Vec<String> {
+        let mut args = self.build_args("rawjson", &self.context, &self.work);
+        args.extend([
             "--source-policy-file".to_owned(),
             self.work.join("policy.json").display().to_string(),
         ]);
         args
+    }
+
+    /// Copies the files of the plan image `image` into `dest`.
+    pub(crate) async fn pull_plan(
+        &self,
+        image: &str,
+        work: &Path,
+        dest: &Path,
+    ) -> Result<(), String> {
+        write_file(&work.join("Dockerfile"), &format!("FROM {image}\n")).await?;
+        let mut args = self.build_args("plain", work, work);
+        args.extend([
+            "--output".to_owned(),
+            format!("type=local,dest={}", dest.display()),
+        ]);
+        self.run(args).await
+    }
+
+    /// Runs `buildctl` with `args`; on a failure, the last line of its output is the error.
+    async fn run(&self, args: Vec<String>) -> Result<(), String> {
+        let output = Command::new("buildctl")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output();
+        match tokio::time::timeout(self.timeout, output).await {
+            Ok(Ok(output)) if output.status.success() => Ok(()),
+            Ok(Ok(output)) => {
+                let text = String::from_utf8_lossy(&output.stderr);
+                let last = text.lines().rfind(|line| !line.trim().is_empty());
+                Err(last.unwrap_or("buildctl failed").trim().to_owned())
+            }
+            Ok(Err(e)) => Err(format!("cannot run buildctl: {e}")),
+            Err(_) => Err(format!(
+                "buildctl took longer than {} s and was stopped",
+                self.timeout.as_secs()
+            )),
+        }
     }
 
     async fn write(&self, dockerfile: &str, rules: &str) -> std::io::Result<()> {
@@ -169,6 +217,17 @@ impl TrialBuild for Buildctl {
             }
         }
     }
+}
+
+async fn write_file(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    tokio::fs::write(path, text)
+        .await
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 fn failed(summary: String) -> Attempt {

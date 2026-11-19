@@ -1102,6 +1102,9 @@ pub(crate) fn summarise(
             status.latest_image = Some(format!("{image}:{tag}@{digest}"));
         }
         status.exposed_ports = run_status.exposed_ports;
+        if let Some(digest) = run_status.plan_digest {
+            status.plan = Some(format!("{image}@{digest}"));
+        }
     }
     status.last_build_run_ref = runs
         .iter()
@@ -1314,7 +1317,7 @@ fn from_result(result: BuildResult) -> Observed {
         message: (!result.message.is_empty()).then_some(result.message),
         tags: result.tags,
         image_digest: result.digest,
-        plan_digest: result.plan_digest,
+        plan_digest: result.plan_digest.filter(|d| result::is_digest(d)),
         plan_source: result.plan_source.map(|p| match p {
             result::PlanSource::Generated => PlanSource::Generated,
             result::PlanSource::None => PlanSource::None,

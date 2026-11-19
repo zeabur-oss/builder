@@ -383,6 +383,11 @@ pub struct BuildStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 1024))]
     pub latest_image: Option<String>,
+    /// The plan image of the last Dockerfile the `agent` builder wrote that built,
+    /// `<repository>@<digest>`. Runs build it before they call the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 1024))]
+    pub plan: Option<String>,
     /// The revision the controller last created a `BuildRun` for. Deleting that run does not
     /// build the revision again.
     #[serde(default, skip_serializing_if = "Option::is_none")]

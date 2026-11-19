@@ -50,7 +50,7 @@ pub struct BuildResult {
     /// The tags pushed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// The plan's digest, when a planner ran.
+    /// The plan image pushed after the build, when the `agent` builder wrote a new Dockerfile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_digest: Option<String>,
     /// Where the plan came from.
