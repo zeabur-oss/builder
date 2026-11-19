@@ -1,6 +1,6 @@
 # Zeabur Builder: the controller, the shared config and egress policy of each namespace's
-# buildkitd, and the `dockerfile` and `railpack` ClusterBuilders. Helm installs the CRDs in crds/
-# on the first install only; on an upgrade, apply crds/crds.yaml first.
+# buildkitd, and the `dockerfile`, `railpack` and optional `agent` ClusterBuilders. Helm installs
+# the CRDs in crds/ on the first install only; on an upgrade, apply crds/crds.yaml first.
 
 image:
   # Published for linux/amd64 and linux/arm64 by the release workflow, signed.
@@ -26,6 +26,21 @@ railpackImage:
 
 # The Railpack frontend. Its version must match the railpack in railpackImage.
 railpackFrontend: ghcr.io/railwayapp/railpack-frontend:v0.43.0
+
+# The `agent` ClusterBuilder: a model writes the Dockerfile for a repository that has none. Its
+# planner runs from jobImage. Each Build's namespace needs the Secret apiKeySecret names.
+agent:
+  enabled: false
+  # A provider name of the Rig library, such as anthropic or openai.
+  provider: ""
+  # The provider's model name.
+  model: ""
+  # Another endpoint of the same API, such as a proxy. Empty: the provider's own.
+  baseUrl: ""
+  # The Secret, in each Build's namespace, with the model API key.
+  apiKeySecret:
+    name: ""
+    key: ""
 
 # Each namespace's buildkitd, rootful. The admission policy below allows only this image.
 buildkitdImage: docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe

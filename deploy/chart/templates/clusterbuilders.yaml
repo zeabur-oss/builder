@@ -1,4 +1,4 @@
-# The two builders Zeabur offers. Builds name them in spec.builderRef.
+# The builders Zeabur offers. Builds name them in spec.builderRef.
 apiVersion: builder.zeabur.com/v1alpha1
 kind: ClusterBuilder
 metadata:
@@ -20,3 +20,29 @@ spec:
   frontend:
     type: gateway.v0
     source: {{ .Values.railpackFrontend | quote }}
+{{- with .Values.agent }}
+{{- if .enabled }}
+---
+apiVersion: builder.zeabur.com/v1alpha1
+kind: ClusterBuilder
+metadata:
+  name: agent
+  labels: {{- include "builder.labels" $ | nindent 4 }}
+spec:
+  type: agent
+  planner:
+    image: {{ include "builder.image" (list $.Values.jobImage $.Chart) | quote }}
+    # The agent stops itself after 20 minutes.
+    timeout: 25m
+    model:
+      provider: {{ required "agent.provider is required" .provider | quote }}
+      model: {{ required "agent.model is required" .model | quote }}
+      {{- with .baseUrl }}
+      baseUrl: {{ . | quote }}
+      {{- end }}
+      apiKeySecret:
+        name: {{ required "agent.apiKeySecret.name is required" .apiKeySecret.name | quote }}
+        key: {{ required "agent.apiKeySecret.key is required" .apiKeySecret.key | quote }}
+  frontend: {type: dockerfile.v0}
+{{- end }}
+{{- end }}
