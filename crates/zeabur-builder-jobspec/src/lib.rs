@@ -6,7 +6,7 @@
 //! | container | image | does |
 //! |---|---|---|
 //! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch archive` |
-//! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the run reuses a saved plan (`BuildRun.spec.plan`), the job image's `zeabur-builder-job plan restore` unpacks it there instead |
+//! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the controller hands it a saved plan (`JobInputs::saved_plan`), the job image's `zeabur-builder-job plan restore` unpacks it there instead |
 //! | `build` | job image | `zeabur-builder-job build --build buildctl build …`; after a planner ran, it pushes `/workspace/plan` as the plan artifact (`--save-plan`) |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
@@ -171,6 +171,9 @@ pub struct JobInputs<'a> {
     pub placement: &'a Placement,
     /// The memory of each container.
     pub memory: &'a JobMemory,
+    /// The digest of the saved plan in `image` the Job restores instead of running the planner.
+    /// The controller passes it when `Build.status.plan` names this builder and `image`.
+    pub saved_plan: Option<&'a str>,
 }
 
 /// Why a Job cannot be built.
@@ -239,7 +242,7 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
         (labels::BUILDER.to_owned(), inputs.builder_name.to_owned()),
         (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
     ]);
-    let annotations = BTreeMap::from([(annotations::REVISION.to_owned(), revision.clone())]);
+    let annotations = job_annotations(inputs, revision);
 
     let fetch = source.git.as_ref().map_or_else(
         || archive_container(inputs, namespace),
@@ -415,6 +418,19 @@ echo "{\"plan\":$(( $(date +%s) - start ))}" > /workspace/out/plan.json
 exit "$code"
 "#;
 
+/// The Job's and Pod's annotations: the commit, and what the controller reads back when the run
+/// finishes (the repository and any saved plan the Job restores).
+fn job_annotations(inputs: &JobInputs<'_>, revision: &str) -> BTreeMap<String, String> {
+    let mut found = BTreeMap::from([
+        (annotations::REVISION.to_owned(), revision.to_owned()),
+        (annotations::IMAGE.to_owned(), inputs.image.to_owned()),
+    ]);
+    if let Some(digest) = reused_plan(inputs) {
+        found.insert(annotations::SAVED_PLAN.to_owned(), digest.to_owned());
+    }
+    found
+}
+
 fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError> {
     let builder = inputs.builder;
     match (builder.kind, &builder.planner) {
@@ -431,23 +447,19 @@ fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError>
     }
 }
 
-/// The digest of the saved plan the run builds with instead of running its planner
-/// (`BuildRun.spec.plan`).
+/// The digest of the saved plan the Job builds with instead of running its planner.
 fn reused_plan<'a>(inputs: &JobInputs<'a>) -> Option<&'a str> {
     match inputs.builder.kind {
         BuilderType::Dockerfile => None,
-        BuilderType::Railpack | BuilderType::Agent => inputs
-            .build_run
-            .spec
-            .plan
-            .as_deref()
-            .filter(|digest| is_digest(digest)),
+        BuilderType::Railpack | BuilderType::Agent => {
+            inputs.saved_plan.filter(|digest| is_digest(digest))
+        }
     }
 }
 
 /// `zeabur-builder-job plan restore`, which unpacks the saved plan into `/workspace/plan`, with
-/// the run's push credentials. Only the digest comes from the run; the repository is the
-/// `Build`'s own, so a run never reads another repository with them.
+/// the run's push credentials. Only the digest comes from the saved plan; the repository is the
+/// one the Job pushes to, so a run never reads another repository with them.
 fn restore_container(inputs: &JobInputs<'_>) -> Container {
     let mut command = vec![
         "zeabur-builder-job".to_owned(),

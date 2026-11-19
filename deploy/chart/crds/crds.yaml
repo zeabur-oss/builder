@@ -1105,13 +1105,6 @@
                     "minLength": 1,
                     "type": "string"
                   },
-                  "plan": {
-                    "description": "The digest of the saved plan the run builds with, in the `Build`'s own repository. The\ncontroller sets it from `Build.status.plan`, unless the `Build` asks to plan again\n(`builder.zeabur.com/plan: fresh`). Without it, the planner runs.",
-                    "maxLength": 71,
-                    "nullable": true,
-                    "pattern": "^sha256:[0-9a-f]{64}$",
-                    "type": "string"
-                  },
                   "ref": {
                     "description": "The full name of the ref `revision` was resolved from, such as `refs/heads/master`.",
                     "maxLength": 1024,
@@ -1161,7 +1154,7 @@
                     "type": "array"
                   },
                   "builder": {
-                    "description": "The `ClusterBuilder` the Job builds with, set once the run is admitted.",
+                    "description": "The `ClusterBuilder` the Job built with, read from the Job when the run finishes.",
                     "maxLength": 253,
                     "nullable": true,
                     "type": "string"
@@ -1319,7 +1312,7 @@
                     "type": "object"
                   },
                   "image": {
-                    "description": "The repository the Job pushes the image and the plan to, set once the run is admitted.",
+                    "description": "The repository the Job pushed the image and the plan to, read from the Job when the run\nfinishes.",
                     "maxLength": 1024,
                     "nullable": true,
                     "type": "string"
@@ -1482,7 +1475,7 @@
                     "type": "object"
                   },
                   "planDigest": {
-                    "description": "The plan artifact this run's planner wrote in `image`, when the builder has a planner and\nthe run did not reuse a saved plan.",
+                    "description": "The plan artifact in `image` the run built with: the one its planner wrote, or the saved\none it restored (`planSource`).",
                     "maxLength": 71,
                     "nullable": true,
                     "pattern": "^sha256:[0-9a-f]{64}$",
@@ -1492,6 +1485,7 @@
                     "description": "Where a plan came from.",
                     "enum": [
                       "generated",
+                      "saved",
                       "none"
                     ],
                     "nullable": true,

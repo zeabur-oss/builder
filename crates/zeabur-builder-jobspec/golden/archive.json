@@ -3,6 +3,7 @@
   "kind": "Job",
   "metadata": {
     "annotations": {
+      "builder.zeabur.com/image": "registry.internal/team-a/api",
       "builder.zeabur.com/revision": "sha256:5d2a8f1c0b9e7d6a4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d"
     },
     "labels": {
@@ -30,6 +31,7 @@
     "template": {
       "metadata": {
         "annotations": {
+          "builder.zeabur.com/image": "registry.internal/team-a/api",
           "builder.zeabur.com/revision": "sha256:5d2a8f1c0b9e7d6a4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d"
         },
         "labels": {

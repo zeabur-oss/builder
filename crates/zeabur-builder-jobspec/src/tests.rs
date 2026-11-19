@@ -80,7 +80,6 @@ fn build_run() -> BuildRun {
             revision: SHA.to_owned(),
             git_ref: None,
             trigger: Some(Trigger::Webhook),
-            plan: None,
         },
     );
     run.metadata.namespace = Some("team-a".to_owned());
@@ -169,6 +168,7 @@ fn inputs<'a>(
         ttl_seconds: 600,
         placement: &NOWHERE,
         memory: &MEMORY,
+        saved_plan: None,
     }
 }
 
@@ -276,23 +276,20 @@ fn agent_with_a_model_key() {
 
 #[test]
 fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning() {
-    let mut run = build_run();
+    let run = build_run();
     let mut build = build("https://github.com/acme/web", None, Vec::new());
     build.metadata.uid = Some(UID.to_owned());
     let builder = agent();
     let tags = tags();
-    let pod = |run: &BuildRun| {
-        let job = job(&inputs(
-            run,
-            &build,
-            "agent",
-            &builder,
-            &tags,
-            GitAuth::Anonymous,
-        ))
-        .unwrap();
-        job.spec.unwrap().template.spec.unwrap()
+    let job_with = |saved_plan: Option<&str>| {
+        job(&JobInputs {
+            saved_plan,
+            ..inputs(&run, &build, "agent", &builder, &tags, GitAuth::Anonymous)
+        })
+        .unwrap()
     };
+    let annotation = |job: &Job, key: &str| job.metadata.annotations.as_ref()?.get(key).cloned();
+    let pod = |job: Job| job.spec.unwrap().template.spec.unwrap();
     let plan_of = |spec: &PodSpec| {
         spec.init_containers
             .iter()
@@ -319,7 +316,13 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
             })
     };
 
-    let fresh = pod(&run);
+    let fresh_job = job_with(None);
+    assert_eq!(
+        annotation(&fresh_job, annotations::IMAGE).as_deref(),
+        Some("registry.internal/team-a/api")
+    );
+    assert_eq!(annotation(&fresh_job, annotations::SAVED_PLAN), None);
+    let fresh = pod(fresh_job);
     let planner = plan_of(&fresh);
     assert_eq!(
         planner.image.as_deref(),
@@ -329,8 +332,12 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
     assert!(saves(&fresh));
 
     let digest = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
-    run.spec.plan = Some(digest.to_owned());
-    let reused = pod(&run);
+    let reused_job = job_with(Some(digest));
+    assert_eq!(
+        annotation(&reused_job, annotations::SAVED_PLAN).as_deref(),
+        Some(digest)
+    );
+    let reused = pod(reused_job);
     let restore = plan_of(&reused);
     assert_eq!(
         restore.command.as_deref().unwrap(),

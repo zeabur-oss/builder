@@ -65,7 +65,6 @@ fn run(name: &str, revision: &str, phase: Option<Phase>, at: &str) -> BuildRun {
             revision: revision.to_owned(),
             git_ref: None,
             trigger: None,
-            plan: None,
         },
     );
     run.metadata.creation_timestamp = Some(Time(at.parse().unwrap()));
@@ -1130,16 +1129,39 @@ fn the_plan_a_run_saved_stays_until_a_newer_one() {
     assert_eq!(status.plan, recorded);
 }
 
-/// A `Build` that moves to another builder or repository after a run planned keeps the plan
-/// named for the builder and repository that run used, so the next run does not reuse it.
-#[test]
-fn a_saved_plan_names_the_builder_and_repository_of_its_run() {
-    let mut planned = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
-    if let Some(s) = planned.status.as_mut() {
-        s.builder = Some("agent".to_owned());
-        s.image = Some("r/team-a/old".to_owned());
-        s.plan_digest = Some(PLAN.to_owned());
+/// The Job a run's status comes from: built by `builder`, pushing to `image`, restoring
+/// `saved_plan` when there is one.
+fn job_of(builder: &str, image: &str, saved_plan: Option<&str>) -> Job {
+    let mut annotations = BTreeMap::from([(annotations::IMAGE.to_owned(), image.to_owned())]);
+    if let Some(digest) = saved_plan {
+        annotations.insert(annotations::SAVED_PLAN.to_owned(), digest.to_owned());
     }
+    Job {
+        metadata: ObjectMeta {
+            labels: Some(BTreeMap::from([(
+                labels::BUILDER.to_owned(),
+                builder.to_owned(),
+            )])),
+            annotations: Some(annotations),
+            ..ObjectMeta::default()
+        },
+        ..job(Some(("Complete", "")))
+    }
+}
+
+/// A `Build` that moves to another builder or repository after a run planned keeps the plan
+/// named for the builder and repository of that run's Job, so the next run does not reuse it.
+/// The Job is read when the run finishes, so a Job adopted after a restart counts too.
+#[test]
+fn a_saved_plan_names_the_builder_and_repository_of_its_job() {
+    let mut planned = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+    let finished = BuildRunStatus {
+        phase: Some(Phase::Succeeded),
+        plan_source: Some(PlanSource::Generated),
+        plan_digest: Some(PLAN.to_owned()),
+        ..BuildRunStatus::default()
+    };
+    planned.status = Some(from_job(finished, &job_of("agent", "r/team-a/old", None)));
     let mut status = BuildStatus::default();
     summarise(&mut status, &[planned], now(), Some(1));
     let saved = SavedPlan {
@@ -1258,12 +1280,24 @@ fn only_a_run_that_plans_needs_the_model_key() {
             api_key_secret: secret_ref.clone(),
         }),
     });
-    let mut planning = run("api-1", A, None, "2026-10-22T01:00:00Z");
-    assert_eq!(model_key_ref(&agent, &planning), Some(&secret_ref));
-    assert_eq!(model_key_ref(&cluster_builder(1).spec, &planning), None);
+    assert_eq!(model_key_ref(&agent, false), Some(&secret_ref));
+    assert_eq!(model_key_ref(&cluster_builder(1).spec, false), None);
+    assert_eq!(model_key_ref(&agent, true), None);
+}
 
-    planning.spec.plan = Some(PLAN.to_owned());
-    assert_eq!(model_key_ref(&agent, &planning), None);
+/// A run whose Job restored a saved plan reports that plan as its own, with `planSource: saved`.
+#[test]
+fn a_restored_run_reports_the_saved_plan() {
+    let finished = BuildRunStatus {
+        phase: Some(Phase::Succeeded),
+        plan_source: Some(PlanSource::Generated),
+        ..BuildRunStatus::default()
+    };
+    let status = from_job(finished, &job_of("agent", "r/team-a/api", Some(PLAN)));
+    assert_eq!(status.plan_source, Some(PlanSource::Saved));
+    assert_eq!(status.plan_digest.as_deref(), Some(PLAN));
+    assert_eq!(status.builder.as_deref(), Some("agent"));
+    assert_eq!(status.image.as_deref(), Some("r/team-a/api"));
 }
 
 #[test]

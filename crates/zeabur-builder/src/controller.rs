@@ -506,15 +506,8 @@ async fn reconcile_build(build: Arc<Build>, ctx: Arc<Context>) -> Result<Action,
             cancel_run(&ctx, &build, cancel).await?;
         }
         if let Some(trigger) = next.create {
-            let run = create_run(
-                &ctx,
-                &runs_api,
-                &build,
-                sha,
-                status.resolved_ref.clone(),
-                trigger,
-            )
-            .await?;
+            let run =
+                create_run(&runs_api, &build, sha, status.resolved_ref.clone(), trigger).await?;
             status.last_run_revision = Some(sha.clone());
             tracing::info!(build = %name, namespace = %namespace, buildrun = %run.name_any(), revision = %sha, ?trigger, "new run");
             if !runs.iter().any(|r| r.metadata.name == run.metadata.name) {
@@ -735,7 +728,6 @@ fn not_found(e: kube::Error) -> Result<(), Error> {
 /// the name [`decide::run_name`] gives it. If that run exists, returns it. If another run has the
 /// name, the API server generates one.
 async fn create_run(
-    ctx: &Context,
     api: &Api<BuildRun>,
     build: &Build,
     sha: &str,
@@ -768,7 +760,6 @@ async fn create_run(
             revision: sha.to_owned(),
             git_ref,
             trigger: Some(trigger),
-            plan: decide::reused_plan(build, &decide::image(build, &ctx.settings.default_registry)),
         },
         status: None,
     };
@@ -880,14 +871,13 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
             Ok(Action::await_change())
         }
         Observed::Finished(result) => {
-            let mut finished = BuildRunStatus {
+            let finished = BuildRunStatus {
                 job_ref: status.job_ref,
                 buildkitd_instance: status.buildkitd_instance,
                 start_time: status.start_time,
-                builder: status.builder,
-                image: status.image,
                 ..*result
             };
+            let mut finished = decide::from_job(finished, &job);
             if finished.phase == Some(Phase::Failed)
                 && pod.as_ref().is_some_and(|p| decide::oom_killed(p, None))
             {
@@ -1429,7 +1419,9 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         }
         Err((_, message)) => return finish(ctx, run, source_failed(message)).await,
     };
-    if let Err(message) = model_key(ctx, &builder, run, &namespace).await? {
+    let image = decide::image(&build, &ctx.settings.default_registry);
+    let saved_plan = decide::reused_plan(&build, &image);
+    if let Err(message) = model_key(ctx, &builder, saved_plan.is_some(), &namespace).await? {
         return pending(ctx, run, status, Reason::ModelKeyMissing, message).await;
     }
     let git_secret = format!("{name}-git");
@@ -1468,7 +1460,6 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
     let registry_secret = format!("{name}-registry");
     ensure_registry_secret(ctx, run, &registry_secret, registry_auth).await?;
 
-    let image = decide::image(&build, &settings.default_registry);
     let job = match zeabur_builder_jobspec::job(&JobInputs {
         build_run: run,
         build: &build,
@@ -1488,13 +1479,12 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         ttl_seconds: settings.job_ttl_seconds,
         placement: &settings.daemon.placement,
         memory: &limits.job_memory,
+        saved_plan: saved_plan.as_deref(),
     }) {
         Ok(job) => job,
         Err(e) => return finish(ctx, run, fail(e.to_string())).await,
     };
     create_if_missing(&Api::namespaced(ctx.client.clone(), &namespace), &job).await?;
-    status.builder = Some(build.spec.builder_ref.clone());
-    status.image = Some(image.clone());
     job_created(ctx, run, status, &woken.pod, tags).await?;
     record_clamps(ctx, run, &limits).await;
     tracing::info!(buildrun = %name, namespace = %namespace, buildkitd = %woken.pod, image = %image, "job created");
@@ -1544,13 +1534,14 @@ async fn registry_auth(
 }
 
 /// For a run whose planner calls a model, whether its model API key is in the run's namespace.
+/// A run that restores a saved plan calls no model.
 async fn model_key(
     ctx: &Context,
     builder: &ClusterBuilder,
-    run: &BuildRun,
+    restores_plan: bool,
     namespace: &str,
 ) -> Result<Result<(), String>, Error> {
-    let Some(secret_ref) = decide::model_key_ref(&builder.spec, run) else {
+    let Some(secret_ref) = decide::model_key_ref(&builder.spec, restores_plan) else {
         return Ok(Ok(()));
     };
     let secret = Api::<Secret>::namespaced(ctx.client.clone(), namespace)

@@ -1111,8 +1111,28 @@ pub(crate) fn reused_plan(build: &Build, image: &str) -> Option<String> {
     (repository == image && result::is_digest(digest)).then(|| digest.to_owned())
 }
 
+/// The finished `status` with what its Job records: the builder (label), the repository it
+/// pushed to, and the saved plan it restored instead of planning (annotations). The Job is the
+/// one record of what the run built with, also for a Job adopted after a restart.
+pub(crate) fn from_job(status: BuildRunStatus, job: &Job) -> BuildRunStatus {
+    let label = |key: &str| job.metadata.labels.as_ref()?.get(key).cloned();
+    let annotation = |key: &str| job.metadata.annotations.as_ref()?.get(key).cloned();
+    let saved = annotation(annotations::SAVED_PLAN).filter(|d| result::is_digest(d));
+    let (plan_source, plan_digest) = match saved {
+        Some(digest) => (Some(PlanSource::Saved), Some(digest)),
+        None => (status.plan_source, status.plan_digest),
+    };
+    BuildRunStatus {
+        builder: label(labels::BUILDER),
+        image: annotation(annotations::IMAGE),
+        plan_source,
+        plan_digest,
+        ..status
+    }
+}
+
 /// `Build.status` fields that follow from its runs. The image and the plan name the repository
-/// and the builder the run recorded when it was admitted, not the ones the `Build` names now.
+/// and the builder the run's Job used, not the ones the `Build` names now.
 pub(crate) fn summarise(
     status: &mut BuildStatus,
     runs: &[BuildRun],
@@ -1209,13 +1229,13 @@ pub(crate) fn keel_payload<'a>(image: &'a str, run: &'a BuildRun) -> Option<Keel
 /// The waits between notify attempts: three attempts with exponential backoff.
 pub(crate) const NOTIFY_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
 
-/// The Secret with the model API key that `run` needs: the one the builder's planner names,
-/// unless the run restores a saved plan and so calls no model.
-pub(crate) fn model_key_ref<'a>(
-    builder: &'a ClusterBuilderSpec,
-    run: &BuildRun,
-) -> Option<&'a SecretKeyRef> {
-    if run.spec.plan.is_some() {
+/// The Secret with the model API key a run needs: the one the builder's planner names, unless
+/// the run restores a saved plan and so calls no model.
+pub(crate) fn model_key_ref(
+    builder: &ClusterBuilderSpec,
+    restores_plan: bool,
+) -> Option<&SecretKeyRef> {
+    if restores_plan {
         return None;
     }
     Some(&builder.planner.as_ref()?.model.as_ref()?.api_key_secret)
