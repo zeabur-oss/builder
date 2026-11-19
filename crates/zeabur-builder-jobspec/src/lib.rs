@@ -5,9 +5,9 @@
 //!
 //! | container | image | does |
 //! |---|---|---|
-//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch-archive` |
+//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch-archive`. With a planner and a saved plan (`Build.status.plan`), `zeabur-builder-job fetch-plan` first unpacks it into `/workspace/previous` |
 //! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile` |
-//! | `build` | job image | `zeabur-builder-job -- buildctl build …`; for `agent`, then the plan image (`--save-plan`) |
+//! | `build` | job image | `zeabur-builder-job -- buildctl build …`; with a planner, then the plan image of `/workspace/plan` (`--save-plan`) |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
 //! Dockerfile build `FROM` it that makes it run as a non-root user and pushes the tags
@@ -61,6 +61,9 @@ const WORKSPACE: &str = "/workspace";
 const SRC: &str = "/workspace/src";
 const PLAN: &str = "/workspace/plan";
 const OUT: &str = "/workspace/out";
+const PREVIOUS: &str = "/workspace/previous";
+/// The folder of the plan image's Dockerfile; `zeabur-builder-job --save-plan` writes it.
+const SAVED_PLAN: &str = "/workspace/out/saved-plan";
 const GIT_CREDENTIALS: &str = "/etc/zeabur-builder/git";
 const BUILDKIT_TLS: &str = "/etc/zeabur-builder/buildkit";
 const REGISTRY_AUTH: &str = "/etc/zeabur-builder/registry";
@@ -238,14 +241,15 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     ]);
     let annotations = BTreeMap::from([(annotations::REVISION.to_owned(), revision.clone())]);
 
-    let fetch = source.git.as_ref().map_or_else(
+    let mut fetch = source.git.as_ref().map_or_else(
         || archive_container(inputs, namespace),
         |git| fetch_container(inputs, &git.url),
     );
-    let mut init_containers = vec![fetch];
-    if let Some(plan) = plan_container(inputs)? {
-        init_containers.push(plan);
+    let plan = plan_container(inputs)?;
+    if plan.is_some() {
+        fetch_previous_first(inputs, &mut fetch);
     }
+    let mut init_containers: Vec<_> = std::iter::once(fetch).chain(plan).collect();
     let resources = inputs.memory.requirements();
     for container in &mut init_containers {
         container.resources = Some(resources.clone());
@@ -390,6 +394,52 @@ fn archive_container(inputs: &JobInputs<'_>, namespace: &str) -> Container {
     }
 }
 
+/// Makes `fetch` pull the plan the last run saved (`Build.status.plan`) into
+/// `/workspace/previous`, with the run's push credentials, before it fetches the source. Only the
+/// digest comes from the status; the repository is the `Build`'s own, so a run never reads another
+/// repository with them.
+///
+/// It is a step of `fetch`, not a container of its own: the kubelet keeps 12 KiB of termination
+/// messages for a whole Pod and splits it over its containers ([`status_manager.go`]), and the
+/// build result needs the 4096 bytes three containers leave.
+///
+/// [`status_manager.go`]: https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/kubelet/status/status_manager.go#L1160-L1163
+fn fetch_previous_first(inputs: &JobInputs<'_>, fetch: &mut Container) {
+    let Some(saved) = inputs.build.status.as_ref().and_then(|s| s.plan.as_deref()) else {
+        return;
+    };
+    let Some((_, digest)) = saved.rsplit_once('@') else {
+        return;
+    };
+    if !is_digest(digest) {
+        return;
+    }
+    let mut command = vec!["zeabur-builder-job".to_owned(), "fetch-plan".to_owned()];
+    if inputs.registry_http {
+        command.push("--plain-http".to_owned());
+    }
+    command.extend([
+        literal(inputs.image),
+        digest.to_owned(),
+        PREVIOUS.to_owned(),
+        "--".to_owned(),
+    ]);
+    command.extend(fetch.command.take().into_iter().flatten());
+    command.extend(fetch.args.take().into_iter().flatten());
+    fetch.command = Some(command);
+    let env_vars = fetch.env.get_or_insert_default();
+    if !env_vars.iter().any(|e| e.name == "DOCKER_CONFIG") {
+        env_vars.push(env("DOCKER_CONFIG", REGISTRY_AUTH));
+        if let Some(ca) = inputs.registry_ca {
+            env_vars.push(env(REGISTRY_CA_ENV, &literal(ca)));
+        }
+    }
+    let mounts = fetch.volume_mounts.get_or_insert_default();
+    if !mounts.iter().any(|m| m.name == "registry-auth") {
+        mounts.push(mount("registry-auth", REGISTRY_AUTH));
+    }
+}
+
 /// Runs a planner and records how long it took.
 const PLAN_SCRIPT: &str = r#"set -eu
 start=$(date +%s)
@@ -462,8 +512,8 @@ fn railpack_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Containe
 
 /// `zeabur-builder-agent`, which trial-builds on the namespace's buildkitd and writes the
 /// Dockerfile into `/workspace/plan`, with the model API key from the namespace's Secret in
-/// `ZB_MODEL_API_KEY`. When `Build.status.plan` names a plan image, it pulls it with the run's
-/// registry credentials and builds it before it calls the model.
+/// `ZB_MODEL_API_KEY`. It builds the last plan in `/workspace/previous`, when there is one, before
+/// it calls the model.
 fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Container, JobError> {
     let model = planner
         .model
@@ -479,6 +529,8 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
         BUILDKIT_TLS.to_owned(),
         "--out".to_owned(),
         PLAN.to_owned(),
+        "--previous".to_owned(),
+        PREVIOUS.to_owned(),
         "--provider".to_owned(),
         literal(&model.provider),
         "--model".to_owned(),
@@ -489,25 +541,21 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
     }
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
-    let mut env_vars = vec![env("HOME", "/tmp")];
-    let previous = inputs.build.status.as_ref().and_then(|s| s.plan.as_deref());
-    if let Some(previous) = previous {
-        args.extend(["--previous-plan".to_owned(), literal(previous)]);
-        mounts.push(mount("registry-auth", REGISTRY_AUTH));
-        env_vars.push(env("DOCKER_CONFIG", REGISTRY_AUTH));
-    }
-    env_vars.push(EnvVar {
-        name: "ZB_MODEL_API_KEY".to_owned(),
-        value: None,
-        value_from: Some(EnvVarSource {
-            secret_key_ref: Some(SecretKeySelector {
-                name: model.api_key_secret.name.clone(),
-                key: model.api_key_secret.key.clone(),
-                optional: Some(false),
+    let env_vars = vec![
+        env("HOME", "/tmp"),
+        EnvVar {
+            name: "ZB_MODEL_API_KEY".to_owned(),
+            value: None,
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: model.api_key_secret.name.clone(),
+                    key: model.api_key_secret.key.clone(),
+                    optional: Some(false),
+                }),
+                ..EnvVarSource::default()
             }),
-            ..EnvVarSource::default()
-        }),
-    });
+        },
+    ];
     Ok(Container {
         name: "plan".to_owned(),
         image: Some(planner.image.clone()),
@@ -627,12 +675,13 @@ fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String>
     buildctl
 }
 
-/// The push of an `agent` run's plan image ([`zeabur_builder_core::plan`]) from the files in
-/// `/workspace/plan` and the Dockerfile `zeabur-builder-job --save-plan` writes, tagged for the
-/// `Build`.
+/// The push of the plan image ([`zeabur_builder_core::plan`]) of a builder with a planner: the
+/// folder `/workspace/plan`, with the Dockerfile `zeabur-builder-job --save-plan` writes, tagged
+/// for the `Build`.
 fn save_plan_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Option<Vec<String>> {
-    if inputs.builder.kind != BuilderType::Agent {
-        return None;
+    match inputs.builder.kind {
+        BuilderType::Dockerfile => return None,
+        BuilderType::Railpack | BuilderType::Agent => {}
     }
     let uid = inputs.build.metadata.uid.as_deref()?;
     let name = format!("{}:{}", inputs.image, plan::saved_tag(uid));
@@ -643,7 +692,7 @@ fn save_plan_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Option<Vec
         "--local".to_owned(),
         format!("context={PLAN}"),
         "--local".to_owned(),
-        format!("dockerfile={PLAN}/saved"),
+        format!("dockerfile={SAVED_PLAN}"),
     ]);
     buildctl.extend(output(inputs, repo, &[name], false));
     Some(buildctl)

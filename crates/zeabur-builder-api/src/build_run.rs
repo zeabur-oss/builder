@@ -121,7 +121,7 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 16), inner(length(max = 128)))]
     pub tags: Vec<String>,
-    /// The plan image this run pushed, when the `agent` builder wrote a new Dockerfile.
+    /// The plan image this run pushed, when the builder has a planner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
     pub plan_digest: Option<String>,

@@ -5,16 +5,14 @@ the `agent` builder ([#152](https://github.com/zeabur-oss/builder/issues/152)).
 
 ```text
 ANTHROPIC_API_KEY=… zeabur-builder-agent --context <dir> --buildkit <addr> [--tlsdir <dir>] \
-  --provider anthropic --model claude-opus-5-5 [--base-url <url>] [--previous <dir> | --previous-plan <ref>] [--out <dir>]
+  --provider anthropic --model claude-opus-5-5 [--base-url <url>] [--previous <dir>] [--out <dir>]
 ```
 
 It takes the first of:
 
 1. The repository's `Dockerfile`, as is.
-2. The last plan, when it still builds: the files in `--previous <dir>`, or else in the plan
-   image `--previous-plan <repository>@<digest>`. The details the agent reported for it come
-   with it. The build Job passes `Build.status.plan`; the build step pushes the plan image of a
-   new Dockerfile after the image (`zeabur_builder_core::plan`).
+2. The last plan (`--previous <dir>`), when it still builds, with the details the agent
+   reported for it. In a build Job this is the plan the last run saved (`Build.status.plan`).
 3. A Dockerfile the agent writes. The agent reads the repository with `list`, `read` and
    `grep`, builds with `build`, pages through a failed build's log with `read_build_log`, and
    ends with `finish` after a build succeeded or `stop` with a reason.

@@ -5,19 +5,22 @@
 //! keeps at most [`MAX_MESSAGE_BYTES`] of a termination message, so [`Info::encode`] cuts the
 //! free text until it fits.
 //!
-//! After a run whose agent wrote the Dockerfile builds and pushes its image, the build step pushes
-//! the plan as an image of its own ([`SAVED_DOCKERFILE`], tagged [`saved_tag`]) and reports its
-//! digest. The controller records it in `Build.status.plan`, and the next run builds that plan
-//! before it calls the model.
+//! A saved plan is the folder any planner writes, `/workspace/plan`. After a run with a planner
+//! builds and pushes its image, the build step pushes that folder as an image of its own
+//! ([`SAVED_DOCKERFILE`], tagged [`saved_tag`]) and reports its digest. The controller records it
+//! in `Build.status.plan`. The next run unpacks it into `/workspace/previous` before its planner
+//! starts, and the planner decides how to use it: the agent builds it before it calls the model.
 
 use serde::{Deserialize, Serialize};
 
 use crate::result::{MAX_DETAIL_BYTES, MAX_MESSAGE_BYTES, truncate};
 
-/// The Dockerfile of a plan image: the files a later run needs to build the plan again and to
-/// report its details.
-pub const SAVED_DOCKERFILE: &str =
-    "FROM scratch\nCOPY Dockerfile Dockerfile.dockerignore info.json /\n";
+/// The Dockerfile of a plan image: every file of the planner's folder, in one layer.
+pub const SAVED_DOCKERFILE: &str = "FROM scratch\nCOPY . /\n";
+
+/// The config media type of a plan image, which BuildKit writes with `oci-mediatypes=true`. A
+/// run pulls the plan as an artifact of this type ([`crate::archive::layer`]).
+pub const SAVED_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1+json";
 
 /// The tag of a `Build`'s plan image, beside its images.
 ///

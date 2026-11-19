@@ -934,7 +934,7 @@
                     "type": "integer"
                   },
                   "plan": {
-                    "description": "The plan image of the last Dockerfile the `agent` builder wrote that built,\n`<repository>@<digest>`. Runs build it before they call the model.",
+                    "description": "The plan image of the last successful run with a planner, `<repository>@<digest>`: the\nfolder its planner wrote. The next run's planner gets it in `/workspace/previous`; the\n`agent` builder builds it before it calls the model.",
                     "maxLength": 1024,
                     "nullable": true,
                     "type": "string"
@@ -1448,7 +1448,7 @@
                     "type": "object"
                   },
                   "planDigest": {
-                    "description": "The plan image this run pushed, when the `agent` builder wrote a new Dockerfile.",
+                    "description": "The plan image this run pushed, when the builder has a planner.",
                     "maxLength": 71,
                     "nullable": true,
                     "pattern": "^sha256:[0-9a-f]{64}$",

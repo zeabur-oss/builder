@@ -366,13 +366,17 @@ impl Repository {
             .ok_or_else(|| format!("{} gave no token", challenge.realm))
     }
 
-    /// The archive's layer, from the manifest with `digest`.
-    pub(crate) async fn layer(&mut self, digest: &str) -> Result<Layer, String> {
+    /// The one layer of the manifest with `digest`, an artifact of `artifact_type`.
+    pub(crate) async fn layer(
+        &mut self,
+        digest: &str,
+        artifact_type: &str,
+    ) -> Result<Layer, String> {
         let response = self
             .get(&format!("manifests/{digest}"), Some(MANIFEST_MEDIA_TYPE))
             .await?;
         let body = read_limited(response, MAX_MANIFEST_BYTES).await?;
-        archive::layer(&body, digest).map_err(|e| e.to_string())
+        archive::layer(&body, digest, artifact_type).map_err(|e| e.to_string())
     }
 
     /// A manifest or index with `digest`, checked against it.
@@ -735,7 +739,7 @@ mod tests {
             Some(Credentials::Basic(BASIC.to_owned())),
         )
         .unwrap();
-        let layer = repository.layer(digest).await?;
+        let layer = repository.layer(digest, ARTIFACT_TYPE).await?;
         repository.download(&layer, to).await
     }
 

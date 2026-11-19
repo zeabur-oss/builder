@@ -383,8 +383,9 @@ pub struct BuildStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 1024))]
     pub latest_image: Option<String>,
-    /// The plan image of the last Dockerfile the `agent` builder wrote that built,
-    /// `<repository>@<digest>`. Runs build it before they call the model.
+    /// The plan image of the last successful run with a planner, `<repository>@<digest>`: the
+    /// folder its planner wrote. The next run's planner gets it in `/workspace/previous`; the
+    /// `agent` builder builds it before it calls the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 1024))]
     pub plan: Option<String>,

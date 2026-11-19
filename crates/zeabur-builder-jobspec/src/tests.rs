@@ -273,12 +273,12 @@ fn agent_with_a_model_key() {
 }
 
 #[test]
-fn only_a_run_with_a_recorded_plan_reads_the_registry_while_it_plans() {
+fn the_last_plan_is_pulled_from_the_build_s_own_repository_and_never_by_the_planner() {
     let run = build_run();
     let mut build = build("https://github.com/acme/web", None, Vec::new());
     let builder = agent();
     let tags = tags();
-    let plan_container = |build: &Build| {
+    let init_containers = |build: &Build| {
         let job = job(&inputs(
             &run,
             build,
@@ -288,13 +288,16 @@ fn only_a_run_with_a_recorded_plan_reads_the_registry_while_it_plans() {
             GitAuth::Anonymous,
         ))
         .unwrap();
-        let spec = job.spec.unwrap().template.spec.unwrap();
-        spec.init_containers
+        job.spec
             .unwrap()
-            .into_iter()
-            .find(|c| c.name == "plan")
+            .template
+            .spec
+            .unwrap()
+            .init_containers
             .unwrap()
     };
+    let named =
+        |containers: &[Container], name: &str| containers.iter().find(|c| c.name == name).cloned();
     let reads_registry = |c: &Container| {
         c.volume_mounts
             .iter()
@@ -302,20 +305,71 @@ fn only_a_run_with_a_recorded_plan_reads_the_registry_while_it_plans() {
             .any(|m| m.name == "registry-auth")
     };
 
-    let first = plan_container(&build);
-    assert!(!first.args.iter().flatten().any(|a| a == "--previous-plan"));
-    assert!(!reads_registry(&first));
+    let first = init_containers(&build);
+    let fetch = named(&first, "fetch").unwrap();
+    assert_eq!(fetch.command.unwrap().first().unwrap(), "sh");
+    assert!(!reads_registry(&named(&first, "plan").unwrap()));
 
-    let recorded = "registry.example.com/team-a/web@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    let digest = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
     build.status = Some(BuildStatus {
-        plan: Some(recorded.to_owned()),
+        plan: Some(format!("registry.example.com/other/repo@{digest}")),
         ..BuildStatus::default()
     });
-    let replay = plan_container(&build);
-    let args = replay.args.clone().unwrap();
-    let at = args.iter().position(|a| a == "--previous-plan").unwrap();
-    assert_eq!(args.get(at + 1).map(String::as_str), Some(recorded));
-    assert!(reads_registry(&replay));
+    let later = init_containers(&build);
+    let order: Vec<_> = later.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(order, ["fetch", "plan"]);
+    let fetch = named(&later, "fetch").unwrap();
+    assert!(reads_registry(&fetch));
+    let command = fetch.command.unwrap();
+    assert_eq!(
+        &command[..7],
+        [
+            "zeabur-builder-job",
+            "fetch-plan",
+            "registry.internal/team-a/api",
+            digest,
+            "/workspace/previous",
+            "--",
+            "sh",
+        ]
+    );
+    assert_eq!(
+        &command[command.len() - 2..],
+        ["https://github.com/acme/web", run.spec.revision.as_str()]
+    );
+    assert!(fetch.args.is_none());
+    assert!(!reads_registry(&named(&later, "plan").unwrap()));
+    // The kubelet splits 12 KiB of termination messages over the Pod's containers, and the build
+    // result needs 4096 bytes: the build container and at most two init containers.
+    assert!(later.len() <= 2);
+}
+
+#[test]
+fn every_builder_with_a_planner_saves_its_plan() {
+    let run = build_run();
+    let mut build = build("https://github.com/acme/web", None, Vec::new());
+    build.metadata.uid = Some("0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b".to_owned());
+    let tags = tags();
+    let saves = |name: &str, builder: &ClusterBuilderSpec| {
+        let job = job(&inputs(
+            &run,
+            &build,
+            name,
+            builder,
+            &tags,
+            GitAuth::Anonymous,
+        ))
+        .unwrap();
+        let spec = job.spec.unwrap().template.spec.unwrap();
+        spec.containers
+            .iter()
+            .flat_map(|c| c.command.iter().flatten())
+            .any(|a| a == "--save-plan")
+    };
+
+    assert!(saves("agent", &agent()));
+    assert!(saves("railpack", &railpack()));
+    assert!(!saves("dockerfile", &dockerfile()));
 }
 
 #[test]

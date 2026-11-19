@@ -38,10 +38,6 @@ pub(crate) struct Args {
     /// tried before the agent.
     #[arg(long)]
     previous: Option<PathBuf>,
-    /// The plan image of the last plan, `<repository>@<digest>` (`Build.status.plan`). Without
-    /// `--previous`, its files are tried before the agent.
-    #[arg(long)]
-    previous_plan: Option<String>,
     /// The provider, by Rig's name: `anthropic`, `openai`, `gcp.gemini`, `openrouter` …. It sets
     /// the endpoint, the API format and the key variable, such as `ANTHROPIC_API_KEY`.
     #[arg(long)]
@@ -74,10 +70,9 @@ pub(crate) async fn run(args: Args) -> Result<bool, String> {
         registries: args.registries.clone(),
         timeout: limits.per_build,
     };
-    let previous = match (&args.previous, &args.previous_plan) {
-        (Some(dir), _) => read_previous(dir).await,
-        (None, Some(image)) => pull_previous(&builder, image, &args.out).await,
-        (None, None) => None,
+    let previous = match &args.previous {
+        Some(dir) => read_previous(dir).await,
+        None => None,
     };
     let key = std::env::var(API_KEY_ENV)
         .ok()
@@ -94,18 +89,6 @@ pub(crate) async fn run(args: Args) -> Result<bool, String> {
     })
     .await;
     report(&args.out, outcome, spent.as_ref()).await
-}
-
-/// The plan in `image`, or `None` when it cannot be read.
-async fn pull_previous(builder: &Buildctl, image: &str, out: &Path) -> Option<Previous> {
-    let dest = out.join("previous");
-    match builder.pull_plan(image, &out.join("pull"), &dest).await {
-        Ok(()) => read_previous(&dest).await,
-        Err(e) => {
-            output::error(&format!("cannot read the last plan {image}: {e}"));
-            None
-        }
-    }
 }
 
 /// The last plan: its Dockerfile, `.dockerignore` and what the agent reported when it wrote it.
