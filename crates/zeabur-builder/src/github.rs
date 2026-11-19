@@ -569,12 +569,12 @@ impl GitHub {
     }
 }
 
-/// GitHub's `message`, for an error.
+/// The first 200 characters of GitHub's `message`, for an error: a condition message is bounded.
 fn github_message(answer: &[u8]) -> String {
     serde_json::from_slice::<ErrorAnswer>(answer)
         .ok()
         .and_then(|v| v.message)
-        .unwrap_or_default()
+        .map_or_default(|m| m.chars().take(200).collect())
 }
 
 #[cfg(test)]
@@ -754,5 +754,12 @@ mod tests {
             written(Access::Controller),
             json!({"contents": "read", "statuses": "write"})
         );
+    }
+
+    #[test]
+    fn a_github_error_message_is_cut_to_200_characters() {
+        let long = format!(r#"{{"message":"{}"}}"#, "é".repeat(300));
+        assert_eq!(github_message(long.as_bytes()).chars().count(), 200);
+        assert_eq!(github_message(b"not json"), "");
     }
 }
