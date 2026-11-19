@@ -16,6 +16,7 @@ use super::*;
 const A: &str = "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c";
 const B: &str = "0123456789abcdef0123456789abcdef01234567";
 const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const PLAN: &str = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
 fn set_ref(build: &mut Build, git_ref: &str) {
     if let Some(git) = &mut build.spec.source.git {
@@ -70,9 +71,18 @@ fn run(name: &str, revision: &str, phase: Option<Phase>, at: &str) -> BuildRun {
     run.status = Some(BuildRunStatus {
         phase,
         completion_time: is_finished(phase).then(|| at.to_owned()),
-        ..BuildRunStatus::default()
+        ..admitted(BuildRunStatus::default())
     });
     run
+}
+
+/// `status` with what admission records: the builder and the repository.
+fn admitted(status: BuildRunStatus) -> BuildRunStatus {
+    BuildRunStatus {
+        builder: Some("railpack".to_owned()),
+        image: Some("r/team-a/api".to_owned()),
+        ..status
+    }
 }
 
 #[test]
@@ -870,14 +880,14 @@ fn summary_points_at_the_newest_success() {
         s.message = Some("exit code: 2".to_owned());
     }
     let mut status = BuildStatus::default();
-    summarise(&mut status, &[ok.clone()], "r/team-a/api", now(), Some(1));
+    summarise(&mut status, &[ok.clone()], now(), Some(1));
     assert_eq!(
         status.latest_image.as_deref(),
         Some(format!("r/team-a/api:main-1-3e1a9c2@{DIGEST}").as_str())
     );
     assert_eq!(status.conditions[0].status, ConditionStatus::True);
 
-    summarise(&mut status, &[ok, bad], "r/team-a/api", now(), Some(1));
+    summarise(&mut status, &[ok, bad], now(), Some(1));
     assert_eq!(status.latest_revision.as_deref(), Some(A));
     assert_eq!(status.last_build_run_ref.as_deref(), Some("api-2"));
     assert_eq!(status.conditions[0].status, ConditionStatus::False);
@@ -939,7 +949,7 @@ fn an_older_commit_finishing_late_does_not_replace_the_newer_image() {
     let runs = [older, newer];
 
     let mut status = BuildStatus::default();
-    summarise(&mut status, &runs, "r/team-a/api", now(), Some(1));
+    summarise(&mut status, &runs, now(), Some(1));
     assert_eq!(status.latest_revision.as_deref(), Some(B));
     assert_eq!(
         status.latest_image.as_deref(),
@@ -1069,18 +1079,130 @@ fn exposed_ports_reach_the_build_status_from_the_newest_success() {
     assert_eq!(run_status.exposed_ports, ["3000/tcp", "53/udp"]);
 
     let mut ok = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
-    ok.status = Some(*run_status);
+    ok.status = Some(admitted(*run_status));
     let mut portless = run("api-2", B, Some(Phase::Succeeded), "2026-10-22T02:00:00Z");
     if let Some(s) = portless.status.as_mut() {
         s.tags = vec!["main-2-aaaaaaa".to_owned()];
         s.image_digest = Some(DIGEST.to_owned());
     }
     let mut status = BuildStatus::default();
-    summarise(&mut status, &[ok.clone()], "r/team-a/api", now(), Some(1));
+    summarise(&mut status, &[ok.clone()], now(), Some(1));
     assert_eq!(status.exposed_ports, ["3000/tcp", "53/udp"]);
 
-    summarise(&mut status, &[ok, portless], "r/team-a/api", now(), Some(1));
+    summarise(&mut status, &[ok, portless], now(), Some(1));
     assert_eq!(status.exposed_ports, Vec::<String>::new());
+}
+
+#[test]
+fn the_plan_a_run_saved_stays_until_a_newer_one() {
+    let message = format!(
+        r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"],"planDigest":"{PLAN}"}}"#
+    );
+    let done = pod(
+        vec![container("fetch", terminated(0, None))],
+        vec![container("build", terminated(0, Some(&message)))],
+    );
+    let Observed::Finished(run_status) = observe(&job(Some(("Complete", ""))), Some(&done)) else {
+        panic!("finished expected")
+    };
+    let mut planned = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+    planned.status = Some(admitted(*run_status));
+    let mut replayed = run("api-2", B, Some(Phase::Succeeded), "2026-10-22T02:00:00Z");
+    if let Some(s) = replayed.status.as_mut() {
+        s.tags = vec!["main-2-aaaaaaa".to_owned()];
+        s.image_digest = Some(DIGEST.to_owned());
+    }
+
+    let mut status = BuildStatus::default();
+    summarise(&mut status, &[planned], now(), Some(1));
+    let recorded = Some(SavedPlan {
+        image: format!("r/team-a/api@{PLAN}"),
+        builder: "railpack".to_owned(),
+    });
+    assert_eq!(status.plan, recorded);
+    assert_eq!(
+        status.latest_image.as_deref(),
+        Some(format!("r/team-a/api:main-1-3e1a9c2@{DIGEST}").as_str())
+    );
+
+    summarise(&mut status, &[replayed], now(), Some(1));
+    assert_eq!(status.plan, recorded);
+}
+
+/// The Job a run's status comes from: built by `builder`, pushing to `image`, restoring
+/// `saved_plan` when there is one.
+fn job_of(builder: &str, image: &str, saved_plan: Option<&str>) -> Job {
+    let mut annotations = BTreeMap::from([(annotations::IMAGE.to_owned(), image.to_owned())]);
+    if let Some(digest) = saved_plan {
+        annotations.insert(annotations::SAVED_PLAN.to_owned(), digest.to_owned());
+    }
+    Job {
+        metadata: ObjectMeta {
+            labels: Some(BTreeMap::from([(
+                labels::BUILDER.to_owned(),
+                builder.to_owned(),
+            )])),
+            annotations: Some(annotations),
+            ..ObjectMeta::default()
+        },
+        ..job(Some(("Complete", "")))
+    }
+}
+
+/// A `Build` that moves to another builder or repository after a run planned keeps the plan
+/// named for the builder and repository of that run's Job, so the next run does not reuse it.
+/// The Job is read when the run finishes, so a Job adopted after a restart counts too.
+#[test]
+fn a_saved_plan_names_the_builder_and_repository_of_its_job() {
+    let mut planned = run("api-1", A, Some(Phase::Succeeded), "2026-10-22T01:00:00Z");
+    let finished = BuildRunStatus {
+        phase: Some(Phase::Succeeded),
+        plan_source: Some(PlanSource::Generated),
+        plan_digest: Some(PLAN.to_owned()),
+        ..BuildRunStatus::default()
+    };
+    planned.status = Some(from_job(finished, &job_of("agent", "r/team-a/old", None)));
+    let mut status = BuildStatus::default();
+    summarise(&mut status, &[planned], now(), Some(1));
+    let saved = SavedPlan {
+        image: format!("r/team-a/old@{PLAN}"),
+        builder: "agent".to_owned(),
+    };
+    assert_eq!(status.plan, Some(saved));
+
+    let mut build = build();
+    build.spec.builder_ref = "agent".to_owned();
+    build.status = Some(status);
+    assert_eq!(reused_plan(&build, "r/team-a/old").as_deref(), Some(PLAN));
+    assert_eq!(reused_plan(&build, "r/team-a/api"), None);
+    build.spec.builder_ref = "railpack".to_owned();
+    assert_eq!(reused_plan(&build, "r/team-a/old"), None);
+}
+
+#[test]
+fn a_run_reuses_the_saved_plan_of_the_same_builder_unless_asked_to_plan_again() {
+    let mut build = build();
+    let image = "r/team-a/api";
+    assert_eq!(reused_plan(&build, image), None);
+
+    build.status = Some(BuildStatus {
+        plan: Some(SavedPlan {
+            image: format!("r/team-a/api@{PLAN}"),
+            builder: "dockerfile".to_owned(),
+        }),
+        ..BuildStatus::default()
+    });
+    assert_eq!(reused_plan(&build, image).as_deref(), Some(PLAN));
+
+    build.metadata.annotations = Some(BTreeMap::from([(
+        annotations::PLAN.to_owned(),
+        annotations::PLAN_FRESH.to_owned(),
+    )]));
+    assert_eq!(reused_plan(&build, image), None);
+
+    build.metadata.annotations = None;
+    build.spec.builder_ref = "agent".to_owned();
+    assert_eq!(reused_plan(&build, image), None);
 }
 
 #[test]
@@ -1135,6 +1257,47 @@ fn an_agent_run_waits_for_its_model_key() {
         model_key(&secret_ref, "team-a", Some(&secret("anthropic", b"sk"))),
         Ok(())
     );
+}
+
+/// An `agent` run checks for its model key only when it plans; a run that restores a saved plan
+/// calls no model and starts without one.
+#[test]
+fn only_a_run_that_plans_needs_the_model_key() {
+    use zeabur_builder_api::cluster_builder::{ModelSpec, PlannerSpec};
+    let secret_ref = SecretKeyRef {
+        name: "model".to_owned(),
+        key: "anthropic".to_owned(),
+    };
+    let mut agent = cluster_builder(1).spec;
+    agent.planner = Some(PlannerSpec {
+        image: "agent".to_owned(),
+        timeout: None,
+        resources: None,
+        model: Some(ModelSpec {
+            provider: "anthropic".to_owned(),
+            model: "claude-opus-5-5".to_owned(),
+            base_url: None,
+            api_key_secret: secret_ref.clone(),
+        }),
+    });
+    assert_eq!(model_key_ref(&agent, false), Some(&secret_ref));
+    assert_eq!(model_key_ref(&cluster_builder(1).spec, false), None);
+    assert_eq!(model_key_ref(&agent, true), None);
+}
+
+/// A run whose Job restored a saved plan reports that plan as its own, with `planSource: saved`.
+#[test]
+fn a_restored_run_reports_the_saved_plan() {
+    let finished = BuildRunStatus {
+        phase: Some(Phase::Succeeded),
+        plan_source: Some(PlanSource::Generated),
+        ..BuildRunStatus::default()
+    };
+    let status = from_job(finished, &job_of("agent", "r/team-a/api", Some(PLAN)));
+    assert_eq!(status.plan_source, Some(PlanSource::Saved));
+    assert_eq!(status.plan_digest.as_deref(), Some(PLAN));
+    assert_eq!(status.builder.as_deref(), Some("agent"));
+    assert_eq!(status.image.as_deref(), Some("r/team-a/api"));
 }
 
 #[test]
@@ -1554,7 +1717,7 @@ fn the_longest_idle_daemon_goes_first() {
 fn ready_names_the_outcome_of_the_latest_finished_run() {
     let ready = |runs: &[BuildRun]| {
         let mut status = BuildStatus::default();
-        summarise(&mut status, runs, "r/team-a/api", now(), Some(1));
+        summarise(&mut status, runs, now(), Some(1));
         status.conditions[0].reason.clone()
     };
     assert_eq!(ready(&[]), "NotBuilt");

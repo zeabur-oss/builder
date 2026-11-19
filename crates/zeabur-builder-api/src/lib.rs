@@ -66,9 +66,20 @@ pub mod annotations {
     pub const BUILD_MEMORY: &str = "builder.zeabur.com/build-memory";
     /// On a Job and Pod: the commit built.
     pub const REVISION: &str = "builder.zeabur.com/revision";
+    /// On a Job: the repository it pushes the image and the plan to.
+    pub const IMAGE: &str = "builder.zeabur.com/image";
+    /// On a Job: the digest of the saved plan it restores instead of running the planner.
+    pub const SAVED_PLAN: &str = "builder.zeabur.com/saved-plan";
     /// On a `Build` with an archive source: a new value asks for an upload token
     /// (`status.uploadToken`).
     pub const UPLOAD_TOKEN_REQUEST: &str = "builder.zeabur.com/upload-token-request";
+    /// On a `Build`: [`PLAN_FRESH`] makes each new Job run the planner.
+    ///
+    /// Without it, a new Job builds with the plan the last successful run saved (`status.plan`),
+    /// when the `Build` still names that plan's builder and repository.
+    pub const PLAN: &str = "builder.zeabur.com/plan";
+    /// The value of [`PLAN`] that plans every run again.
+    pub const PLAN_FRESH: &str = "fresh";
     /// On a buildkitd `StatefulSet`: the SHA-256 of the spec the controller applied.
     pub const SPEC_HASH: &str = "builder.zeabur.com/spec-hash";
 }

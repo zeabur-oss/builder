@@ -3,6 +3,7 @@
   "kind": "Job",
   "metadata": {
     "annotations": {
+      "builder.zeabur.com/image": "registry.internal/team-a/api",
       "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
     },
     "labels": {
@@ -30,6 +31,7 @@
     "template": {
       "metadata": {
         "annotations": {
+          "builder.zeabur.com/image": "registry.internal/team-a/api",
           "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
         },
         "labels": {
@@ -45,13 +47,15 @@
           {
             "command": [
               "zeabur-builder-job",
+              "build",
               "--secrets-hash-env",
               "ZB_SECRET_NODE_ENV",
               "--secrets-hash-env",
               "ZB_SECRET_NPM_TOKEN",
               "--non-root",
               "/workspace/plan",
-              "--",
+              "/workspace/out/non-root",
+              "--build",
               "buildctl",
               "--addr",
               "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
@@ -69,7 +73,7 @@
               "--opt",
               "source=ghcr.io/railwayapp/railpack-frontend:v0.43.0",
               "--local",
-              "dockerfile=/workspace/plan",
+              "dockerfile=/workspace/out/non-root",
               "--opt",
               "build-arg:cache-key=team-a/api",
               "--secret",
@@ -78,7 +82,7 @@
               "id=NPM_TOKEN,env=ZB_SECRET_NPM_TOKEN",
               "--output",
               "type=image,name=registry.internal/team-a/api,push=true,push-by-digest=true,oci-mediatypes=true,annotation.org.opencontainers.image.source=https://github.com/acme/web,annotation.org.opencontainers.image.revision=3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-              "--then",
+              "--build",
               "buildctl",
               "--addr",
               "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
@@ -92,9 +96,9 @@
               "--frontend",
               "dockerfile.v0",
               "--local",
-              "context=/workspace/plan/non-root",
+              "context=/workspace/out/non-root",
               "--local",
-              "dockerfile=/workspace/plan/non-root",
+              "dockerfile=/workspace/out/non-root",
               "--opt",
               "context:app=docker-image://registry.internal/team-a/api@{digest}",
               "--output",

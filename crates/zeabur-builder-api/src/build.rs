@@ -383,6 +383,11 @@ pub struct BuildStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 1024))]
     pub latest_image: Option<String>,
+    /// The plan of the newest successful run with a planner. A new run reuses it while the
+    /// `Build` names the builder that made it, unless the `Build` has
+    /// `builder.zeabur.com/plan: fresh`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<SavedPlan>,
     /// The revision the controller last created a `BuildRun` for. Deleting that run does not
     /// build the revision again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -409,6 +414,18 @@ pub struct BuildStatus {
     /// `builder.zeabur.com/upload-token-request`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload_token: Option<UploadToken>,
+}
+
+/// A plan a run saved: the files its planner wrote, pushed as an image beside the `Build`'s images.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPlan {
+    /// The plan artifact, `<repository>@<digest>`.
+    #[schemars(length(max = 1024))]
+    pub image: String,
+    /// The `ClusterBuilder` whose planner wrote it.
+    #[schemars(length(max = MAX_NAME))]
+    pub builder: String,
 }
 
 /// An upload token: a Secret with a short-lived token that pushes to the `Build`'s archive

@@ -5,9 +5,9 @@
 //!
 //! | container | image | does |
 //! |---|---|---|
-//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch-archive` |
-//! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile` |
-//! | `build` | job image | `zeabur-builder-job -- buildctl build …` |
+//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch archive` |
+//! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the controller hands it a saved plan (`JobInputs::saved_plan`), the job image's `zeabur-builder-job plan restore` unpacks it there instead |
+//! | `build` | job image | `zeabur-builder-job build --build buildctl build …`; after a planner ran, it pushes `/workspace/plan` as the plan artifact (`--save-plan`) |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
 //! Dockerfile build `FROM` it that makes it run as a non-root user and pushes the tags
@@ -52,7 +52,7 @@ use zeabur_builder_api::cluster_builder::{
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::repo::{RepoKey, RepoUrlError};
 use zeabur_builder_core::result::is_digest;
-use zeabur_builder_core::{archive, is_commit_sha};
+use zeabur_builder_core::{archive, is_commit_sha, plan};
 
 /// The user the Pod runs as; `moby/buildkit` would otherwise run as root.
 pub const RUN_AS: i64 = 1000;
@@ -61,6 +61,9 @@ const WORKSPACE: &str = "/workspace";
 const SRC: &str = "/workspace/src";
 const PLAN: &str = "/workspace/plan";
 const OUT: &str = "/workspace/out";
+/// Where `zeabur-builder-job build --non-root` writes the Railpack plan it rewrites and the second
+/// build's Dockerfile, so the plan folder keeps what the planner wrote.
+const NON_ROOT: &str = "/workspace/out/non-root";
 const GIT_CREDENTIALS: &str = "/etc/zeabur-builder/git";
 const BUILDKIT_TLS: &str = "/etc/zeabur-builder/buildkit";
 const REGISTRY_AUTH: &str = "/etc/zeabur-builder/registry";
@@ -168,6 +171,9 @@ pub struct JobInputs<'a> {
     pub placement: &'a Placement,
     /// The memory of each container.
     pub memory: &'a JobMemory,
+    /// The digest of the saved plan in `image` the Job restores instead of running the planner.
+    /// The controller passes it when `Build.status.plan` names this builder and `image`.
+    pub saved_plan: Option<&'a str>,
 }
 
 /// Why a Job cannot be built.
@@ -236,16 +242,14 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
         (labels::BUILDER.to_owned(), inputs.builder_name.to_owned()),
         (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
     ]);
-    let annotations = BTreeMap::from([(annotations::REVISION.to_owned(), revision.clone())]);
+    let annotations = job_annotations(inputs, revision);
 
     let fetch = source.git.as_ref().map_or_else(
         || archive_container(inputs, namespace),
         |git| fetch_container(inputs, &git.url),
     );
     let mut init_containers = vec![fetch];
-    if let Some(plan) = plan_container(inputs)? {
-        init_containers.push(plan);
-    }
+    init_containers.extend(plan_container(inputs)?);
     let resources = inputs.memory.requirements();
     for container in &mut init_containers {
         container.resources = Some(resources.clone());
@@ -364,7 +368,11 @@ fn fetch_container(inputs: &JobInputs<'_>, url: &str) -> Container {
 fn archive_container(inputs: &JobInputs<'_>, namespace: &str) -> Container {
     let repository =
         archive::repository(inputs.registry, namespace, &inputs.build_run.spec.build_ref);
-    let mut command = vec!["zeabur-builder-job".to_owned(), "fetch-archive".to_owned()];
+    let mut command = vec![
+        "zeabur-builder-job".to_owned(),
+        "fetch".to_owned(),
+        "archive".to_owned(),
+    ];
     if inputs.registry_http {
         command.push("--plain-http".to_owned());
     }
@@ -410,6 +418,19 @@ echo "{\"plan\":$(( $(date +%s) - start ))}" > /workspace/out/plan.json
 exit "$code"
 "#;
 
+/// The Job's and Pod's annotations: the commit, and what the controller reads back when the run
+/// finishes (the repository and any saved plan the Job restores).
+fn job_annotations(inputs: &JobInputs<'_>, revision: &str) -> BTreeMap<String, String> {
+    let mut found = BTreeMap::from([
+        (annotations::REVISION.to_owned(), revision.to_owned()),
+        (annotations::IMAGE.to_owned(), inputs.image.to_owned()),
+    ]);
+    if let Some(digest) = reused_plan(inputs) {
+        found.insert(annotations::SAVED_PLAN.to_owned(), digest.to_owned());
+    }
+    found
+}
+
 fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError> {
     let builder = inputs.builder;
     match (builder.kind, &builder.planner) {
@@ -418,8 +439,55 @@ fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError>
         (BuilderType::Railpack | BuilderType::Agent, None) => {
             Err(JobError::Builder("planner missing"))
         }
+        (BuilderType::Railpack | BuilderType::Agent, Some(_)) if reused_plan(inputs).is_some() => {
+            Ok(Some(restore_container(inputs)))
+        }
         (BuilderType::Railpack, Some(planner)) => Ok(Some(railpack_container(inputs, planner))),
         (BuilderType::Agent, Some(planner)) => agent_container(inputs, planner).map(Some),
+    }
+}
+
+/// The digest of the saved plan the Job builds with instead of running its planner.
+fn reused_plan<'a>(inputs: &JobInputs<'a>) -> Option<&'a str> {
+    match inputs.builder.kind {
+        BuilderType::Dockerfile => None,
+        BuilderType::Railpack | BuilderType::Agent => {
+            inputs.saved_plan.filter(|digest| is_digest(digest))
+        }
+    }
+}
+
+/// `zeabur-builder-job plan restore`, which unpacks the saved plan into `/workspace/plan`, with
+/// the run's push credentials. Only the digest comes from the saved plan; the repository is the
+/// one the Job pushes to, so a run never reads another repository with them.
+fn restore_container(inputs: &JobInputs<'_>) -> Container {
+    let mut command = vec![
+        "zeabur-builder-job".to_owned(),
+        "plan".to_owned(),
+        "restore".to_owned(),
+    ];
+    if inputs.registry_http {
+        command.push("--plain-http".to_owned());
+    }
+    command.extend([
+        literal(inputs.image),
+        reused_plan(inputs).unwrap_or_default().to_owned(),
+        PLAN.to_owned(),
+    ]);
+    let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
+    if let Some(ca) = inputs.registry_ca {
+        env_vars.push(env(REGISTRY_CA_ENV, &literal(ca)));
+    }
+    let mut mounts = workspace_mounts();
+    mounts.push(mount("registry-auth", REGISTRY_AUTH));
+    Container {
+        name: "plan".to_owned(),
+        image: Some(inputs.job_image.to_owned()),
+        command: Some(command),
+        env: Some(env_vars),
+        volume_mounts: Some(mounts),
+        termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
+        ..hardened()
     }
 }
 
@@ -522,7 +590,7 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
 fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Container, JobError> {
     let context = context_path(inputs);
     let non_root = non_root(inputs.builder);
-    let mut wrapper = vec!["zeabur-builder-job".to_owned()];
+    let mut wrapper = vec!["zeabur-builder-job".to_owned(), "build".to_owned()];
     if inputs.registry_http {
         wrapper.push("--plain-http".to_owned());
     }
@@ -546,12 +614,19 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
         buildctl.extend(output(inputs, repo, &tagged(inputs), false));
     }
     if non_root {
-        wrapper.extend(["--non-root".to_owned(), PLAN.to_owned()]);
+        wrapper.extend([
+            "--non-root".to_owned(),
+            PLAN.to_owned(),
+            NON_ROOT.to_owned(),
+        ]);
     }
-    wrapper.push("--".to_owned());
+    if let Some(name) = saved_plan_name(inputs) {
+        wrapper.extend(["--save-plan".to_owned(), literal(&name)]);
+    }
+    wrapper.push("--build".to_owned());
     wrapper.extend(buildctl.iter().map(|arg| literal(arg)));
     if non_root {
-        wrapper.push("--then".to_owned());
+        wrapper.push("--build".to_owned());
         wrapper.extend(non_root_build(inputs, repo).iter().map(|arg| literal(arg)));
     }
 
@@ -601,7 +676,7 @@ fn buildctl(inputs: &JobInputs<'_>, metadata: &str) -> Vec<String> {
 /// [`IMAGE_UID`](zeabur_builder_core::railpack::IMAGE_UID) by the Dockerfile `zeabur-builder-job
 /// --non-root` writes, and pushed with the tags. `{digest}` is the first build's digest.
 fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String> {
-    let dir = format!("{PLAN}/non-root");
+    let dir = NON_ROOT;
     let mut buildctl = buildctl(inputs, &format!("{OUT}/metadata.json"));
     buildctl.extend([
         "--frontend".to_owned(),
@@ -615,6 +690,20 @@ fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String>
     ]);
     buildctl.extend(output(inputs, repo, &tagged(inputs), false));
     buildctl
+}
+
+/// Where a builder with a planner saves the plan it wrote ([`zeabur_builder_core::plan`]):
+/// `<image>:zeabur-plan-<Build uid>`. None for `dockerfile` and for a run that reused a plan.
+fn saved_plan_name(inputs: &JobInputs<'_>) -> Option<String> {
+    match inputs.builder.kind {
+        BuilderType::Dockerfile => return None,
+        BuilderType::Railpack | BuilderType::Agent => {}
+    }
+    if reused_plan(inputs).is_some() {
+        return None;
+    }
+    let uid = inputs.build.metadata.uid.as_deref()?;
+    Some(format!("{}:{}", inputs.image, plan::saved_tag(uid)))
 }
 
 /// `--frontend`, the plan's location and the frontend options.
@@ -657,7 +746,8 @@ fn frontend_args(
                 .ok_or(JobError::Builder("gateway frontend without source"))?;
             buildctl.extend(["--frontend".to_owned(), "gateway.v0".to_owned()]);
             buildctl.extend(["--opt".to_owned(), format!("source={source}")]);
-            buildctl.extend(["--local".to_owned(), format!("dockerfile={PLAN}")]);
+            let plan = if non_root(builder) { NON_ROOT } else { PLAN };
+            buildctl.extend(["--local".to_owned(), format!("dockerfile={plan}")]);
             if builder.kind == BuilderType::Railpack {
                 // Railpack reads build arguments only under `build-arg:`; the wrapper hashes the
                 // secret values into `build-arg:secrets-hash` so a changed value invalidates the

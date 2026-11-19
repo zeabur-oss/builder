@@ -66,7 +66,8 @@ pub(crate) async fn run(args: Args) -> Result<bool, String> {
         addr: args.buildkit.clone(),
         tlsdir: args.tlsdir.clone(),
         context: args.context.clone(),
-        work: args.out.join("attempt"),
+        // Outside `out`, so the plan folder holds only the plan.
+        work: std::env::temp_dir().join(format!("zeabur-builder-agent-{}", std::process::id())),
         registries: args.registries.clone(),
         timeout: limits.per_build,
     };

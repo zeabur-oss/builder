@@ -10,13 +10,16 @@ use k8s_openapi::api::core::v1::{ContainerStatus, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::Serialize;
-use zeabur_builder_api::build::{ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason};
+use zeabur_builder_api::build::{
+    ArchiveSource, Build, BuildStatus, Concurrency, ConditionReason, SavedPlan,
+};
 use zeabur_builder_api::build_run::{
     self as run_api, BuildRun, BuildRunStatus, CacheStats, DockerfileSource, Phase, PlanReport,
     PlanSource, PlanStop, Reason, StepState, Trigger,
 };
 use zeabur_builder_api::cluster_builder::{
-    BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderStatus,
+    BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderSpec,
+    ClusterBuilderStatus,
 };
 use zeabur_builder_api::common::{Condition, ConditionStatus, SecretKeyRef};
 use zeabur_builder_api::{annotations, labels};
@@ -1087,19 +1090,71 @@ pub(crate) fn tags(build: &Build, run: &BuildRun) -> Result<Vec<String>, TagErro
     Ok(tags)
 }
 
-/// `Build.status` fields that follow from its runs.
+/// The digest of the saved plan a new run of `build` builds with: when the plan comes from the
+/// builder the `Build` names now and sits in `image`, the repository the run pushes to, unless
+/// the `Build` asks to plan again.
+pub(crate) fn reused_plan(build: &Build, image: &str) -> Option<String> {
+    let fresh = build
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(annotations::PLAN))
+        .is_some_and(|v| v == annotations::PLAN_FRESH);
+    if fresh {
+        return None;
+    }
+    let saved = build.status.as_ref()?.plan.as_ref()?;
+    if saved.builder != build.spec.builder_ref {
+        return None;
+    }
+    let (repository, digest) = saved.image.rsplit_once('@')?;
+    (repository == image && result::is_digest(digest)).then(|| digest.to_owned())
+}
+
+/// The finished `status` with what its Job records: the builder (label), the repository it
+/// pushed to, and the saved plan it restored instead of planning (annotations). The Job is the
+/// one record of what the run built with, also for a Job adopted after a restart.
+pub(crate) fn from_job(status: BuildRunStatus, job: &Job) -> BuildRunStatus {
+    let label = |key: &str| job.metadata.labels.as_ref()?.get(key).cloned();
+    let annotation = |key: &str| job.metadata.annotations.as_ref()?.get(key).cloned();
+    let saved = annotation(annotations::SAVED_PLAN).filter(|d| result::is_digest(d));
+    let (plan_source, plan_digest) = match saved {
+        Some(digest) => (Some(PlanSource::Saved), Some(digest)),
+        None => (status.plan_source, status.plan_digest),
+    };
+    BuildRunStatus {
+        builder: label(labels::BUILDER),
+        image: annotation(annotations::IMAGE),
+        plan_source,
+        plan_digest,
+        ..status
+    }
+}
+
+/// `Build.status` fields that follow from its runs. The image and the plan name the repository
+/// and the builder the run's Job used, not the ones the `Build` names now.
 pub(crate) fn summarise(
     status: &mut BuildStatus,
     runs: &[BuildRun],
-    image: &str,
     now: Timestamp,
     generation: Option<i64>,
 ) {
     if let Some(run) = latest_success(runs) {
         let run_status = run.status.clone().unwrap_or_default();
         status.latest_revision = Some(run.spec.revision.clone());
-        if let (Some(tag), Some(digest)) = (run_status.tags.first(), run_status.image_digest) {
+        let image = run_status.image.as_deref();
+        if let (Some(image), Some(tag), Some(digest)) =
+            (image, run_status.tags.first(), &run_status.image_digest)
+        {
             status.latest_image = Some(format!("{image}:{tag}@{digest}"));
+        }
+        if let (Some(image), Some(builder), Some(digest)) =
+            (image, &run_status.builder, &run_status.plan_digest)
+        {
+            status.plan = Some(SavedPlan {
+                image: format!("{image}@{digest}"),
+                builder: builder.clone(),
+            });
         }
         status.exposed_ports = run_status.exposed_ports;
     }
@@ -1173,6 +1228,18 @@ pub(crate) fn keel_payload<'a>(image: &'a str, run: &'a BuildRun) -> Option<Keel
 
 /// The waits between notify attempts: three attempts with exponential backoff.
 pub(crate) const NOTIFY_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
+
+/// The Secret with the model API key a run needs: the one the builder's planner names, unless
+/// the run restores a saved plan and so calls no model.
+pub(crate) fn model_key_ref(
+    builder: &ClusterBuilderSpec,
+    restores_plan: bool,
+) -> Option<&SecretKeyRef> {
+    if restores_plan {
+        return None;
+    }
+    Some(&builder.planner.as_ref()?.model.as_ref()?.api_key_secret)
+}
 
 /// Whether `secret`, the Secret the `agent` builder names in the run's namespace, holds the
 /// model API key. The controller does not read the key: the plan container mounts it.
@@ -1314,7 +1381,7 @@ fn from_result(result: BuildResult) -> Observed {
         message: (!result.message.is_empty()).then_some(result.message),
         tags: result.tags,
         image_digest: result.digest,
-        plan_digest: result.plan_digest,
+        plan_digest: result.plan_digest.filter(|d| result::is_digest(d)),
         plan_source: result.plan_source.map(|p| match p {
             result::PlanSource::Generated => PlanSource::Generated,
             result::PlanSource::None => PlanSource::None,

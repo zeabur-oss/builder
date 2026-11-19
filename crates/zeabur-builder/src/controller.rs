@@ -530,8 +530,7 @@ async fn reconcile_build(build: Arc<Build>, ctx: Arc<Context>) -> Result<Action,
     }
 
     answer_upload_request(&ctx, &build, &mut status, at).await?;
-    let image = decide::image(&build, &ctx.settings.default_registry);
-    decide::summarise(&mut status, &runs, &image, at, generation);
+    decide::summarise(&mut status, &runs, at, generation);
     status.observed_generation = generation;
     let unchanged = build.status.as_ref().is_some_and(|old| {
         BuildStatus {
@@ -543,6 +542,7 @@ async fn reconcile_build(build: Arc<Build>, ctx: Arc<Context>) -> Result<Action,
         apply_status(&builds, &name, &status).await?;
     }
     if let Some(run) = decide::notify_due(&build, &runs) {
+        let image = decide::image(&build, &ctx.settings.default_registry);
         notify_targets(&ctx, &build, run, &image).await?;
     }
     Ok(Action::requeue(requeue))
@@ -871,12 +871,13 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
             Ok(Action::await_change())
         }
         Observed::Finished(result) => {
-            let mut finished = BuildRunStatus {
+            let finished = BuildRunStatus {
                 job_ref: status.job_ref,
                 buildkitd_instance: status.buildkitd_instance,
                 start_time: status.start_time,
                 ..*result
             };
+            let mut finished = decide::from_job(finished, &job);
             if finished.phase == Some(Phase::Failed)
                 && pod.as_ref().is_some_and(|p| decide::oom_killed(p, None))
             {
@@ -1418,7 +1419,9 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         }
         Err((_, message)) => return finish(ctx, run, source_failed(message)).await,
     };
-    if let Err(message) = model_key(ctx, &builder, &namespace).await? {
+    let image = decide::image(&build, &ctx.settings.default_registry);
+    let saved_plan = decide::reused_plan(&build, &image);
+    if let Err(message) = model_key(ctx, &builder, saved_plan.is_some(), &namespace).await? {
         return pending(ctx, run, status, Reason::ModelKeyMissing, message).await;
     }
     let git_secret = format!("{name}-git");
@@ -1457,7 +1460,6 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
     let registry_secret = format!("{name}-registry");
     ensure_registry_secret(ctx, run, &registry_secret, registry_auth).await?;
 
-    let image = decide::image(&build, &settings.default_registry);
     let job = match zeabur_builder_jobspec::job(&JobInputs {
         build_run: run,
         build: &build,
@@ -1477,6 +1479,7 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         ttl_seconds: settings.job_ttl_seconds,
         placement: &settings.daemon.placement,
         memory: &limits.job_memory,
+        saved_plan: saved_plan.as_deref(),
     }) {
         Ok(job) => job,
         Err(e) => return finish(ctx, run, fail(e.to_string())).await,
@@ -1530,23 +1533,21 @@ async fn registry_auth(
         .map_err(Error::Invalid)
 }
 
-/// For an `agent` builder, whether its model API key is in the run's namespace.
+/// For a run whose planner calls a model, whether its model API key is in the run's namespace.
+/// A run that restores a saved plan calls no model.
 async fn model_key(
     ctx: &Context,
     builder: &ClusterBuilder,
+    restores_plan: bool,
     namespace: &str,
 ) -> Result<Result<(), String>, Error> {
-    let Some(model) = builder.spec.planner.as_ref().and_then(|p| p.model.as_ref()) else {
+    let Some(secret_ref) = decide::model_key_ref(&builder.spec, restores_plan) else {
         return Ok(Ok(()));
     };
     let secret = Api::<Secret>::namespaced(ctx.client.clone(), namespace)
-        .get_opt(&model.api_key_secret.name)
+        .get_opt(&secret_ref.name)
         .await?;
-    Ok(decide::model_key(
-        &model.api_key_secret,
-        namespace,
-        secret.as_ref(),
-    ))
+    Ok(decide::model_key(secret_ref, namespace, secret.as_ref()))
 }
 
 /// The `.dockerconfigjson` of the Secret that `spec.output.pushSecretRef` names, in the `Build`'s

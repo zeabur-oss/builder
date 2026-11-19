@@ -121,7 +121,17 @@ pub struct BuildRunStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 16), inner(length(max = 128)))]
     pub tags: Vec<String>,
-    /// The plan used.
+    /// The `ClusterBuilder` the Job built with, read from the Job when the run finishes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = MAX_NAME))]
+    pub builder: Option<String>,
+    /// The repository the Job pushed the image and the plan to, read from the Job when the run
+    /// finishes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 1024))]
+    pub image: Option<String>,
+    /// The plan artifact in `image` the run built with: the one its planner wrote, or the saved
+    /// one it restored (`planSource`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
     pub plan_digest: Option<String>,
@@ -304,6 +314,9 @@ pub enum Reason {
 pub enum PlanSource {
     /// Planned in this run.
     Generated,
+    /// Restored from the plan an earlier run saved (`Build.status.plan`), instead of running the
+    /// planner.
+    Saved,
     /// The builder needs no plan.
     None,
 }

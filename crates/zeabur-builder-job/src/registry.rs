@@ -1,16 +1,19 @@
-//! Pulls an archive source from an OCI registry ([distribution spec], "Pulling manifests" and
-//! "Pulling blobs").
+//! Pulls artifacts from an OCI registry ([distribution spec], "Pulling manifests" and "Pulling
+//! blobs"), and pushes the plan artifact ("Pushing blobs" monolithically, "Pushing manifests").
 //!
 //! - **Credentials.** The run's `kubernetes.io/dockerconfigjson` Secret, mounted at
 //!   `$DOCKER_CONFIG/config.json`. A `registrytoken` goes to the registry as the bearer token. Else
 //!   `auth`, or `username` and `password`, go as basic auth. If the registry asks for a bearer
-//!   token (`WWW-Authenticate: Bearer`), the basic credentials buy a pull token from its realm
-//!   ([token authentication]).
+//!   token (`WWW-Authenticate: Bearer`), the basic credentials buy a pull token, or a pull and push
+//!   token for a push, from its realm ([token authentication]).
 //! - **Trust.** The system's CAs and the PEM in `ZB_REGISTRY_CA`, the CA buildkitd trusts.
 //! - **Checks.** The manifest must hash to the run's digest and the layer to its own digest and
 //!   size. The layer goes to a file first, so nothing unverified is unpacked.
 //! - **Redirects.** Blob downloads may redirect to storage, such as S3. Credentials never go to
 //!   another host, and `https` never becomes `http`.
+//!
+//! - **Uploads.** The upload URL the registry gives must be on its own host and scheme, so
+//!   credentials never go elsewhere.
 //!
 //! [distribution spec]: https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#pull
 //! [token authentication]: https://distribution.github.io/distribution/spec/auth/token/
@@ -24,8 +27,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
-use http::{HeaderValue, Request, Response, StatusCode, header};
-use http_body_util::{BodyExt as _, Empty};
+use http::{HeaderValue, Method, Request, Response, StatusCode, header};
+use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
@@ -33,9 +36,11 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use zeabur_builder_core::archive::{self, Layer, MANIFEST_MEDIA_TYPE, MAX_MANIFEST_BYTES};
+use zeabur_builder_core::archive::{
+    self, EMPTY_CONFIG_MEDIA_TYPE, LAYER_MEDIA_TYPE, Layer, MANIFEST_MEDIA_TYPE, MAX_MANIFEST_BYTES,
+};
 use zeabur_builder_core::result::{MAX_EXPOSED_PORTS, is_digest};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -48,7 +53,7 @@ const MAX_CONFIG_BYTES: u64 = 4 << 20;
 const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json";
 const USER_AGENT: &str = concat!("zeabur-builder-job/", env!("CARGO_PKG_VERSION"));
 
-type HttpClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
+type HttpClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// A client that trusts the system's CAs and `ca`, a PEM bundle.
 pub(crate) fn client(ca: Option<&str>) -> Result<HttpClient, String> {
@@ -196,6 +201,52 @@ fn encode(value: &str) -> String {
     out
 }
 
+/// One request: its method, headers and body.
+struct Call<'a> {
+    method: Method,
+    url: &'a str,
+    accept: Option<&'a str>,
+    content_type: Option<&'a str>,
+    body: Bytes,
+}
+
+impl<'a> Call<'a> {
+    const fn get(url: &'a str, accept: Option<&'a str>) -> Self {
+        Self {
+            method: Method::GET,
+            url,
+            accept,
+            content_type: None,
+            body: Bytes::new(),
+        }
+    }
+}
+
+/// An OCI descriptor.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Descriptor {
+    #[serde(default)]
+    media_type: String,
+    digest: String,
+    #[serde(default)]
+    size: u64,
+}
+
+/// The image manifest of an artifact with one layer ([OCI image spec], "Guidelines for artifact
+/// usage").
+///
+/// [OCI image spec]: https://github.com/opencontainers/image-spec/blob/v1.1.1/manifest.md#guidelines-for-artifact-usage
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtifactManifest<'a> {
+    schema_version: u32,
+    media_type: &'a str,
+    artifact_type: &'a str,
+    config: Descriptor,
+    layers: [Descriptor; 1],
+}
+
 /// One repository of one registry.
 pub(crate) struct Repository {
     client: HttpClient,
@@ -244,15 +295,21 @@ impl Repository {
 
     async fn send(
         &self,
-        url: &str,
-        accept: Option<&str>,
+        call: &Call<'_>,
         authorization: Option<&str>,
     ) -> Result<Response<Incoming>, String> {
+        let url = call.url;
         let mut retries = 0;
         loop {
-            let mut request = Request::get(url).header(header::USER_AGENT, USER_AGENT);
-            if let Some(accept) = accept {
+            let mut request = Request::builder()
+                .method(call.method.clone())
+                .uri(url)
+                .header(header::USER_AGENT, USER_AGENT);
+            if let Some(accept) = call.accept {
                 request = request.header(header::ACCEPT, accept);
+            }
+            if let Some(content_type) = call.content_type {
+                request = request.header(header::CONTENT_TYPE, content_type);
             }
             if let Some(value) = authorization {
                 let mut value =
@@ -261,7 +318,7 @@ impl Repository {
                 request = request.header(header::AUTHORIZATION, value);
             }
             let request = request
-                .body(Empty::new())
+                .body(Full::new(call.body.clone()))
                 .map_err(|e| format!("{url}: {e}"))?;
             match self.client.request(request).await {
                 Err(e) if e.is_connect() && retries < CONNECT_RETRIES => {
@@ -289,7 +346,7 @@ impl Repository {
             } else {
                 None
             };
-            let response = self.send(&url, accept, authorization).await?;
+            let response = self.send(&Call::get(&url, accept), authorization).await?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED && same_host && self.bearer.is_none() {
                 let challenge = response
@@ -298,7 +355,7 @@ impl Repository {
                     .and_then(|v| v.to_str().ok())
                     .and_then(bearer_challenge);
                 if let Some(challenge) = challenge {
-                    self.bearer = Some(self.token(&challenge).await?);
+                    self.bearer = Some(self.token(&challenge, "pull").await?);
                     continue;
                 }
             }
@@ -332,8 +389,8 @@ impl Repository {
         Err(format!("{first}: too many redirects"))
     }
 
-    /// A pull token from the challenge's realm.
-    async fn token(&self, challenge: &Challenge) -> Result<String, String> {
+    /// A token for `actions` (`pull`, or `pull,push`) from the challenge's realm.
+    async fn token(&self, challenge: &Challenge, actions: &str) -> Result<String, String> {
         let service = challenge
             .service
             .as_deref()
@@ -346,9 +403,11 @@ impl Repository {
             } else {
                 '?'
             },
-            encode(&format!("repository:{}:pull", self.name))
+            encode(&format!("repository:{}:{actions}", self.name))
         );
-        let response = self.send(&url, None, self.basic.as_deref()).await?;
+        let response = self
+            .send(&Call::get(&url, None), self.basic.as_deref())
+            .await?;
         if !response.status().is_success() {
             return Err(format!(
                 "{} answered {}",
@@ -366,13 +425,133 @@ impl Repository {
             .ok_or_else(|| format!("{} gave no token", challenge.realm))
     }
 
-    /// The archive's layer, from the manifest with `digest`.
-    pub(crate) async fn layer(&mut self, digest: &str) -> Result<Layer, String> {
+    /// Sends `call` with the credentials, buying a pull and push token when the registry asks for
+    /// one. Only for URLs on the registry's own host.
+    async fn send_for_push(&mut self, call: &Call<'_>) -> Result<Response<Incoming>, String> {
+        let response = self
+            .send(call, self.bearer.as_deref().or(self.basic.as_deref()))
+            .await?;
+        if response.status() != StatusCode::UNAUTHORIZED || self.bearer.is_some() {
+            return Ok(response);
+        }
+        let Some(challenge) = response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(bearer_challenge)
+        else {
+            return Ok(response);
+        };
+        self.bearer = Some(self.token(&challenge, "pull,push").await?);
+        self.send(call, self.bearer.as_deref()).await
+    }
+
+    /// Uploads `blob` in one request and returns its descriptor.
+    async fn push_blob(&mut self, media_type: &str, blob: Bytes) -> Result<Descriptor, String> {
+        let base = format!("{}://{}", self.scheme, self.host);
+        let start = format!("{base}/v2/{}/blobs/uploads/", self.name);
+        let response = self
+            .send_for_push(&Call {
+                method: Method::POST,
+                url: &start,
+                accept: None,
+                content_type: None,
+                body: Bytes::new(),
+            })
+            .await?;
+        if response.status() != StatusCode::ACCEPTED {
+            return Err(format!("{start} answered {}", response.status()));
+        }
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| format!("{start} answered without a Location"))?;
+        let location = if location.starts_with('/') {
+            format!("{base}{location}")
+        } else {
+            location.to_owned()
+        };
+        if !location.starts_with(&format!("{base}/")) {
+            return Err(format!("the upload goes to {location}, not to {base}"));
+        }
+        let digest = archive::sha256(&blob);
+        let size = u64::try_from(blob.len()).unwrap_or(u64::MAX);
+        let url = format!(
+            "{location}{}digest={}",
+            if location.contains('?') { '&' } else { '?' },
+            encode(&digest)
+        );
+        let response = self
+            .send_for_push(&Call {
+                method: Method::PUT,
+                url: &url,
+                accept: None,
+                content_type: Some("application/octet-stream"),
+                body: blob,
+            })
+            .await?;
+        if response.status() != StatusCode::CREATED {
+            return Err(format!("the blob upload answered {}", response.status()));
+        }
+        Ok(Descriptor {
+            media_type: media_type.to_owned(),
+            digest,
+            size,
+        })
+    }
+
+    /// Pushes an artifact of `artifact_type` with `layer`, a gzip tar, as its one layer, tagged
+    /// `tag`, and returns the manifest's digest. The form is the one [`archive::layer`] reads.
+    pub(crate) async fn push_artifact(
+        &mut self,
+        tag: &str,
+        artifact_type: &str,
+        layer: Bytes,
+    ) -> Result<String, String> {
+        let config = self
+            .push_blob(EMPTY_CONFIG_MEDIA_TYPE, Bytes::from_static(b"{}"))
+            .await?;
+        let layer = self.push_blob(LAYER_MEDIA_TYPE, layer).await?;
+        let manifest = serde_json::to_vec(&ArtifactManifest {
+            schema_version: 2,
+            media_type: MANIFEST_MEDIA_TYPE,
+            artifact_type,
+            config,
+            layers: [layer],
+        })
+        .map_err(|e| format!("cannot write the manifest: {e}"))?;
+        let digest = archive::sha256(&manifest);
+        let url = format!(
+            "{}://{}/v2/{}/manifests/{tag}",
+            self.scheme, self.host, self.name
+        );
+        let response = self
+            .send_for_push(&Call {
+                method: Method::PUT,
+                url: &url,
+                accept: None,
+                content_type: Some(MANIFEST_MEDIA_TYPE),
+                body: Bytes::from(manifest),
+            })
+            .await?;
+        if response.status() != StatusCode::CREATED {
+            return Err(format!("{url} answered {}", response.status()));
+        }
+        Ok(digest)
+    }
+
+    /// The one layer of the manifest with `digest`, an artifact of `artifact_type`.
+    pub(crate) async fn layer(
+        &mut self,
+        digest: &str,
+        artifact_type: &str,
+    ) -> Result<Layer, String> {
         let response = self
             .get(&format!("manifests/{digest}"), Some(MANIFEST_MEDIA_TYPE))
             .await?;
         let body = read_limited(response, MAX_MANIFEST_BYTES).await?;
-        archive::layer(&body, digest).map_err(|e| e.to_string())
+        archive::layer(&body, digest, artifact_type).map_err(|e| e.to_string())
     }
 
     /// A manifest or index with `digest`, checked against it.
@@ -478,11 +657,6 @@ struct ImageManifest {
     config: Option<Descriptor>,
     #[serde(default)]
     manifests: Vec<IndexEntry>,
-}
-
-#[derive(Deserialize)]
-struct Descriptor {
-    digest: String,
 }
 
 #[derive(Deserialize)]
@@ -735,7 +909,7 @@ mod tests {
             Some(Credentials::Basic(BASIC.to_owned())),
         )
         .unwrap();
-        let layer = repository.layer(digest).await?;
+        let layer = repository.layer(digest, ARTIFACT_TYPE).await?;
         repository.download(&layer, to).await
     }
 
@@ -945,5 +1119,141 @@ mod tests {
         pull(addr, &digest, &to).await.unwrap();
         assert_eq!(std::fs::read(&to).unwrap(), blob);
         std::fs::remove_file(&to).unwrap();
+    }
+
+    /// What a pushing fake registry was given: blobs by digest, manifests by tag.
+    #[derive(Default)]
+    struct Pushed {
+        blobs: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+        manifests: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+    }
+
+    /// A registry that sells a pull and push token for [`BASIC`] and keeps what is pushed to
+    /// [`NAME`]. Its upload URL is relative, or on `localhost` when `elsewhere`.
+    async fn handle_push(
+        pushed: &Pushed,
+        port: u16,
+        elsewhere: bool,
+        request: Request<Incoming>,
+    ) -> Response<Full<Bytes>> {
+        let auth = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let method = request.method().clone();
+        let path = request.uri().path().to_owned();
+        let query = request.uri().query().unwrap_or_default().to_owned();
+        let body = request.into_body().collect().await.unwrap().to_bytes();
+        if path == "/token" {
+            let scope = format!("scope={}", encode(&format!("repository:{NAME}:pull,push")));
+            return if auth.as_deref() == Some(BASIC) && query.contains(&scope) {
+                reply(StatusCode::OK, &[], br#"{"token":"t0k"}"#.to_vec())
+            } else {
+                reply(StatusCode::FORBIDDEN, &[], Vec::new())
+            };
+        }
+        if auth.as_deref() != Some("Bearer t0k") {
+            let challenge = format!(r#"Bearer realm="http://127.0.0.1:{port}/token""#);
+            return reply(
+                StatusCode::UNAUTHORIZED,
+                &[("www-authenticate", challenge)],
+                Vec::new(),
+            );
+        }
+        let uploads = format!("/v2/{NAME}/blobs/uploads/");
+        let manifests = format!("/v2/{NAME}/manifests/");
+        if method == Method::POST && path == uploads {
+            let location = if elsewhere {
+                format!("http://localhost:{port}/upload/1")
+            } else {
+                "/upload/1".to_owned()
+            };
+            return reply(StatusCode::ACCEPTED, &[("location", location)], Vec::new());
+        }
+        if method == Method::PUT && path == "/upload/1" {
+            let digest = query.strip_prefix("digest=").unwrap().replace("%3A", ":");
+            assert_eq!(sha256(&body), digest);
+            pushed.blobs.lock().unwrap().insert(digest, body.to_vec());
+            return reply(StatusCode::CREATED, &[], Vec::new());
+        }
+        if let Some(tag) = path.strip_prefix(&manifests)
+            && method == Method::PUT
+        {
+            pushed
+                .manifests
+                .lock()
+                .unwrap()
+                .insert(tag.to_owned(), body.to_vec());
+            return reply(StatusCode::CREATED, &[], Vec::new());
+        }
+        reply(StatusCode::NOT_FOUND, &[], Vec::new())
+    }
+
+    async fn serve_push(elsewhere: bool) -> (SocketAddr, Arc<Pushed>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let pushed = Arc::new(Pushed::default());
+        let kept = Arc::clone(&pushed);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let pushed = Arc::clone(&kept);
+                tokio::spawn(async move {
+                    let service = service_fn(move |request| {
+                        let pushed = Arc::clone(&pushed);
+                        async move {
+                            let response =
+                                handle_push(&pushed, addr.port(), elsewhere, request).await;
+                            Ok::<_, Infallible>(response)
+                        }
+                    });
+                    drop(
+                        hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .await,
+                    );
+                });
+            }
+        });
+        (addr, pushed)
+    }
+
+    fn push_repository(addr: SocketAddr) -> Repository {
+        Repository::new(
+            client(None).unwrap(),
+            &format!("127.0.0.1:{}/{NAME}", addr.port()),
+            true,
+            Some(Credentials::Basic(BASIC.to_owned())),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pushes_an_artifact_that_reads_back_as_one() {
+        let plan = zeabur_builder_core::plan::ARTIFACT_TYPE;
+        let (addr, pushed) = serve_push(false).await;
+        let layer = b"the plan".to_vec();
+        let digest = push_repository(addr)
+            .push_artifact("zeabur-plan-1", plan, Bytes::from(layer.clone()))
+            .await
+            .unwrap();
+
+        let manifest = pushed.manifests.lock().unwrap()["zeabur-plan-1"].clone();
+        let read = archive::layer(&manifest, &digest, plan).unwrap();
+        let blobs = pushed.blobs.lock().unwrap();
+        assert_eq!(blobs[&read.digest], layer);
+        assert_eq!(blobs[&sha256(b"{}")], b"{}");
+    }
+
+    #[tokio::test]
+    async fn refuses_an_upload_url_on_another_host() {
+        let (addr, pushed) = serve_push(true).await;
+        let error = push_repository(addr)
+            .push_artifact("t", ARTIFACT_TYPE, Bytes::from_static(b"x"))
+            .await
+            .unwrap_err();
+        assert!(error.contains("not to http://127.0.0.1"), "{error}");
+        assert!(pushed.blobs.lock().unwrap().is_empty());
     }
 }

@@ -3,6 +3,7 @@
   "kind": "Job",
   "metadata": {
     "annotations": {
+      "builder.zeabur.com/image": "registry.internal/team-a/api",
       "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
     },
     "labels": {
@@ -30,6 +31,7 @@
     "template": {
       "metadata": {
         "annotations": {
+          "builder.zeabur.com/image": "registry.internal/team-a/api",
           "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
         },
         "labels": {
@@ -45,7 +47,8 @@
           {
             "command": [
               "zeabur-builder-job",
-              "--",
+              "build",
+              "--build",
               "buildctl",
               "--addr",
               "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",

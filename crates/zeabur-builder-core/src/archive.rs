@@ -116,12 +116,15 @@ pub fn hex(hash: &[u8]) -> String {
     text
 }
 
-/// Checks a manifest against the digest the `Build` names and returns its layer.
+/// Checks a manifest against `digest` and returns its one layer.
+///
+/// The manifest's `artifactType`, or else its config's media type, must be `artifact_type`:
+/// [`ARTIFACT_TYPE`] for an archive source, [`crate::plan::ARTIFACT_TYPE`] for a saved plan.
 ///
 /// # Errors
 ///
-/// When the bytes do not hash to `digest`, or the manifest is not an archive source.
-pub fn layer(manifest: &[u8], digest: &str) -> Result<Layer, ArchiveError> {
+/// When the bytes do not hash to `digest`, or the manifest is not of that form.
+pub fn layer(manifest: &[u8], digest: &str, artifact_type: &str) -> Result<Layer, ArchiveError> {
     if !is_digest(digest) || sha256(manifest) != digest {
         return Err(ArchiveError::Digest(digest.to_owned()));
     }
@@ -132,13 +135,13 @@ pub fn layer(manifest: &[u8], digest: &str) -> Result<Layer, ArchiveError> {
             "the mediaType must be {MANIFEST_MEDIA_TYPE}"
         )));
     }
-    let artifact_type = manifest
+    let found = manifest
         .artifact_type
         .as_deref()
         .unwrap_or(&manifest.config.media_type);
-    if artifact_type != ARTIFACT_TYPE {
+    if found != artifact_type {
         return Err(ArchiveError::Form(format!(
-            "the artifactType is `{artifact_type}`, not {ARTIFACT_TYPE}"
+            "the artifactType is `{found}`, not {artifact_type}"
         )));
     }
     let [layer] = manifest.layers.as_slice() else {
@@ -228,6 +231,17 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_plan_and_a_source_are_not_read_as_each_other() {
+        let plan = crate::plan::ARTIFACT_TYPE;
+        let saved = manifest(plan, &layer_json(LAYER_MEDIA_TYPE, 1234));
+        let source = manifest(ARTIFACT_TYPE, &layer_json(LAYER_MEDIA_TYPE, 1234));
+
+        assert!(layer(saved.as_bytes(), &digest(saved.as_bytes()), plan).is_ok());
+        assert!(layer(saved.as_bytes(), &digest(saved.as_bytes()), ARTIFACT_TYPE).is_err());
+        assert!(layer(source.as_bytes(), &digest(source.as_bytes()), plan).is_err());
+    }
+
+    #[test]
     fn sha256_of_known_input() {
         assert_eq!(sha256(b"foo"), LAYER);
     }
@@ -236,7 +250,7 @@ mod tests {
     fn an_oras_artifact_gives_its_layer() {
         let body = manifest(ARTIFACT_TYPE, &layer_json(LAYER_MEDIA_TYPE, 1234));
         assert_eq!(
-            layer(body.as_bytes(), &digest(body.as_bytes())),
+            layer(body.as_bytes(), &digest(body.as_bytes()), ARTIFACT_TYPE),
             Ok(Layer {
                 digest: LAYER.to_owned(),
                 size: 1234
@@ -249,10 +263,10 @@ mod tests {
         let body = manifest(ARTIFACT_TYPE, &layer_json(LAYER_MEDIA_TYPE, 1));
         let other = digest(b"another manifest");
         assert_eq!(
-            layer(body.as_bytes(), &other),
+            layer(body.as_bytes(), &other, ARTIFACT_TYPE),
             Err(ArchiveError::Digest(other.clone()))
         );
-        assert!(layer(body.as_bytes(), "sha512:00").is_err());
+        assert!(layer(body.as_bytes(), "sha512:00", ARTIFACT_TYPE).is_err());
     }
 
     #[test]
@@ -295,7 +309,7 @@ mod tests {
         ];
         for (name, body) in cases {
             assert!(
-                layer(body.as_bytes(), &digest(body.as_bytes())).is_err(),
+                layer(body.as_bytes(), &digest(body.as_bytes()), ARTIFACT_TYPE).is_err(),
                 "{name}"
             );
         }
