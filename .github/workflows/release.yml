@@ -42,19 +42,11 @@ jobs:
         run: bun install --frozen-lockfile
       - name: The version is the crate's and the chart's, with a CHANGELOG.md section, on main
         run: |
-          # The manifests take only SemVer; an image tag cannot hold the + of build metadata.
-          [[ "$VERSION" == v* && "$VERSION" != *+* ]] ||
-            { echo "::error::$VERSION is not v and SemVer without build metadata"; exit 1; }
           crate=$(cargo metadata --locked --no-deps --format-version 1 |
             jq -r '.packages[] | select(.name == "zeabur-builder") | .version')
           chart=$(sed -n 's/^version: *//p' deploy/chart/Chart.yaml)
-          [[ "$VERSION" == "v$crate" && "$VERSION" == "v$chart" ]] ||
-            { echo "::error::$VERSION is not v$crate, the crate's version, and v$chart, the chart's"; exit 1; }
-          bun x zeabur-oss-release notes CHANGELOG.md "$VERSION" >/dev/null
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            git merge-base --is-ancestor HEAD origin/main ||
-              { echo "::error::$VERSION is not on main"; exit 1; }
-          fi
+          bun x zeabur-oss-release check-tag "$VERSION" --changelog CHANGELOG.md \
+            --version "$crate" --version "$chart" ${{ github.event_name != 'push' && '--rehearsal' || '' }}
 
   build:
     name: build (${{ matrix.arch }})
@@ -141,9 +133,7 @@ jobs:
               "linux/amd64=images/images-amd64/$1.tar" "linux/arm64=images/images-arm64/$1.tar"
           }
 
-          if gh release view "$VERSION" --json isDraft --jq '.isDraft' | grep -qx false; then
-            echo "::error::release $VERSION is already published"; exit 1
-          fi
+          release unpublished "$VERSION"
           crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<<"$GH_TOKEN"
           # Every tag is refused before the first push, so a release never stops halfway on a tag
           # that was there from the start.
@@ -203,19 +193,15 @@ jobs:
         with:
           name: published
           path: published
-      - name: Make the release assets and their signed checksums
+      - name: Make the release assets
         run: |
           mkdir assets
           cp "published/zeabur-builder-${VERSION#v}.tgz" published/digests.txt assets/
-          bun x zeabur-oss-release checksums assets
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      - uses: zeabur-oss/.github/actions/release-draft@fe73a0c68d3ef4b7557f15f7987f59f555714788 # main
         with:
-          subject-checksums: assets/SHA256SUMS
-      # The draft is created with its files, never before: a published release takes no more files.
-      - name: Create the draft release with the assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bun x zeabur-oss-release draft CHANGELOG.md "$VERSION" assets --name "Zeabur Builder" --docs https://oss.zeabur.com/docs/builder/
+          version: ${{ env.VERSION }}
+          name: Zeabur Builder
+          docs: https://oss.zeabur.com/docs/builder/
 
   verify:
     needs: release
@@ -226,13 +212,10 @@ jobs:
       contents: write
       attestations: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: zeabur-oss/.github/actions/release-verify@fe73a0c68d3ef4b7557f15f7987f59f555714788 # main
         with:
-          persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@f3ae87d7ef3c37447432e398200d200b546dfa46 # main
-      - name: Install the packages
-        run: bun install --frozen-lockfile
-      - name: Download the draft's assets and verify the images and the chart
+          version: ${{ env.VERSION }}
+      - name: Verify the images and the chart
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SOURCE_REPOSITORY: ${{ github.repository }}
@@ -247,8 +230,6 @@ jobs:
               --chart "$chart" --key "$2" linux/amd64 linux/arm64
           }
 
-          gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --dir downloaded
-          release verify-assets downloaded
           # A fresh, empty registry login: a publisher's login must not hide a private package.
           export DOCKER_CONFIG=$RUNNER_TEMP/docker HELM_REGISTRY_CONFIG=$RUNNER_TEMP/docker/config.json
           mkdir -p "$DOCKER_CONFIG"

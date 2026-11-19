@@ -24,7 +24,7 @@ cargo lint                                   # clippy, all targets and features,
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 cargo nextest run --workspace
 cargo deny --locked check
-./scripts/check-levels.sh
+bun install --frozen-lockfile && node_modules/.bin/zeabur-oss-levels
 ./scripts/check-chart.sh
 ```
 
@@ -46,7 +46,7 @@ Simplified Chinese.
 ## Crate levels
 
 A crate may depend only on crates of a lower level (`[workspace.metadata.levels]` in
-`Cargo.toml`, checked by `scripts/check-levels.sh`):
+`Cargo.toml`, checked by `zeabur-oss-levels`):
 
 | Level | Crate | Holds |
 |---|---|---|

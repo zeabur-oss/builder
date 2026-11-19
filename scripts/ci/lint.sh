@@ -11,7 +11,8 @@ static() {
   nixfmt --check flake.nix
   shellcheck scripts/*.sh scripts/ci/*.sh
   jactionlint
-  ./scripts/check-levels.sh
+  bun install --frozen-lockfile
+  node_modules/.bin/zeabur-oss-levels
   ./scripts/check-chart.sh
 }
 
