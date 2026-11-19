@@ -66,10 +66,13 @@ jobs:
       - uses: zeabur-oss/.github/actions/ci-setup@f3ae87d7ef3c37447432e398200d200b546dfa46 # main
         with:
           rust-cache: true
-      - name: Test on Kubernetes
-        run: nix develop -c scripts/ci/kubernetes.sh
-        env:
-          CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
+      - parallel:
+          - name: Test on Kubernetes
+            run: nix develop -c scripts/ci/kubernetes.sh
+            env:
+              CI_ARTIFACTS: ${{ runner.temp }}/ci-artifacts
+          - name: Trial builds on buildkitd
+            run: nix develop -c scripts/ci/trial-builds.sh
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

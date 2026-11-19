@@ -16,6 +16,7 @@ zeabur-builder-api = 1
 zeabur-builder-jobspec = 2
 zeabur-builder = 3
 zeabur-builder-job = 3
+zeabur-builder-agent = 3
 
 [workspace.metadata.pure]
 # No I/O, no clock, no randomness: the controller's decisions are functions of their inputs.
@@ -48,6 +49,8 @@ kube = { version = "5.0", default-features = false, features = ["derive"] }
 kube-lease-manager = "0.13"
 kube_quantity = "0.9"
 pretty_assertions = "1"
+# Model APIs for the agent planner, with no bundled HTTP client: it sends through hyper-rustls.
+rig-core = { version = "=0.46.0", default-features = false }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem", "crypto"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "logging", "tls12"] }
 rustls-native-certs = "0.8.5"

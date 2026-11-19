@@ -1,0 +1,37 @@
+[package]
+name = "zeabur-builder-agent"
+description = "Zeabur Builder: an agent that writes a Dockerfile for a repository and trial-builds it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository = "https://github.com/zeabur-oss/builder"
+readme = "README.md"
+keywords = ["buildkit", "dockerfile", "agent"]
+categories = ["development-tools::build-utils", "command-line-utilities"]
+
+[lints]
+workspace = true
+
+[dependencies]
+zeabur-builder-core.workspace = true
+base64.workspace = true
+bytes.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+rig-core.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+pretty_assertions.workspace = true

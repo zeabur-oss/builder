@@ -54,6 +54,7 @@ A crate may depend only on crates of a lower level (`[workspace.metadata.levels]
 | 1 | `zeabur-builder-api` | The custom resources |
 | 2 | `zeabur-builder-jobspec` | The build Job |
 | 3 | `zeabur-builder` | The binary |
+| 3 | `zeabur-builder-agent` | The agent planner: writes a Dockerfile and trial-builds it |
 
 Levels 0 to 2 are pure: no I/O, no clock, no randomness. The controller's decisions are
 functions of their inputs, so they are tested without a cluster.
