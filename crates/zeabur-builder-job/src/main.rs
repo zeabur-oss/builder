@@ -230,6 +230,9 @@ const IMAGE_PORTS_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long pushing the plan image may take; the plan only saves a model call on the next run.
 const SAVE_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long `fetch-plan` waits for the last plan before the planner starts without it.
+const FETCH_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// The ports the pushed image declares, read back from the registry the build pushed to.
 async fn image_ports(
     repository: &str,
@@ -503,10 +506,19 @@ async fn pull(args: &FetchArgs, artifact_type: &str, file: &str) -> Result<(), S
     Ok(())
 }
 
-/// Pulls the last plan into `args.dir`. An error leaves the folder empty: the planner then starts
-/// without a last plan.
+/// Pulls the last plan into `args.dir`. An error or a registry that stalls leaves the folder
+/// empty: the planner then starts without a last plan.
 async fn fetch_plan(args: &FetchArgs) {
-    if let Err(message) = pull(args, SAVED_CONFIG_MEDIA_TYPE, "plan.tar.gz").await {
+    let pulled = tokio::time::timeout(
+        FETCH_PLAN_TIMEOUT,
+        pull(args, SAVED_CONFIG_MEDIA_TYPE, "plan.tar.gz"),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| Err(format!("no answer in {} s", FETCH_PLAN_TIMEOUT.as_secs())));
+    if let Err(message) = pulled {
+        drop(std::fs::remove_file(
+            std::path::Path::new(WORKSPACE).join("plan.tar.gz"),
+        ));
         drop(writeln!(
             std::io::stderr().lock(),
             "cannot read the last plan: {message}"
