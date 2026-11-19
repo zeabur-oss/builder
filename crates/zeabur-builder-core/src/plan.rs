@@ -98,7 +98,8 @@ pub struct Info {
 impl Info {
     /// The report as JSON of at most [`MAX_MESSAGE_BYTES`]: `detail` cut to
     /// [`MAX_DETAIL_BYTES`], then the notes, the variable names and the other details left out,
-    /// in that order, until it fits.
+    /// in that order, then `detail` cut to the room left, as escapes can make its JSON
+    /// up to six times its length.
     #[must_use]
     pub fn encode(&self) -> String {
         let mut info = self.clone();
@@ -123,6 +124,13 @@ impl Info {
             info.details = None;
             json = to_json(&info);
         }
+        if json.len() > MAX_MESSAGE_BYTES
+            && let Some(detail) = &mut info.detail
+        {
+            let room = MAX_MESSAGE_BYTES.saturating_sub(json.len() - escaped_len(detail));
+            *detail = escaped_prefix(detail, room);
+            json = to_json(&info);
+        }
         json
     }
 
@@ -140,6 +148,26 @@ impl Info {
         }
         serde_json::from_str(message.trim()).map_err(|e| format!("the plan report: {e}"))
     }
+}
+
+/// The length of `s` in a JSON string, without the quotes.
+fn escaped_len(s: &str) -> usize {
+    s.chars().map(char_escaped_len).sum()
+}
+
+/// The longest start of `s` whose JSON string, without the quotes, has at most `max` bytes.
+fn escaped_prefix(s: &str, max: usize) -> String {
+    let mut used = 0;
+    s.chars()
+        .take_while(|&c| {
+            used += char_escaped_len(c);
+            used <= max
+        })
+        .collect()
+}
+
+fn char_escaped_len(c: char) -> usize {
+    serde_json::to_string(&c).map_or_else(|_| c.len_utf8(), |json| json.len() - 2)
 }
 
 /// `info` as JSON. It holds strings, numbers and enums only, so this cannot fail.
@@ -210,6 +238,20 @@ mod tests {
         assert!(encoded.len() <= MAX_MESSAGE_BYTES);
         let detail = Info::decode(&encoded).unwrap().detail.unwrap();
         assert!(detail.len() <= MAX_DETAIL_BYTES && detail.starts_with('模'));
+    }
+
+    #[test]
+    fn a_detail_of_escaped_characters_still_fits() {
+        let mut stopped = info();
+        stopped.reason = Some(Reason::ModelFailed);
+        stopped.detail = Some("\u{1}".repeat(MAX_DETAIL_BYTES));
+
+        let encoded = stopped.encode();
+
+        assert!(encoded.len() <= MAX_MESSAGE_BYTES, "{}", encoded.len());
+        let decoded = Info::decode(&encoded).unwrap();
+        assert_eq!(decoded.reason, Some(Reason::ModelFailed));
+        assert!(decoded.detail.unwrap().starts_with('\u{1}'));
     }
 
     #[test]
