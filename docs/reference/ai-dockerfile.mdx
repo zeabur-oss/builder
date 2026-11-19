@@ -3,7 +3,7 @@ title: Write a Dockerfile with AI
 description: Run zeabur-builder-agent on a repository without a Dockerfile to get one that passed a trial build, then use it with Zeabur Builder.
 ---
 
-When a repository has no Dockerfile, run `zeabur-builder-agent`. A model reads the code, writes a Dockerfile and trial-builds it on a BuildKit daemon (`buildkitd`). You only get a Dockerfile that built. For now you run the command yourself: there is no `agent` ClusterBuilder type yet. The cluster integration is planned in [issue #152](https://github.com/zeabur-oss/builder/issues/152).
+When a repository has no Dockerfile, run `zeabur-builder-agent`. A model reads the code, writes a Dockerfile and trial-builds it on a BuildKit daemon (`buildkitd`). You only get a Dockerfile that built. On this page you run the command yourself. To have Zeabur Builder run it for a Build, see [Build a repository without a Dockerfile](../builds/no-dockerfile.mdx).
 
 ## Run it
 

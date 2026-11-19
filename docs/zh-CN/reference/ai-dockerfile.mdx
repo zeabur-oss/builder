@@ -3,7 +3,7 @@ title: 用 AI 写 Dockerfile
 description: 在没有 Dockerfile 的仓库上运行 zeabur-builder-agent，拿到通过试构建的 Dockerfile，再交给 Zeabur Builder 使用。
 ---
 
-仓库还没有 Dockerfile 时，可以运行 `zeabur-builder-agent`：模型读取代码、编写 Dockerfile，并在 BuildKit 守护进程（`buildkitd`）上试构建，只有构建成功的 Dockerfile 才会输出。目前需要自己运行命令，还没有 `agent` 类型的 ClusterBuilder，集群集成安排在 [issue #152](https://github.com/zeabur-oss/builder/issues/152)。
+仓库还没有 Dockerfile 时，可以运行 `zeabur-builder-agent`：模型读取代码、编写 Dockerfile，并在 BuildKit 守护进程（`buildkitd`）上试构建，只有构建成功的 Dockerfile 才会输出。本页介绍如何自己运行命令；要让 Zeabur Builder 在构建时运行，请看[构建没有 Dockerfile 的仓库](../builds/no-dockerfile.mdx)。
 
 ## 运行
 

@@ -12,6 +12,7 @@
     rollout: 部署建置好的映像檔
     external-registries: 推送到外部 registry
     build-nodes: 在建置節點上建置
+    no-dockerfile: 建置沒有 Dockerfile 的儲存庫
 - group: operations
   label: 維運
   pages:

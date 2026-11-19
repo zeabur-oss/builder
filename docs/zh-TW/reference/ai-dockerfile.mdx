@@ -3,7 +3,7 @@ title: 用 AI 寫 Dockerfile
 description: 在沒有 Dockerfile 的儲存庫執行 zeabur-builder-agent，取得通過試建置的 Dockerfile，再交給 Zeabur Builder 使用。
 ---
 
-儲存庫還沒有 Dockerfile 時，可以執行 `zeabur-builder-agent`，讓模型讀取程式碼、撰寫 Dockerfile，並在 BuildKit daemon（`buildkitd`）上試建置；工具只會給你建置成功的 Dockerfile。目前需要自行執行指令，尚未提供 `agent` 類型的 ClusterBuilder，叢集整合規劃見 [issue #152](https://github.com/zeabur-oss/builder/issues/152)。
+儲存庫還沒有 Dockerfile 時，可以執行 `zeabur-builder-agent`，讓模型讀取程式碼、撰寫 Dockerfile，並在 BuildKit daemon（`buildkitd`）上試建置；工具只會給你建置成功的 Dockerfile。本頁說明如何自行執行指令；要讓 Zeabur Builder 在建置時執行，請看[建置沒有 Dockerfile 的儲存庫](../builds/no-dockerfile.mdx)。
 
 ## 執行
 

@@ -1,0 +1,113 @@
+---
+title: Build a repository without a Dockerfile
+description: Turn on the agent builder so a model writes a Dockerfile that builds, then reuse it or commit it to the repository.
+---
+
+Set a Build's `builderRef` to `agent`, and Zeabur Builder builds a Git repository that has no Dockerfile. A model reads the code, writes a Dockerfile and trial-builds it. Then the run builds and pushes the image as usual. Later runs try the same Dockerfile first and call the model only when it no longer builds.
+
+<Steps>
+
+<Step>
+
+### Create the Secret with the model API key
+
+Get an API key from your model provider and save it as `./model-key`. This example uses Anthropic and the `team-a` Namespace, where the Build lives:
+
+```sh
+kubectl -n team-a create secret generic model --from-file=anthropic=./model-key
+```
+
+Every Namespace with a Build on the `agent` builder needs this Secret. Only the run's plan container gets the key.
+
+</Step>
+
+<Step>
+
+### Turn on the agent builder
+
+Upgrade the chart, keep your values and turn on `agent`:
+
+```sh
+helm upgrade builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  -n builder-system --reuse-values \
+  --set agent.enabled=true --set agent.provider=anthropic --set agent.model=claude-sonnet-5-5 \
+  --set agent.apiKeySecret.name=model --set agent.apiKeySecret.key=anthropic
+```
+
+The chart installs a ClusterBuilder named `agent`. To send requests to another endpoint of the same API, such as a proxy, also set `agent.baseUrl`.
+
+</Step>
+
+<Step>
+
+### Point a Build at the agent builder
+
+Set `spec.builderRef` to `agent`:
+
+```yaml
+apiVersion: builder.zeabur.com/v1alpha1
+kind: Build
+metadata: {name: node-hello, namespace: team-a}
+spec:
+  source: {git: {url: https://github.com/heroku/node-js-getting-started, ref: main}}
+  builderRef: agent
+```
+
+</Step>
+
+</Steps>
+
+## Read the result
+
+List the Build's runs, then read `status.plan` of one of them:
+
+```sh
+kubectl -n team-a get buildrun -l builder.zeabur.com/build=node-hello
+kubectl -n team-a get buildrun <run> -o jsonpath='{.status.plan}'
+```
+
+The first run of `node-hello` reported:
+
+```json
+{"dockerfile":"agent","inputTokens":10616,"language":"Node.js","modelCalled":true,"outputTokens":704,"port":5006,"runtimeVariables":["PORT"],"version":"24.9"}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `dockerfile` | Where the Dockerfile came from: `repository` (the repository's own), `previous` (the last good one) or `agent` (the model wrote it). |
+| `modelCalled`, `inputTokens`, `outputTokens` | Whether the model was called, and the tokens it used. |
+| `language`, `version`, `port`, `buildVariables`, `runtimeVariables` | What the model found: the language and its version, the port, and the variables the build and the app read. |
+
+The plan step's log has the whole Dockerfile, and its last line is the same report:
+
+```sh
+kubectl -n team-a logs job/<run> -c plan
+```
+
+What the model may read and its limits are in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx).
+
+## Later runs
+
+After the model writes a Dockerfile that builds, the run pushes it next to the Build's images, tagged `zeabur-plan-<Build uid>`, and the Build records it in `status.plan`:
+
+```sh
+kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
+```
+
+The next run builds that Dockerfile first. If it builds, the run reports `"dockerfile":"previous"` and `"modelCalled":false`, uses no tokens, and keeps the port, language and variables of the first run. If it no longer builds, for example after a dependency changed, the model writes a new one and `status.plan` changes.
+
+## Commit the Dockerfile to the repository
+
+To take the Dockerfile out of the model's hands, copy it from the plan step's log into the repository as `Dockerfile`. Then set the Build's `builderRef` to `dockerfile`. You can now change it like any other file.
+
+## Troubleshooting
+
+| What you see | What to do |
+| --- | --- |
+| The run waits with `ModelKeyMissing`, and its message names a missing `model` Secret or `anthropic` key. | Create the Secret, or add the key, in the Build's Namespace. The run starts by itself; no Job is created while it waits. |
+| The run fails with `PlanFailed`. | Read `status.plan.stopped` for the reason and `status.message` for what to do. |
+| `stopped` is `ModelKeyMissing` or `ModelFailed`. | Check the key and `status.message`. A missing or refused key is `ModelKeyMissing`; a refused or failed request to the model API is `ModelFailed`. |
+| `stopped` is `SeveralApps`. | Set the app's folder in `spec.source.git.contextDir`. |
+| `stopped` is `NeedsBuildVariable`. | Set the variable that `status.message` names in the Build's `spec.env`. |
+| `stopped` is `NoAppFound`, `NeedsPrivateDependency` or `UnsupportedPlatform`. | `status.message` says what the app, its private dependency or its platform needs. |
+| `stopped` is `BudgetSpent` or `BuildKeepsFailing`. | Read `status.message`. `BudgetSpent` means a limit was reached: model calls, failed builds, time or tokens. |

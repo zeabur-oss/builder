@@ -1,0 +1,113 @@
+---
+title: 构建没有 Dockerfile 的仓库
+description: 启用 agent 构建器，让模型写出能构建的 Dockerfile，之后的构建会沿用，也可以提交进仓库。
+---
+
+把 Build 的 `builderRef` 设为 `agent`，Zeabur Builder 就能构建没有 Dockerfile 的 Git 仓库：模型读取代码、写出 Dockerfile 并试着构建，然后照常构建并推送镜像。之后的构建会先用同一份 Dockerfile，构建不了才再调用模型。
+
+<Steps>
+
+<Step>
+
+### 创建存放模型 API 密钥的 Secret
+
+从模型提供商获取 API 密钥，保存为 `./model-key`。下面以 Anthropic 为例，在 Build 所在的 `team-a` Namespace 创建 Secret：
+
+```sh
+kubectl -n team-a create secret generic model --from-file=anthropic=./model-key
+```
+
+每个有 Build 使用 `agent` 构建器的 Namespace 都需要这个 Secret。只有构建时的 plan 容器能拿到密钥。
+
+</Step>
+
+<Step>
+
+### 启用 agent 构建器
+
+升级 chart，保留原有配置并启用 `agent`：
+
+```sh
+helm upgrade builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  -n builder-system --reuse-values \
+  --set agent.enabled=true --set agent.provider=anthropic --set agent.model=claude-sonnet-5-5 \
+  --set agent.apiKeySecret.name=model --set agent.apiKeySecret.key=anthropic
+```
+
+chart 会安装名为 `agent` 的 ClusterBuilder。要改用同一个 API 的其他端点，例如代理服务器，再设置 `agent.baseUrl`。
+
+</Step>
+
+<Step>
+
+### 让 Build 使用 agent 构建器
+
+把 `spec.builderRef` 设为 `agent`：
+
+```yaml
+apiVersion: builder.zeabur.com/v1alpha1
+kind: Build
+metadata: {name: node-hello, namespace: team-a}
+spec:
+  source: {git: {url: https://github.com/heroku/node-js-getting-started, ref: main}}
+  builderRef: agent
+```
+
+</Step>
+
+</Steps>
+
+## 查看结果
+
+列出这个 Build 的 BuildRun，再查看其中一个的 `status.plan`：
+
+```sh
+kubectl -n team-a get buildrun -l builder.zeabur.com/build=node-hello
+kubectl -n team-a get buildrun <run> -o jsonpath='{.status.plan}'
+```
+
+`node-hello` 第一次构建的结果如下：
+
+```json
+{"dockerfile":"agent","inputTokens":10616,"language":"Node.js","modelCalled":true,"outputTokens":704,"port":5006,"runtimeVariables":["PORT"],"version":"24.9"}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `dockerfile` | Dockerfile 从哪里来：`repository` 是仓库自己的，`previous` 是上次成功的那份，`agent` 是模型写的。 |
+| `modelCalled`、`inputTokens`、`outputTokens` | 有没有调用模型，以及用了多少 token。 |
+| `language`、`version`、`port`、`buildVariables`、`runtimeVariables` | 模型找到的语言和版本、端口，以及构建和应用会读取的变量。 |
+
+plan 步骤会在日志打印完整的 Dockerfile，最后一行就是上面的结果：
+
+```sh
+kubectl -n team-a logs job/<run> -c plan
+```
+
+模型能读取哪些内容、有哪些限制，请见[用 AI 写 Dockerfile](../reference/ai-dockerfile.mdx)。
+
+## 之后的构建
+
+模型写出能构建的 Dockerfile 后，这次构建会把它推送到 Build 的镜像旁边，标签是 `zeabur-plan-<Build uid>`，Build 也会记在 `status.plan`：
+
+```sh
+kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
+```
+
+下次构建会先用这份 Dockerfile。构建成功的话，结果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，端口、语言和变量也和第一次一样；构建不了的话，例如依赖改了，模型会重写一份，`status.plan` 也会换成新的。
+
+## 把 Dockerfile 提交进仓库
+
+不想再让模型决定 Dockerfile 的话，从 plan 步骤的日志复制 Dockerfile，以 `Dockerfile` 为文件名提交进仓库，再把 Build 的 `builderRef` 改成 `dockerfile`。之后就像普通文件一样自己修改。
+
+## 遇到问题
+
+| 看到的情况 | 接下来怎么做 |
+| --- | --- |
+| run 停在 `ModelKeyMissing` 等待，消息说找不到 `model` Secret 或 `anthropic` 键 | 在 Build 所在的 Namespace 创建 Secret 或补上键。补好后 run 会自己开始，等待时不会创建 Job。 |
+| run 以 `PlanFailed` 失败 | 从 `status.plan.stopped` 看停止原因，从 `status.message` 看怎么处理。 |
+| `stopped` 是 `ModelKeyMissing` 或 `ModelFailed` | 检查密钥和 `status.message`。密钥缺失或被拒绝是 `ModelKeyMissing`；模型 API 拒绝请求或请求失败是 `ModelFailed`。 |
+| `stopped` 是 `SeveralApps` | 在 `spec.source.git.contextDir` 指定应用所在的目录。 |
+| `stopped` 是 `NeedsBuildVariable` | 在 Build 的 `spec.env` 设置 `status.message` 提到的变量。 |
+| `stopped` 是 `NoAppFound`、`NeedsPrivateDependency` 或 `UnsupportedPlatform` | `status.message` 会说明应用、私有依赖或平台需要什么。 |
+| `stopped` 是 `BudgetSpent` 或 `BuildKeepsFailing` | 查看 `status.message`。`BudgetSpent` 表示到了上限：模型调用次数、构建失败次数、时间或 token。 |
