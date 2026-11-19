@@ -64,7 +64,6 @@ const OUT: &str = "/workspace/out";
 const GIT_CREDENTIALS: &str = "/etc/zeabur-builder/git";
 const BUILDKIT_TLS: &str = "/etc/zeabur-builder/buildkit";
 const REGISTRY_AUTH: &str = "/etc/zeabur-builder/registry";
-const MODEL_KEY: &str = "/etc/zeabur-builder/model";
 /// The registry's CA, PEM, in the `fetch` container of an archive source.
 pub const REGISTRY_CA_ENV: &str = "ZB_REGISTRY_CA";
 /// Prefix of the build container's variables that carry `Build.spec.env`, so a variable named
@@ -462,7 +461,8 @@ fn railpack_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Containe
 }
 
 /// `zeabur-builder-agent`, which trial-builds on the namespace's buildkitd and writes the
-/// Dockerfile into `/workspace/plan`, with the model API key from the namespace's Secret.
+/// Dockerfile into `/workspace/plan`, with the model API key from the namespace's Secret in
+/// `ZB_MODEL_API_KEY`.
 fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Container, JobError> {
     let model = planner
         .model
@@ -482,15 +482,12 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
         literal(&model.provider),
         "--model".to_owned(),
         literal(&model.model),
-        "--api-key-file".to_owned(),
-        format!("{MODEL_KEY}/key"),
     ];
     if let Some(base_url) = &model.base_url {
         args.extend(["--base-url".to_owned(), literal(base_url)]);
     }
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
-    mounts.push(mount("model-key", MODEL_KEY));
     Ok(Container {
         name: "plan".to_owned(),
         image: Some(planner.image.clone()),
@@ -501,7 +498,21 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
             "plan".to_owned(),
         ]),
         args: Some(args),
-        env: Some(vec![env("HOME", "/tmp")]),
+        env: Some(vec![
+            env("HOME", "/tmp"),
+            EnvVar {
+                name: "ZB_MODEL_API_KEY".to_owned(),
+                value: None,
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: model.api_key_secret.name.clone(),
+                        key: model.api_key_secret.key.clone(),
+                        optional: Some(false),
+                    }),
+                    ..EnvVarSource::default()
+                }),
+            },
+        ]),
         volume_mounts: Some(mounts),
         termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
         ..hardened()
@@ -770,22 +781,6 @@ fn volumes(inputs: &JobInputs<'_>) -> Vec<Volume> {
         inputs.buildkit_tls_secret,
         None,
     ));
-    if let Some(model) = inputs
-        .builder
-        .planner
-        .as_ref()
-        .and_then(|planner| planner.model.as_ref())
-    {
-        volumes.push(secret_volume(
-            "model-key",
-            &model.api_key_secret.name,
-            Some(vec![KeyToPath {
-                key: model.api_key_secret.key.clone(),
-                path: "key".to_owned(),
-                mode: None,
-            }]),
-        ));
-    }
     volumes.push(secret_volume(
         "registry-auth",
         inputs.registry_auth_secret,

@@ -22,7 +22,8 @@ it stopped with a reason, and 1 on an error of its own.
 
 `--provider` is a provider of Rig's registry: `anthropic` uses the Messages API, `openai` the
 Responses API, `gcp.gemini` the Gemini API, and a gateway such as `openrouter` Chat Completions.
-`--model` is the provider's model name, listed in Rig's catalogue or not. Rig reads the key from
+`--model` is the provider's model name, listed in Rig's catalogue or not. The key comes from
+`ZB_MODEL_API_KEY`, which the build Job sets from the builder's Secret, else Rig reads it from
 the provider's own variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` …) and the base URL from
 `--base-url`, else the provider's variable where it has one (`ANTHROPIC_BASE_URL`,
 `OPENAI_BASE_URL`). Requests go through hyper and rustls with the system's CA bundle.

@@ -196,9 +196,7 @@
               "--provider",
               "anthropic",
               "--model",
-              "claude-opus-5-5",
-              "--api-key-file",
-              "/etc/zeabur-builder/model/key"
+              "claude-opus-5-5"
             ],
             "command": [
               "sh",
@@ -210,6 +208,16 @@
               {
                 "name": "HOME",
                 "value": "/tmp"
+              },
+              {
+                "name": "ZB_MODEL_API_KEY",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "anthropic",
+                    "name": "model",
+                    "optional": false
+                  }
+                }
               }
             ],
             "image": "ghcr.io/zeabur-oss/builder-agent:v0.0.1",
@@ -245,11 +253,6 @@
                 "mountPath": "/etc/zeabur-builder/buildkit",
                 "name": "buildkit-client-tls",
                 "readOnly": true
-              },
-              {
-                "mountPath": "/etc/zeabur-builder/model",
-                "name": "model-key",
-                "readOnly": true
               }
             ]
           }
@@ -279,20 +282,6 @@
               "defaultMode": 288,
               "optional": false,
               "secretName": "zeabur-builder-buildkit-client"
-            }
-          },
-          {
-            "name": "model-key",
-            "secret": {
-              "defaultMode": 288,
-              "items": [
-                {
-                  "key": "anthropic",
-                  "path": "key"
-                }
-              ],
-              "optional": false,
-              "secretName": "model"
             }
           },
           {
