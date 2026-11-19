@@ -128,6 +128,9 @@ pub struct BuildRunStatus {
     /// Where the plan came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_source: Option<PlanSource>,
+    /// What the `agent` planner reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PlanReport>,
     /// Base images, `name@sha256:…`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 10), inner(length(max = 1024)))]
@@ -272,6 +275,9 @@ pub enum Reason {
     /// The Secret of `spec.output.pushSecretRef` is missing or unusable, or the registry token
     /// key cannot be read.
     RegistryCredentialsMissing,
+    /// The Secret key the `agent` builder's `planner.model.apiKeySecret` names is missing from
+    /// the `Build`'s namespace.
+    ModelKeyMissing,
     /// Clone, checkout or the archive download failed.
     SourceFailed,
     /// The planner failed.
@@ -300,6 +306,96 @@ pub enum PlanSource {
     Generated,
     /// The builder needs no plan.
     None,
+}
+
+/// What the `agent` planner reported: where the Dockerfile came from, or why it stopped.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanReport {
+    /// Where the Dockerfile came from, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option<DockerfileSource>,
+    /// Why the planner stopped without a Dockerfile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<PlanStop>,
+    /// What the user must do, when it stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 1024))]
+    pub detail: Option<String>,
+    /// Whether the model was called.
+    #[serde(default)]
+    pub model_called: bool,
+    /// Input tokens over every model call.
+    #[serde(default)]
+    #[schemars(range(min = 0))]
+    pub input_tokens: i64,
+    /// Output tokens over every model call.
+    #[serde(default)]
+    #[schemars(range(min = 0))]
+    pub output_tokens: i64,
+    /// The port the app listens on, when the agent wrote the Dockerfile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 65535))]
+    pub port: Option<i32>,
+    /// Such as `node`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[schemars(length(max = 64))]
+    pub language: String,
+    /// Such as `24.9`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[schemars(length(max = 64))]
+    pub version: String,
+    /// Variables the build reads as secrets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64), inner(length(max = 256)))]
+    pub build_variables: Vec<String>,
+    /// Variables the app reads when it starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64), inner(length(max = 256)))]
+    pub runtime_variables: Vec<String>,
+}
+
+/// Where the `agent` planner's Dockerfile came from, in the order it tries them.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DockerfileSource {
+    /// The repository's own Dockerfile.
+    Repository,
+    /// The last plan of this `Build`, built again.
+    Previous,
+    /// The agent wrote it in this run.
+    Agent,
+    /// A source this version does not know. It encodes as `unknown`, so a writer must not
+    /// send back a status it read.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Why the `agent` planner stopped without a Dockerfile.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+pub enum PlanStop {
+    /// The model API key was missing or refused.
+    ModelKeyMissing,
+    /// The model API refused or failed a request.
+    ModelFailed,
+    /// The repository holds no app the agent can build.
+    NoAppFound,
+    /// The repository holds several apps; the user picks one.
+    SeveralApps,
+    /// The build needs a variable the user has not set.
+    NeedsBuildVariable,
+    /// The build needs a private package or repository.
+    NeedsPrivateDependency,
+    /// The app needs a platform `BuildKit` cannot build for.
+    UnsupportedPlatform,
+    /// A limit on turns, failed builds, time or tokens was reached.
+    BudgetSpent,
+    /// Every build attempt failed.
+    BuildKeepsFailing,
+    /// A reason this version does not know. It encodes as `Unknown`, so a writer must not send
+    /// back a status it read.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Build steps and cache hits.

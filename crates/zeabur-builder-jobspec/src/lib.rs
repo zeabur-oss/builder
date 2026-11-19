@@ -6,7 +6,7 @@
 //! | container | image | does |
 //! |---|---|---|
 //! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch-archive` |
-//! | `plan` (init) | planner image | Railpack writes `/workspace/plan`; absent for `dockerfile` |
+//! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile` |
 //! | `build` | job image | `zeabur-builder-job -- buildctl build …` |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
@@ -46,7 +46,9 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar};
 use zeabur_builder_api::build_run::BuildRun;
-use zeabur_builder_api::cluster_builder::{BuilderType, ClusterBuilderSpec, FrontendType};
+use zeabur_builder_api::cluster_builder::{
+    BuilderType, ClusterBuilderSpec, FrontendType, PlannerSpec,
+};
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::repo::{RepoKey, RepoUrlError};
 use zeabur_builder_core::result::is_digest;
@@ -395,18 +397,34 @@ start=$(date +%s)
 echo "{\"plan\":$(( $(date +%s) - start ))}" > /workspace/out/plan.json
 "#;
 
+/// Runs the agent planner, copies its report to the termination message for
+/// `BuildRun.status.plan`, and records how long it took. The agent exits 2 when it stops
+/// without a Dockerfile.
+const AGENT_PLAN_SCRIPT: &str = r#"set -u
+start=$(date +%s)
+"$@"
+code=$?
+# BusyBox cp does not overwrite /dev/termination-log.
+cat /workspace/plan/info.json > /dev/termination-log
+echo "{\"plan\":$(( $(date +%s) - start ))}" > /workspace/out/plan.json
+exit "$code"
+"#;
+
 fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError> {
     let builder = inputs.builder;
-    let planner = match (builder.kind, &builder.planner) {
-        (BuilderType::Dockerfile, None) => return Ok(None),
-        (BuilderType::Dockerfile, Some(_)) => {
-            return Err(JobError::Builder("dockerfile with a planner"));
+    match (builder.kind, &builder.planner) {
+        (BuilderType::Dockerfile, None) => Ok(None),
+        (BuilderType::Dockerfile, Some(_)) => Err(JobError::Builder("dockerfile with a planner")),
+        (BuilderType::Railpack | BuilderType::Agent, None) => {
+            Err(JobError::Builder("planner missing"))
         }
-        (BuilderType::Railpack, None) => {
-            return Err(JobError::Builder("planner missing"));
-        }
-        (BuilderType::Railpack, Some(planner)) => planner,
-    };
+        (BuilderType::Railpack, Some(planner)) => Ok(Some(railpack_container(inputs, planner))),
+        (BuilderType::Agent, Some(planner)) => agent_container(inputs, planner).map(Some),
+    }
+}
+
+/// `railpack prepare`, which writes the plan and its info into `/workspace/plan`.
+fn railpack_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Container {
     let context = context_path(inputs);
     let mounts = workspace_mounts();
     let mut env_vars = vec![env("HOME", "/tmp")];
@@ -425,7 +443,7 @@ fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError>
         args.push(format!("{}=$({SECRET_ENV_PREFIX}{})", var.name, var.name));
         env_vars.push(secret_env(var));
     }
-    Ok(Some(Container {
+    Container {
         name: "plan".to_owned(),
         image: Some(planner.image.clone()),
         command: Some(vec![
@@ -439,7 +457,66 @@ fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError>
         volume_mounts: Some(mounts),
         termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
         ..hardened()
-    }))
+    }
+}
+
+/// `zeabur-builder-agent`, which trial-builds on the namespace's buildkitd and writes the
+/// Dockerfile into `/workspace/plan`, with the model API key from the namespace's Secret in
+/// `ZB_MODEL_API_KEY`.
+fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Container, JobError> {
+    let model = planner
+        .model
+        .as_ref()
+        .ok_or(JobError::Builder("agent without planner.model"))?;
+    let mut args = vec![
+        "zeabur-builder-agent".to_owned(),
+        "--context".to_owned(),
+        literal(&context_path(inputs)),
+        "--buildkit".to_owned(),
+        inputs.buildkitd_addr.to_owned(),
+        "--tlsdir".to_owned(),
+        BUILDKIT_TLS.to_owned(),
+        "--out".to_owned(),
+        PLAN.to_owned(),
+        "--provider".to_owned(),
+        literal(&model.provider),
+        "--model".to_owned(),
+        literal(&model.model),
+    ];
+    if let Some(base_url) = &model.base_url {
+        args.extend(["--base-url".to_owned(), literal(base_url)]);
+    }
+    let mut mounts = workspace_mounts();
+    mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
+    Ok(Container {
+        name: "plan".to_owned(),
+        image: Some(planner.image.clone()),
+        command: Some(vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            AGENT_PLAN_SCRIPT.to_owned(),
+            "plan".to_owned(),
+        ]),
+        args: Some(args),
+        env: Some(vec![
+            env("HOME", "/tmp"),
+            EnvVar {
+                name: "ZB_MODEL_API_KEY".to_owned(),
+                value: None,
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: model.api_key_secret.name.clone(),
+                        key: model.api_key_secret.key.clone(),
+                        optional: Some(false),
+                    }),
+                    ..EnvVarSource::default()
+                }),
+            },
+        ]),
+        volume_mounts: Some(mounts),
+        termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
+        ..hardened()
+    })
 }
 
 fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Container, JobError> {
@@ -564,12 +641,15 @@ fn frontend_args(
             buildctl.extend(["--local".to_owned(), format!("dockerfile={dir}")]);
             buildctl.extend(["--opt".to_owned(), format!("filename={file}")]);
         }
-        (FrontendType::Dockerfile, BuilderType::Railpack) => {
+        (FrontendType::Dockerfile, BuilderType::Railpack | BuilderType::Agent) => {
             buildctl.extend(["--frontend".to_owned(), "dockerfile.v0".to_owned()]);
             buildctl.extend(["--local".to_owned(), format!("dockerfile={PLAN}")]);
             buildctl.extend(["--opt".to_owned(), "filename=Dockerfile".to_owned()]);
         }
-        (FrontendType::Gateway, _) => {
+        (FrontendType::Gateway, BuilderType::Agent) => {
+            return Err(JobError::Builder("agent with a gateway frontend"));
+        }
+        (FrontendType::Gateway, BuilderType::Dockerfile | BuilderType::Railpack) => {
             let source = builder
                 .frontend
                 .source

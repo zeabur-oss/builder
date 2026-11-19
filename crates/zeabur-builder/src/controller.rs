@@ -1418,6 +1418,9 @@ async fn start(ctx: &Context, run: &BuildRun, mut status: BuildRunStatus) -> Res
         }
         Err((_, message)) => return finish(ctx, run, source_failed(message)).await,
     };
+    if let Err(message) = model_key(ctx, &builder, &namespace).await? {
+        return pending(ctx, run, status, Reason::ModelKeyMissing, message).await;
+    }
     let git_secret = format!("{name}-git");
     let mut git_auth = match (&credentials, &build.spec.source.credentials_ref) {
         (Some(credentials), Some(secret)) => credentials.job_auth(&secret.name),
@@ -1525,6 +1528,25 @@ async fn registry_auth(
     registry::with_token(&base, &owned.host, &token)
         .map(|config| Ok(ByteString(config)))
         .map_err(Error::Invalid)
+}
+
+/// For an `agent` builder, whether its model API key is in the run's namespace.
+async fn model_key(
+    ctx: &Context,
+    builder: &ClusterBuilder,
+    namespace: &str,
+) -> Result<Result<(), String>, Error> {
+    let Some(model) = builder.spec.planner.as_ref().and_then(|p| p.model.as_ref()) else {
+        return Ok(Ok(()));
+    };
+    let secret = Api::<Secret>::namespaced(ctx.client.clone(), namespace)
+        .get_opt(&model.api_key_secret.name)
+        .await?;
+    Ok(decide::model_key(
+        &model.api_key_secret,
+        namespace,
+        secret.as_ref(),
+    ))
 }
 
 /// The `.dockerconfigjson` of the Secret that `spec.output.pushSecretRef` names, in the `Build`'s

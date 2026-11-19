@@ -1109,6 +1109,105 @@ fn success_carries_the_digest() {
 }
 
 #[test]
+fn an_agent_run_waits_for_its_model_key() {
+    let secret_ref = SecretKeyRef {
+        name: "model".to_owned(),
+        key: "anthropic".to_owned(),
+    };
+    let secret = |key: &str, value: &[u8]| Secret {
+        data: Some(BTreeMap::from([(
+            key.to_owned(),
+            k8s_openapi::ByteString(value.to_vec()),
+        )])),
+        ..Secret::default()
+    };
+    assert_eq!(
+        model_key(&secret_ref, "team-a", None),
+        Err("no Secret `model` in `team-a` for the model API key".to_owned())
+    );
+    for wrong in [secret("openai", b"sk"), secret("anthropic", b"")] {
+        assert_eq!(
+            model_key(&secret_ref, "team-a", Some(&wrong)),
+            Err("Secret `model` has no key `anthropic` with the model API key".to_owned())
+        );
+    }
+    assert_eq!(
+        model_key(&secret_ref, "team-a", Some(&secret("anthropic", b"sk"))),
+        Ok(())
+    );
+}
+
+#[test]
+fn the_agent_s_plan_report_reaches_the_status() {
+    let stopped = pod(
+        vec![
+            container("fetch", terminated(0, None)),
+            container(
+                "plan",
+                terminated(
+                    1,
+                    Some(
+                        r#"{"reason":"NeedsBuildVariable","detail":"Set DATABASE_URL.","modelCalled":true,"inputTokens":1200,"outputTokens":300}"#,
+                    ),
+                ),
+            ),
+        ],
+        vec![],
+    );
+    let Observed::Finished(status) = observe(
+        &job(Some(("Failed", "BackoffLimitExceeded"))),
+        Some(&stopped),
+    ) else {
+        panic!("finished expected")
+    };
+    assert_eq!(status.reason, Some(Reason::PlanFailed));
+    assert_eq!(status.message.as_deref(), Some("Set DATABASE_URL."));
+    assert_eq!(
+        status.failed_step.as_ref().map(|s| s.message.as_str()),
+        Some("Set DATABASE_URL.")
+    );
+    assert_eq!(
+        status.plan,
+        Some(PlanReport {
+            dockerfile: None,
+            stopped: Some(PlanStop::NeedsBuildVariable),
+            detail: Some("Set DATABASE_URL.".to_owned()),
+            model_called: true,
+            input_tokens: 1200,
+            output_tokens: 300,
+            port: None,
+            language: String::new(),
+            version: String::new(),
+            build_variables: Vec::new(),
+            runtime_variables: Vec::new(),
+        })
+    );
+
+    let long = "x".repeat(300);
+    let planned = format!(
+        r#"{{"source":"agent","details":{{"port":3000,"language":"node","version":"24.9","buildVariables":["NPM_TOKEN","{long}"]}},"modelCalled":true,"inputTokens":9000,"outputTokens":800}}"#
+    );
+    let built =
+        format!(r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"]}}"#);
+    let done = pod(
+        vec![
+            container("fetch", terminated(0, None)),
+            container("plan", terminated(0, Some(&planned))),
+        ],
+        vec![container("build", terminated(0, Some(&built)))],
+    );
+    let Observed::Finished(status) = observe(&job(Some(("Complete", ""))), Some(&done)) else {
+        panic!("finished expected")
+    };
+    assert_eq!(status.phase, Some(Phase::Succeeded));
+    let plan = status.plan.unwrap();
+    assert_eq!(plan.dockerfile, Some(DockerfileSource::Agent));
+    assert_eq!(plan.port, Some(3000));
+    assert_eq!(plan.language, "node");
+    assert_eq!(plan.build_variables, ["NPM_TOKEN"]);
+}
+
+#[test]
 fn failures_name_their_phase() {
     let failed_job = job(Some(("Failed", "BackoffLimitExceeded")));
     let fetch = pod(

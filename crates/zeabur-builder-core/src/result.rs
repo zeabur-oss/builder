@@ -292,7 +292,7 @@ fn chars(s: &str, max: usize) -> String {
 }
 
 /// Cuts a string to at most `max` bytes on a character boundary.
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
     }

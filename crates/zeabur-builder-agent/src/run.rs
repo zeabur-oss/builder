@@ -54,6 +54,9 @@ pub(crate) struct Args {
     registries: Vec<String>,
 }
 
+/// The variable with the model API key. The build Job sets it from the namespace's Secret.
+const API_KEY_ENV: &str = "ZB_MODEL_API_KEY";
+
 /// Runs, writes the plan and its info, and returns whether there is a plan.
 pub(crate) async fn run(args: Args) -> Result<bool, String> {
     let repo = Repo::new(&args.context)
@@ -71,8 +74,18 @@ pub(crate) async fn run(args: Args) -> Result<bool, String> {
         Some(dir) => read_previous(dir).await,
         None => None,
     };
+    let key = std::env::var(API_KEY_ENV)
+        .ok()
+        .map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty());
     let (outcome, spent) = plan(&repo, &builder, previous, limits, async || {
-        connect(&args.provider, &args.model, args.base_url.as_deref()).await
+        connect(
+            &args.provider,
+            &args.model,
+            args.base_url.as_deref(),
+            key.clone(),
+        )
+        .await
     })
     .await;
     report(&args.out, outcome, spent.as_ref()).await
@@ -91,14 +104,15 @@ async fn read_previous(dir: &Path) -> Option<Files> {
     Some((dockerfile, rules_of(&ignore).to_owned()))
 }
 
-/// `model` of `provider`, sending through [`HyperClient`]. Rig reads the key from the
-/// provider's own variable, such as `ANTHROPIC_API_KEY`; without it, an Anthropic or OpenAI run
-/// can exchange a service account token instead ([`Federation`]). A model its catalogue does not
-/// list still connects.
+/// `model` of `provider`, sending through [`HyperClient`], with `key`. Without it, Rig reads the
+/// key from the provider's own variable, such as `ANTHROPIC_API_KEY`; without that, an Anthropic
+/// or OpenAI run can exchange a service account token instead ([`Federation`]). A model its
+/// catalogue does not list still connects.
 async fn connect(
     provider: &str,
     model: &str,
     base_url: Option<&str>,
+    key: Option<String>,
 ) -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)> {
     let catalog = Catalog::builtin();
     let provider = ProviderId::catalog(provider).ok_or_else(|| {
@@ -118,10 +132,15 @@ async fn connect(
         |found| found.spec.clone(),
     );
     let http = HyperClient::new().map_err(|e| (Reason::ModelFailed, e))?;
-    if let Some(federation) = Federation::from_env(provider.vendor())? {
+    if key.is_none()
+        && let Some(federation) = Federation::from_env(provider.vendor())?
+    {
         return federation.connect(catalog, &spec, http, base_url).await;
     }
     let mut options = ConnectOptions::new().http(http);
+    if let Some(key) = key {
+        options = options.api_key(key);
+    }
     if let Some(base_url) = base_url {
         options = options.base_url(base_url);
     }
@@ -241,7 +260,7 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
             false
         }
     };
-    let info = serde_json::to_string(&info).map_err(|e| e.to_string())?;
+    let info = info.encode();
     write("info.json", info.clone()).await?;
     output::plan(printed.as_deref(), &info)?;
     Ok(ready)
@@ -343,7 +362,7 @@ mod tests {
     #[tokio::test]
     async fn no_key_names_the_vendor_s_variable() {
         // Assumes `HYPERBOLIC_API_KEY` is unset: removing a variable needs `unsafe`.
-        let Err(error) = connect("hyperbolic", "some-model", None).await else {
+        let Err(error) = connect("hyperbolic", "some-model", None, None).await else {
             panic!()
         };
         assert_eq!(
@@ -354,7 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_provider_lists_the_known_ones() {
-        let Err((reason, detail)) = connect("gemini", "gemini-2.5-pro", None).await else {
+        let Err((reason, detail)) = connect("gemini", "gemini-2.5-pro", None, None).await else {
             panic!()
         };
         assert_eq!(reason, Reason::ModelFailed);
@@ -363,10 +382,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_the_catalogue_does_not_list_is_not_refused() {
-        let Err(error) = connect("hyperbolic", "a-model-from-next-year", None).await else {
+        let Err(error) = connect("hyperbolic", "a-model-from-next-year", None, None).await else {
             panic!()
         };
         assert_eq!(error.0, Reason::ModelKeyMissing);
+    }
+
+    #[tokio::test]
+    async fn a_key_stands_in_for_the_vendor_s_variable() {
+        let key = Some("sk-test".to_owned());
+
+        assert!(connect("hyperbolic", "some-model", None, key).await.is_ok());
     }
 
     #[tokio::test]
