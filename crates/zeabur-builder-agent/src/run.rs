@@ -211,8 +211,16 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
         Outcome::Ready(plan) => {
             printed = Some(plan.dockerfile.clone());
             write("Dockerfile", plan.dockerfile).await?;
-            // The repository's own Dockerfile keeps the repository's `.dockerignore`.
-            if plan.source != Source::Repository {
+            // The repository's own Dockerfile keeps the repository's `.dockerignore`, so a file
+            // left from an earlier run must not override it.
+            if plan.source == Source::Repository {
+                let stale = out.join("Dockerfile.dockerignore");
+                if let Err(e) = tokio::fs::remove_file(&stale).await
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(format!("cannot remove {}: {e}", stale.display()));
+                }
+            } else {
                 write("Dockerfile.dockerignore", dockerignore(&plan.dockerignore)).await?;
             }
             info.source = Some(plan.source);
@@ -350,6 +358,26 @@ mod tests {
             panic!()
         };
         assert_eq!(error.0, Reason::ModelKeyMissing);
+    }
+
+    #[tokio::test]
+    async fn the_repository_s_dockerfile_drops_an_earlier_ignore_file() {
+        let out = Dir::new();
+        out.write("Dockerfile.dockerignore", "dist\n");
+        let plan = Plan {
+            source: Source::Repository,
+            dockerfile: "FROM busybox\n".to_owned(),
+            dockerignore: String::new(),
+            details: Details::default(),
+        };
+
+        assert!(
+            report(out.path(), Outcome::Ready(plan), None)
+                .await
+                .unwrap()
+        );
+
+        assert!(!out.path().join("Dockerfile.dockerignore").exists());
     }
 
     #[tokio::test]

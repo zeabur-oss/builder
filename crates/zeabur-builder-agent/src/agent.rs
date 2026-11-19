@@ -322,10 +322,13 @@ impl<B: TrialBuild> Agent<B> {
             return Step::done(Outcome::NeedsUser { reason, detail });
         }
         state.facts = args.facts;
-        let attempt = self
-            .builder
-            .build(&args.dockerfile, &args.dockerignore)
-            .await;
+        let build = self.builder.build(&args.dockerfile, &args.dockerignore);
+        let Ok(attempt) = tokio::time::timeout(spent.time_left(&self.limits), build).await else {
+            return Step::done(Outcome::NeedsUser {
+                reason: Reason::BudgetSpent,
+                detail: format!("ran for {} s", self.limits.per_run.as_secs()),
+            });
+        };
         let facts = &state.facts;
         match attempt {
             Attempt::Built => {
@@ -422,6 +425,8 @@ fn size(message: &Message) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -610,6 +615,26 @@ mod tests {
                 detail: "exit code: 127".to_owned()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_build_stops_at_the_end_of_the_run() {
+        let replay = Replay::new([build("1", DOCKERFILE)]);
+        let limits = Limits {
+            per_run: Duration::from_millis(50),
+            ..Limits::default()
+        };
+        let (_dir, agent) = agent(&replay, Script::default(), limits);
+
+        let run = agent.run(None).await;
+
+        assert!(matches!(
+            run.outcome,
+            Outcome::NeedsUser {
+                reason: Reason::BudgetSpent,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

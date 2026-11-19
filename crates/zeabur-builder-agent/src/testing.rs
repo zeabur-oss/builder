@@ -161,7 +161,8 @@ pub(crate) fn text(id: &str, text: &str) -> String {
     .to_string()
 }
 
-/// A trial builder that answers with prepared attempts, in order, and keeps the Dockerfiles.
+/// A trial builder that answers with prepared attempts, in order, and keeps the Dockerfiles. With
+/// no attempt left, a build never ends.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Script {
     attempts: Arc<Mutex<VecDeque<Attempt>>>,
@@ -180,7 +181,13 @@ impl Script {
 impl TrialBuild for Script {
     fn build(&self, dockerfile: &str, _dockerignore: &str) -> impl Future<Output = Attempt> + Send {
         self.built.lock().unwrap().push(dockerfile.to_owned());
-        std::future::ready(self.attempts.lock().unwrap().pop_front().unwrap())
+        let next = self.attempts.lock().unwrap().pop_front();
+        async move {
+            match next {
+                Some(attempt) => attempt,
+                None => std::future::pending().await,
+            }
+        }
     }
 }
 
