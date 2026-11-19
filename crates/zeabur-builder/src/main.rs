@@ -23,8 +23,35 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use k8s_openapi::api::core::v1::Toleration;
+use thiserror::Error;
 use zeabur_builder_jobspec::buildkitd::Resources;
 use zeabur_builder_jobspec::{JobMemory, Placement};
+
+/// Why a subcommand failed.
+#[derive(Debug, Error)]
+enum Error {
+    /// A ceiling below the request it must hold.
+    #[error("--buildkitd-{what}-max={max} is below --buildkitd-{what}-request={request}")]
+    CeilingBelowRequest {
+        what: &'static str,
+        max: String,
+        request: String,
+    },
+    #[error("a TLS provider is already installed")]
+    TlsProvider,
+    #[error("cannot start the async runtime: {0}")]
+    Runtime(#[source] std::io::Error),
+    #[error("cannot reach Kubernetes: {0}")]
+    Kube(#[source] kube::Error),
+    #[error(transparent)]
+    Crds(#[from] serde_json::Error),
+    #[error(transparent)]
+    Registry(#[from] registry::RegistryError),
+    #[error(transparent)]
+    GithubApp(#[from] github_app::GithubAppError),
+    #[error(transparent)]
+    Controller(#[from] controller::ControllerError),
+}
 
 /// Zeabur Builder: turns Git commits into container images with `BuildKit`.
 #[derive(Debug, Parser)]
@@ -101,10 +128,8 @@ fn toleration(value: &str) -> Result<Toleration, String> {
     serde_json::from_str(value).map_err(|e| format!("`{value}` is not a toleration: {e}"))
 }
 
-async fn registry_token(args: RegistryTokenArgs) -> Result<String, String> {
-    let client = kube::Client::try_default()
-        .await
-        .map_err(|e| format!("cannot reach Kubernetes: {e}"))?;
+async fn registry_token(args: RegistryTokenArgs) -> Result<String, Error> {
+    let client = kube::Client::try_default().await.map_err(Error::Kube)?;
     let (namespace, name) = &args.registry_token_key;
     let signer = registry::read_signer(&client, namespace, name).await?;
     let access = registry::Access {
@@ -313,16 +338,20 @@ impl ControllerArgs {
 }
 
 /// Refuses a ceiling below the request it must hold: the limit would be under the request.
-fn check_ceiling(what: &str, request: &str, max: Option<&str>) -> Result<(), String> {
+fn check_ceiling(what: &'static str, request: &str, max: Option<&str>) -> Result<(), Error> {
     match max {
-        Some(max) if zeabur_builder_jobspec::buildkitd::exceeds(request, max) => Err(format!(
-            "--buildkitd-{what}-max={max} is below --buildkitd-{what}-request={request}"
-        )),
+        Some(max) if zeabur_builder_jobspec::buildkitd::exceeds(request, max) => {
+            Err(Error::CeilingBelowRequest {
+                what,
+                max: max.to_owned(),
+                request: request.to_owned(),
+            })
+        }
         _ => Ok(()),
     }
 }
 
-async fn run_controller(args: ControllerArgs) -> Result<(), String> {
+async fn run_controller(args: ControllerArgs) -> Result<(), Error> {
     check_ceiling(
         "cpu",
         &args.buildkitd_cpu_request,
@@ -333,56 +362,55 @@ async fn run_controller(args: ControllerArgs) -> Result<(), String> {
         &args.buildkitd_memory_request,
         args.buildkitd_memory_max.as_deref(),
     )?;
+    install_tls()?;
+    tracing_subscriber::fmt().json().with_target(false).init();
+    let client = kube::Client::try_default().await.map_err(Error::Kube)?;
+    Box::pin(controller::run(client, args.settings())).await?;
+    Ok(())
+}
+
+fn install_tls() -> Result<(), Error> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .map_err(|_provider| "a TLS provider is already installed".to_owned())?;
-    tracing_subscriber::fmt().json().with_target(false).init();
-    let client = kube::Client::try_default()
-        .await
-        .map_err(|e| format!("cannot reach Kubernetes: {e}"))?;
-    Box::pin(controller::run(client, args.settings())).await
+        .map_err(|_provider| Error::TlsProvider)
+}
+
+fn runtime(multi_thread: bool) -> Result<tokio::runtime::Runtime, Error> {
+    let mut builder = if multi_thread {
+        tokio::runtime::Builder::new_multi_thread()
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+    };
+    builder.enable_all().build().map_err(Error::Runtime)
+}
+
+/// Runs a subcommand; the text for stdout, if it prints any.
+fn execute(command: Command) -> Result<Option<String>, Error> {
+    match command {
+        Command::Crds => Ok(Some(zeabur_builder_api::definitions_yaml()?)),
+        Command::Controller(args) => {
+            runtime(true)?.block_on(run_controller(args))?;
+            Ok(None)
+        }
+        Command::GithubApp(command) => {
+            install_tls()?;
+            let text = runtime(false)?.block_on(github_app::run(command))?;
+            Ok(Some(text))
+        }
+        Command::RegistryToken(args) => {
+            install_tls()?;
+            let text = runtime(false)?.block_on(registry_token(args))?;
+            Ok(Some(text))
+        }
+    }
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let result = match cli.command {
-        Command::Crds => zeabur_builder_api::definitions_yaml()
-            .map(Some)
-            .map_err(|e| e.to_string()),
-        Command::Controller(args) => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| e.to_string())
-            .and_then(|runtime| runtime.block_on(run_controller(args)))
-            .map(|()| None),
-        Command::GithubApp(command) => rustls::crypto::aws_lc_rs::default_provider()
-            .install_default()
-            .map_err(|_provider| "a TLS provider is already installed".to_owned())
-            .and_then(|()| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| e.to_string())
-            })
-            .and_then(|runtime| runtime.block_on(github_app::run(command)))
-            .map(Some),
-        Command::RegistryToken(args) => rustls::crypto::aws_lc_rs::default_provider()
-            .install_default()
-            .map_err(|_provider| "a TLS provider is already installed".to_owned())
-            .and_then(|()| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| e.to_string())
-            })
-            .and_then(|runtime| runtime.block_on(registry_token(args)))
-            .map(Some),
-    };
-    match result {
+    match execute(Cli::parse().command) {
         Ok(Some(text)) => output::stdout_line(&text),
         Ok(None) => ExitCode::SUCCESS,
-        Err(message) => {
-            output::stderr_line(&format!("error: {message}"));
+        Err(error) => {
+            output::stderr_line(&format!("error: {error}"));
             ExitCode::FAILURE
         }
     }
@@ -397,13 +425,13 @@ mod tests {
     #[test]
     fn a_ceiling_below_the_request_is_refused() {
         assert_eq!(
-            check_ceiling("memory", "256Mi", Some("128Mi")),
-            Err(
-                "--buildkitd-memory-max=128Mi is below --buildkitd-memory-request=256Mi".to_owned()
-            )
+            check_ceiling("memory", "256Mi", Some("128Mi"))
+                .unwrap_err()
+                .to_string(),
+            "--buildkitd-memory-max=128Mi is below --buildkitd-memory-request=256Mi"
         );
-        assert_eq!(check_ceiling("memory", "256Mi", Some("1Gi")), Ok(()));
-        assert_eq!(check_ceiling("cpu", "100m", None), Ok(()));
+        assert!(check_ceiling("memory", "256Mi", Some("1Gi")).is_ok());
+        assert!(check_ceiling("cpu", "100m", None).is_ok());
     }
 
     #[test]

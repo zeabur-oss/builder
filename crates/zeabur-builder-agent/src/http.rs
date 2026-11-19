@@ -25,6 +25,24 @@ use rustls::ClientConfig;
 /// The largest response body read whole: a model reply or an error.
 const MAX_BODY: usize = 16 << 20;
 
+/// Why a client could not be built or a request failed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ClientError {
+    /// A certificate of the system's CA bundle that rustls rejects.
+    #[error("bad CA certificate: {0}")]
+    Certificate(#[source] rustls::Error),
+    #[error("no CA certificates found: {0:?}")]
+    NoCertificates(Vec<rustls_native_certs::Error>),
+    #[error("TLS setup: {0}")]
+    Tls(#[source] rustls::Error),
+    #[error("{0}")]
+    Request(#[from] http::Error),
+    #[error("{0}")]
+    Send(#[from] hyper_util::client::legacy::Error),
+    #[error("{0}")]
+    Body(#[from] Error),
+}
+
 /// An HTTPS client for model APIs.
 #[derive(Debug, Clone)]
 pub(crate) struct HyperClient {
@@ -33,20 +51,20 @@ pub(crate) struct HyperClient {
 
 impl HyperClient {
     /// A client that trusts the system's CA bundle (`SSL_CERT_FILE` or `/etc/ssl/certs`).
-    pub(crate) fn new() -> std::result::Result<Self, String> {
+    pub(crate) fn new() -> std::result::Result<Self, ClientError> {
         let mut roots = rustls::RootCertStore::empty();
         let found = rustls_native_certs::load_native_certs();
         for cert in found.certs {
-            roots.add(cert).map_err(|e| e.to_string())?;
+            roots.add(cert).map_err(ClientError::Certificate)?;
         }
         if roots.is_empty() {
-            return Err(format!("no CA certificates found: {:?}", found.errors));
+            return Err(ClientError::NoCertificates(found.errors));
         }
         let config = ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::aws_lc_rs::default_provider(),
         ))
         .with_safe_default_protocol_versions()
-        .map_err(|e| e.to_string())?
+        .map_err(ClientError::Tls)?
         .with_root_certificates(roots)
         .with_no_client_auth();
         let https = HttpsConnectorBuilder::new()
@@ -64,16 +82,13 @@ impl HyperClient {
         &self,
         url: &str,
         body: Vec<u8>,
-    ) -> std::result::Result<(http::StatusCode, Bytes), String> {
+    ) -> std::result::Result<(http::StatusCode, Bytes), ClientError> {
         let req = Request::post(url)
             .header(http::header::CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|e| e.to_string())?;
-        let response = self.client.request(req).await.map_err(|e| e.to_string())?;
+            .body(Full::new(Bytes::from(body)))?;
+        let response = self.client.request(req).await?;
         let status = response.status();
-        let reply = read(response.into_body())
-            .await
-            .map_err(|e| e.to_string())?;
+        let reply = read(response.into_body()).await?;
         Ok((status, reply))
     }
 

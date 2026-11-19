@@ -54,10 +54,11 @@ use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::Api;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use zeabur_builder_api::build::ConditionReason;
+use zeabur_builder_core::refusal::Refusal;
 use zeabur_builder_core::repo::RepoKey;
 
-use crate::credentials::Refusal;
 use crate::remote::HttpClient;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,6 +70,41 @@ const API_VERSION: &str = "2022-11-28";
 const TOKEN_MARGIN: Duration = Duration::from_mins(5);
 /// The longest description GitHub shows on a status; longer ones are cut.
 const MAX_DESCRIPTION: usize = 140;
+
+/// Why the App's Secret, its key or a repository does not fit.
+#[derive(Debug, Error)]
+pub(crate) enum AppError {
+    /// The Secret lacks a key.
+    #[error("no `{0}`")]
+    Missing(&'static str),
+    /// `app-id` is not an integer.
+    #[error("`app-id` is not a number")]
+    AppId(#[source] std::num::ParseIntError),
+    /// `private-key` has no RSA private key block.
+    #[error("`private-key` is not a PEM RSA private key")]
+    NotPem,
+    /// The block of `private-key` is not base64.
+    #[error("`private-key` is not valid PEM")]
+    NotBase64(#[source] base64::DecodeError),
+    /// The DER of `private-key` is no RSA key.
+    #[error("`private-key` is rejected: {0}")]
+    KeyRejected(#[source] aws_lc_rs::error::KeyRejected),
+    /// `api-url` is not an `https` URL.
+    #[error("`api-url` must be an https URL")]
+    ApiUrlScheme,
+    /// `api-url` has no host.
+    #[error("`api-url` has no host")]
+    ApiUrlHost,
+    /// The JWT's claims do not encode.
+    #[error("cannot encode the JWT")]
+    EncodeJwt(#[source] serde_json::Error),
+    /// The key does not sign.
+    #[error("cannot sign the JWT")]
+    SignJwt(#[source] aws_lc_rs::error::Unspecified),
+    /// The repository is on another server than the App's.
+    #[error("`{key}` is not a repository on {host}, the GitHub App's server")]
+    OtherServer { key: String, host: String },
+}
 
 /// The JWT's issuer: the client id, or the App id when the Secret has no client id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,16 +154,16 @@ fn text(secret: &Secret, key: &str) -> Option<String> {
 
 impl AppConfig {
     /// Reads the App's Secret.
-    pub(crate) fn from_secret(secret: &Secret) -> Result<Self, String> {
-        let app_id = text(secret, "app-id").ok_or("no `app-id`")?;
+    pub(crate) fn from_secret(secret: &Secret) -> Result<Self, AppError> {
+        let app_id = text(secret, "app-id").ok_or(AppError::Missing("app-id"))?;
         let issuer = match text(secret, "client-id") {
             Some(client_id) => Issuer::ClientId(client_id),
             None => app_id
                 .parse::<u64>()
                 .map(Issuer::AppId)
-                .map_err(|_error| "`app-id` is not a number")?,
+                .map_err(AppError::AppId)?,
         };
-        let pem = text(secret, "private-key").ok_or("no `private-key`")?;
+        let pem = text(secret, "private-key").ok_or(AppError::Missing("private-key"))?;
         let key = private_key(&pem)?;
         let api_url = text(secret, "api-url")
             .unwrap_or_else(|| "https://api.github.com".to_owned())
@@ -144,7 +180,7 @@ impl AppConfig {
     }
 
     /// A JWT for the App, valid from a minute before `now` to nine minutes after.
-    pub(crate) fn jwt(&self, now: Timestamp) -> Result<String, String> {
+    pub(crate) fn jwt(&self, now: Timestamp) -> Result<String, AppError> {
         let now = now.as_second();
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
         let claims = Claims {
@@ -152,7 +188,7 @@ impl AppConfig {
             exp: now + 9 * 60,
             iss: &self.issuer,
         };
-        let claims = serde_json::to_vec(&claims).map_err(|_error| "cannot encode the JWT")?;
+        let claims = serde_json::to_vec(&claims).map_err(AppError::EncodeJwt)?;
         let claims = URL_SAFE_NO_PAD.encode(claims);
         let input = format!("{header}.{claims}");
         let mut signature = vec![0; self.key.public_modulus_len()];
@@ -163,59 +199,57 @@ impl AppConfig {
                 input.as_bytes(),
                 &mut signature,
             )
-            .map_err(|_error| "cannot sign the JWT".to_owned())?;
+            .map_err(AppError::SignJwt)?;
         Ok(format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature)))
     }
 
     /// The owner and name of a repository on the App's server.
-    pub(crate) fn repository<'a>(&self, key: &'a RepoKey) -> Result<(&'a str, &'a str), String> {
+    pub(crate) fn repository<'a>(&self, key: &'a RepoKey) -> Result<(&'a str, &'a str), AppError> {
         let mut parts = key.as_str().split('/');
         match (parts.next(), parts.next(), parts.next(), parts.next()) {
             (Some(host), Some(owner), Some(name), None) if host == self.web_host => {
                 Ok((owner, name))
             }
-            _ => Err(format!(
-                "`{key}` is not a repository on {}, the GitHub App's server",
-                self.web_host
-            )),
+            _ => Err(AppError::OtherServer {
+                key: key.to_string(),
+                host: self.web_host.clone(),
+            }),
         }
     }
 }
 
 /// Parses a PEM private key: PKCS#1 (`RSA PRIVATE KEY`) or PKCS#8 (`PRIVATE KEY`).
-pub(crate) fn private_key(pem: &str) -> Result<RsaKeyPair, String> {
+pub(crate) fn private_key(pem: &str) -> Result<RsaKeyPair, AppError> {
     let label = |l: &str| pem.contains(&format!("-----BEGIN {l}-----"));
     let pkcs1 = label("RSA PRIVATE KEY");
     if !pkcs1 && !label("PRIVATE KEY") {
-        return Err("`private-key` is not a PEM RSA private key".to_owned());
+        return Err(AppError::NotPem);
     }
     let body: String = pem
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with("-----"))
         .collect();
-    let der = STANDARD
-        .decode(body)
-        .map_err(|_error| "`private-key` is not valid PEM".to_owned())?;
+    let der = STANDARD.decode(body).map_err(AppError::NotBase64)?;
     let key = if pkcs1 {
         RsaKeyPair::from_der(&der)
     } else {
         RsaKeyPair::from_pkcs8(&der)
     };
-    key.map_err(|e| format!("`private-key` is rejected: {e}"))
+    key.map_err(AppError::KeyRejected)
 }
 
-fn web_host(api_url: &str) -> Result<String, String> {
+fn web_host(api_url: &str) -> Result<String, AppError> {
     let rest = api_url
         .strip_prefix("https://")
-        .ok_or("`api-url` must be an https URL")?;
+        .ok_or(AppError::ApiUrlScheme)?;
     let host = rest
         .split('/')
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
     if host.is_empty() {
-        return Err("`api-url` has no host".to_owned());
+        return Err(AppError::ApiUrlHost);
     }
     Ok(if host == "api.github.com" {
         "github.com".to_owned()
@@ -372,15 +406,15 @@ impl GitHub {
     }
 
     /// The App, or why there is none.
-    pub(crate) async fn app(&self) -> Result<Arc<AppConfig>, Refusal> {
+    pub(crate) async fn app(&self) -> Result<Arc<AppConfig>, Refusal<ConditionReason>> {
         let name = &self.secret_name;
-        let missing = |m: String| (ConditionReason::GitHubAppMissing, m);
+        let missing = |m: String| Refusal::new(ConditionReason::GitHubAppMissing, m);
         let secret = self
             .secrets
             .get_opt(name)
             .await
             .map_err(|e| {
-                (
+                Refusal::new(
                     ConditionReason::ResolveFailed,
                     format!("the GitHub App's Secret: {e}"),
                 )
@@ -403,13 +437,17 @@ impl GitHub {
     }
 
     /// Whether `namespace` may use `installation`.
-    pub(crate) async fn allowed(&self, installation: i64, namespace: &str) -> Result<(), Refusal> {
+    pub(crate) async fn allowed(
+        &self,
+        installation: i64,
+        namespace: &str,
+    ) -> Result<(), Refusal<ConditionReason>> {
         let grants = self
             .config_maps
             .get_opt(&self.grants_name)
             .await
             .map_err(|e| {
-                (
+                Refusal::new(
                     ConditionReason::ResolveFailed,
                     format!("the GitHub App's grants: {e}"),
                 )
@@ -420,7 +458,7 @@ impl GitHub {
         if grant.is_some_and(|g| granted(&g, namespace)) {
             Ok(())
         } else {
-            Err((
+            Err(Refusal::new(
                 ConditionReason::InstallationNotAllowed,
                 format!(
                     "a cluster admin has not allowed namespace `{namespace}` to use GitHub App installation {installation}"
@@ -435,7 +473,7 @@ impl GitHub {
         installation: i64,
         key: &RepoKey,
         access: Access,
-    ) -> Result<String, Refusal> {
+    ) -> Result<String, Refusal<ConditionReason>> {
         let now = Timestamp::now();
         let cache_key = (installation, key.as_str().to_owned(), access);
         if access == Access::Controller {
@@ -450,10 +488,10 @@ impl GitHub {
         let app = self.app().await?;
         let (_, name) = app
             .repository(key)
-            .map_err(|m| (ConditionReason::UnsupportedURL, m))?;
+            .map_err(|e| Refusal::new(ConditionReason::UnsupportedURL, e.to_string()))?;
         let jwt = app
             .jwt(now)
-            .map_err(|m| (ConditionReason::GitHubAppMissing, m))?;
+            .map_err(|e| Refusal::new(ConditionReason::GitHubAppMissing, e.to_string()))?;
         let url = format!(
             "{}/app/installations/{installation}/access_tokens",
             app.api_url
@@ -469,7 +507,7 @@ impl GitHub {
             } else {
                 ConditionReason::AuthFailed
             };
-            return Err((
+            return Err(Refusal::new(
                 reason,
                 format!(
                     "GitHub refused a token of installation {installation} for {key}: {status} {}",
@@ -478,7 +516,7 @@ impl GitHub {
             ));
         }
         let TokenAnswer { token, expires_at } = serde_json::from_slice(&answer).map_err(|e| {
-            (
+            Refusal::new(
                 ConditionReason::ResolveFailed,
                 format!("GitHub's token answer is not a token: {e}"),
             )
@@ -501,7 +539,7 @@ impl GitHub {
         body: &StatusBody<'_>,
     ) {
         if let Err(e) = self.try_report(installation, key, sha, body).await {
-            tracing::warn!(repository = %key, revision = sha, error = %e.1, "commit status not set");
+            tracing::warn!(repository = %key, revision = sha, error = %e, "commit status not set");
         }
     }
 
@@ -511,18 +549,18 @@ impl GitHub {
         key: &RepoKey,
         sha: &str,
         body: &StatusBody<'_>,
-    ) -> Result<(), Refusal> {
+    ) -> Result<(), Refusal<ConditionReason>> {
         let app = self.app().await?;
         let (owner, name) = app
             .repository(key)
-            .map_err(|m| (ConditionReason::UnsupportedURL, m))?;
+            .map_err(|e| Refusal::new(ConditionReason::UnsupportedURL, e.to_string()))?;
         let token = self.token(installation, key, Access::Controller).await?;
         let url = format!("{}/repos/{owner}/{name}/statuses/{sha}", app.api_url);
         let (status, answer) = self.call(Method::POST, &url, &token, body).await?;
         if status == StatusCode::CREATED {
             Ok(())
         } else {
-            Err((
+            Err(Refusal::new(
                 ConditionReason::AuthFailed,
                 format!("{status} {}", github_message(&answer)),
             ))
@@ -535,8 +573,10 @@ impl GitHub {
         url: &str,
         bearer: &str,
         body: &(impl Serialize + Sync),
-    ) -> Result<(StatusCode, Bytes), Refusal> {
-        let failed = |e: &dyn fmt::Display| (ConditionReason::ResolveFailed, format!("{url}: {e}"));
+    ) -> Result<(StatusCode, Bytes), Refusal<ConditionReason>> {
+        let failed = |e: &dyn fmt::Display| {
+            Refusal::new(ConditionReason::ResolveFailed, format!("{url}: {e}"))
+        };
         let mut auth =
             header::HeaderValue::try_from(format!("Bearer {bearer}")).map_err(|e| failed(&e))?;
         auth.set_sensitive(true);

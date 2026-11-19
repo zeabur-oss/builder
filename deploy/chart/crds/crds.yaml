@@ -1516,9 +1516,10 @@
                     "type": "string"
                   },
                   "reason": {
-                    "description": "Why a `BuildRun` waits or failed.",
+                    "description": "Why a `BuildRun` waits or failed, written as its name. The `Build`'s `Ready` condition\nrepeats it.",
                     "enum": [
                       "QuotaExceeded",
+                      "PreviousRunRunning",
                       "InsufficientResources",
                       "BuildkitdStarting",
                       "RegistryCredentialsMissing",

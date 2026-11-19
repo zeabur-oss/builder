@@ -33,10 +33,55 @@ use hyper_util::rt::TokioIo;
 use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use crate::{output, remote};
+
+/// Why the App could not be created.
+#[derive(Debug, Error)]
+pub(crate) enum GithubAppError {
+    /// No HTTP client for GitHub.
+    #[error(transparent)]
+    Client(#[from] remote::ClientError),
+    /// The manifest or the Secret does not encode.
+    #[error(transparent)]
+    Encode(#[from] serde_json::Error),
+    /// The conversion request could not be built.
+    #[error(transparent)]
+    Request(#[from] http::Error),
+    /// GitHub did not answer in time.
+    #[error("timed out")]
+    TimedOut(#[from] tokio::time::error::Elapsed),
+    /// GitHub could not be reached.
+    #[error(transparent)]
+    Transport(#[from] hyper_util::client::legacy::Error),
+    /// The answer's body could not be read.
+    #[error("{0}")]
+    Body(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// GitHub refused the conversion.
+    #[error("GitHub answered {0} to the conversion")]
+    Status(StatusCode),
+    /// GitHub's answer is not the App's conversion.
+    #[error("GitHub's answer is not the App's conversion: {0}")]
+    Answer(#[source] serde_json::Error),
+    /// The local callback server cannot listen.
+    #[error("cannot listen on 127.0.0.1: {0}")]
+    Listen(#[source] std::io::Error),
+    /// No random state for the flow.
+    #[error("no randomness")]
+    NoRandomness(#[source] aws_lc_rs::error::Unspecified),
+    /// The browser did not come back in time.
+    #[error("GitHub's manifest flow takes at most an hour")]
+    FlowTimedOut(#[source] tokio::time::error::Elapsed),
+    /// The callback never delivered a conversion.
+    #[error("the flow stopped")]
+    FlowStopped(#[source] oneshot::error::RecvError),
+    /// The callback server ended.
+    #[error("the callback server stopped")]
+    ServerStopped,
+}
 
 /// The manifest flow's time limit.
 const FLOW_LIMIT: Duration = Duration::from_hours(1);
@@ -227,7 +272,7 @@ fn page(status: StatusCode, text: &str) -> Response<Full<Bytes>> {
     response
 }
 
-async fn convert(api_url: &str, code: &str) -> Result<Conversion, String> {
+async fn convert(api_url: &str, code: &str) -> Result<Conversion, GithubAppError> {
     let client = remote::http_client()?;
     let request = Request::builder()
         .method(Method::POST)
@@ -237,39 +282,33 @@ async fn convert(api_url: &str, code: &str) -> Result<Conversion, String> {
         ))
         .header(header::USER_AGENT, USER_AGENT)
         .header(header::ACCEPT, "application/vnd.github+json")
-        .body(Full::new(Bytes::new()))
-        .map_err(|e| e.to_string())?;
-    let response = tokio::time::timeout(Duration::from_secs(30), client.request(request))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .body(Full::new(Bytes::new()))?;
+    let response = tokio::time::timeout(Duration::from_secs(30), client.request(request)).await??;
     let status = response.status();
     let body = Limited::new(response.into_body(), 1024 * 1024)
         .collect()
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(GithubAppError::Body)?
         .to_bytes();
     if status != StatusCode::CREATED {
-        return Err(format!("GitHub answered {status} to the conversion"));
+        return Err(GithubAppError::Status(status));
     }
-    serde_json::from_slice(&body)
-        .map_err(|e| format!("GitHub's answer is not the App's conversion: {e}"))
+    serde_json::from_slice(&body).map_err(GithubAppError::Answer)
 }
 
 /// Runs a `github-app` subcommand; the text for stdout.
-pub(crate) async fn run(command: Command) -> Result<String, String> {
+pub(crate) async fn run(command: Command) -> Result<String, GithubAppError> {
     match command {
-        Command::Manifest(args) => serde_json::to_string(&manifest(
+        Command::Manifest(args) => Ok(serde_json::to_string(&manifest(
             &args.name,
             &args.webhook_url,
             args.redirect_url.as_deref(),
-        ))
-        .map_err(|e| e.to_string()),
+        ))?),
         Command::Create(args) => create(args).await,
     }
 }
 
-type Done = Arc<Mutex<Option<oneshot::Sender<Result<Conversion, String>>>>>;
+type Done = Arc<Mutex<Option<oneshot::Sender<Result<Conversion, GithubAppError>>>>>;
 
 /// The form page, the state, the API URL and where the conversion goes.
 type Shared = (String, String, String, Done);
@@ -294,7 +333,7 @@ async fn answer(
                             "The App is created. Its Secret is on the terminal; close this tab."
                                 .to_owned()
                         }
-                        Err(e) => e.clone(),
+                        Err(e) => e.to_string(),
                     };
                     if let Some(tx) = done.lock().unwrap_or_else(PoisonError::into_inner).take()
                         && tx.send(converted).is_err()
@@ -313,13 +352,16 @@ async fn answer(
     }
 }
 
-async fn create(args: CreateArgs) -> Result<String, String> {
+async fn create(args: CreateArgs) -> Result<String, GithubAppError> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|e| format!("cannot listen on 127.0.0.1: {e}"))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        .map_err(GithubAppError::Listen)?;
+    let port = listener
+        .local_addr()
+        .map_err(GithubAppError::Listen)?
+        .port();
     let mut nonce = [0_u8; 24];
-    aws_lc_rs::rand::fill(&mut nonce).map_err(|_error| "no randomness".to_owned())?;
+    aws_lc_rs::rand::fill(&mut nonce).map_err(GithubAppError::NoRandomness)?;
     let state: String = nonce
         .iter()
         .flat_map(|b| [b >> 4, b & 15])
@@ -372,9 +414,9 @@ async fn create(args: CreateArgs) -> Result<String, String> {
     };
     let converted = tokio::select! {
         result = tokio::time::timeout(FLOW_LIMIT, rx) => result
-            .map_err(|_elapsed| "GitHub's manifest flow takes at most an hour".to_owned())?
-            .map_err(|_closed| "the flow stopped".to_owned())??,
-        () = serve => return Err("the callback server stopped".to_owned()),
+            .map_err(GithubAppError::FlowTimedOut)?
+            .map_err(GithubAppError::FlowStopped)??,
+        () = serve => return Err(GithubAppError::ServerStopped),
     };
     let secret = converted.secret(&args.secret, &args.namespace, &args.api_url);
     output::stderr_line(&format!(
@@ -386,7 +428,7 @@ async fn create(args: CreateArgs) -> Result<String, String> {
             &converted.html_url
         }
     ));
-    serde_json::to_string_pretty(&secret).map_err(|e| e.to_string())
+    Ok(serde_json::to_string_pretty(&secret)?)
 }
 
 #[cfg(test)]

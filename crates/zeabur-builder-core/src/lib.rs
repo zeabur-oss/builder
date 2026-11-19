@@ -12,6 +12,7 @@
 //! - [`plan`]: what the agent planner reports about a run.
 //! - [`progress`]: reading `buildctl --progress rawjson` output, its cached steps and its steps.
 //! - [`railpack`]: making a Railpack image run as a non-root user.
+//! - [`refusal`]: the reason and the message of a step that stopped.
 //!
 //! The controller and the Job image both depend on this crate, which is why it stays free of I/O,
 //! clocks and randomness: the same inputs always give the same decision.
@@ -23,6 +24,7 @@ pub mod hook;
 pub mod plan;
 pub mod progress;
 pub mod railpack;
+pub mod refusal;
 pub mod repo;
 pub mod result;
 pub mod ssh;

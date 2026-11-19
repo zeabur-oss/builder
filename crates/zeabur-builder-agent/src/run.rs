@@ -4,12 +4,13 @@ use std::path::{Path, PathBuf};
 
 use rig_core::catalog::{Catalog, ModelSpec};
 use rig_core::providers::registry::{ConnectError, ConnectOptions, ProviderId};
+use zeabur_builder_core::refusal::Refusal;
 
 use crate::agent::Agent;
 use crate::budget::{Limits, Spent};
 use crate::federation::Federation;
 use crate::http::HyperClient;
-use crate::output;
+use crate::output::{self, WriteError};
 use crate::plan::{Details, Info, Outcome, Plan, Reason, Source};
 use crate::repo::{Repo, dockerignore, rules_of};
 use crate::trial::{Attempt, Buildctl, TrialBuild};
@@ -57,10 +58,39 @@ pub(crate) struct Args {
 /// The variable with the model API key. The build Job sets it from the namespace's Secret.
 const API_KEY_ENV: &str = "ZB_MODEL_API_KEY";
 
+/// Why a run ended with an error of the agent's own rather than a plan or a reason.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RunError {
+    #[error("cannot open {}: {source}", path.display())]
+    Open {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot create {}: {source}", path.display())]
+    CreateDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot write {}: {source}", path.display())]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot remove {}: {source}", path.display())]
+    Remove {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Output(#[from] WriteError),
+}
+
 /// Runs, writes the plan and its info, and returns whether there is a plan.
-pub(crate) async fn run(args: Args) -> Result<bool, String> {
-    let repo = Repo::new(&args.context)
-        .map_err(|e| format!("cannot open {}: {e}", args.context.display()))?;
+pub(crate) async fn run(args: Args) -> Result<bool, RunError> {
+    let repo = Repo::new(&args.context).map_err(|source| RunError::Open {
+        path: args.context.clone(),
+        source,
+    })?;
     let limits = Limits::default();
     let builder = Buildctl {
         addr: args.buildkit.clone(),
@@ -114,13 +144,13 @@ async fn connect(
     model: &str,
     base_url: Option<&str>,
     key: Option<String>,
-) -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)> {
+) -> Result<rig_core::DynModel<rig_core::operation::Completion>, Refusal<Reason>> {
     let catalog = Catalog::builtin();
     let provider = ProviderId::catalog(provider).ok_or_else(|| {
         let mut known: Vec<_> = ProviderId::all().map(|p| p.vendor()).collect();
         known.sort_unstable();
         known.dedup();
-        (
+        Refusal::new(
             Reason::ModelFailed,
             format!(
                 "unknown provider `{provider}`; use one of {}",
@@ -132,7 +162,7 @@ async fn connect(
         || ModelSpec::new(provider, model),
         |found| found.spec.clone(),
     );
-    let http = HyperClient::new().map_err(|e| (Reason::ModelFailed, e))?;
+    let http = HyperClient::new().map_err(|e| Refusal::new(Reason::ModelFailed, e.to_string()))?;
     if key.is_none()
         && let Some(federation) = Federation::from_env(provider.vendor())?
     {
@@ -147,12 +177,12 @@ async fn connect(
     }
     catalog.connect_with(&spec, options).map_err(|e| {
         if let ConnectError::MissingKey { tried, .. } = &e {
-            (
+            Refusal::new(
                 Reason::ModelKeyMissing,
                 format!("set {}", tried.join(" or ")),
             )
         } else {
-            (Reason::ModelFailed, e.to_string())
+            Refusal::new(Reason::ModelFailed, e.to_string())
         }
     })
 }
@@ -168,7 +198,7 @@ pub(crate) async fn plan<B, C>(
 where
     B: TrialBuild + Clone,
     C: AsyncFnOnce()
-        -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)>,
+        -> Result<rig_core::DynModel<rig_core::operation::Completion>, Refusal<Reason>>,
 {
     if let Some(dockerfile) = repo.file("Dockerfile") {
         let plan = Plan {
@@ -198,7 +228,15 @@ where
     }
     let model = match connect().await {
         Ok(model) => model,
-        Err((reason, detail)) => return (Outcome::NeedsUser { reason, detail }, None),
+        Err(Refusal { reason, message }) => {
+            return (
+                Outcome::NeedsUser {
+                    reason,
+                    detail: message,
+                },
+                None,
+            );
+        }
     };
     let agent = Agent {
         model,
@@ -211,18 +249,21 @@ where
 }
 
 /// Prints and writes the outcome; returns whether there is a plan.
-async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<bool, String> {
+async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<bool, RunError> {
     let write = |name: &str, text: String| {
         let path = out.join(name);
         async move {
             tokio::fs::write(&path, text)
                 .await
-                .map_err(|e| format!("cannot write {}: {e}", path.display()))
+                .map_err(|source| RunError::Write { path, source })
         }
     };
     tokio::fs::create_dir_all(out)
         .await
-        .map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+        .map_err(|source| RunError::CreateDir {
+            path: out.to_path_buf(),
+            source,
+        })?;
     let mut info = Info {
         source: None,
         details: None,
@@ -246,7 +287,10 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
                 if let Err(e) = tokio::fs::remove_file(&stale).await
                     && e.kind() != std::io::ErrorKind::NotFound
                 {
-                    return Err(format!("cannot remove {}: {e}", stale.display()));
+                    return Err(RunError::Remove {
+                        path: stale,
+                        source: e,
+                    });
                 }
             } else {
                 write("Dockerfile.dockerignore", dockerignore(&plan.dockerignore)).await?;
@@ -276,7 +320,7 @@ mod tests {
     use crate::testing::{Dir, Replay, Script, failed, tool_use};
 
     async fn no_model()
-    -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)> {
+    -> Result<rig_core::DynModel<rig_core::operation::Completion>, Refusal<Reason>> {
         panic!("the model was called");
     }
 
@@ -368,13 +412,17 @@ mod tests {
         };
         assert_eq!(
             error,
-            (Reason::ModelKeyMissing, "set HYPERBOLIC_API_KEY".to_owned())
+            Refusal::new(Reason::ModelKeyMissing, "set HYPERBOLIC_API_KEY")
         );
     }
 
     #[tokio::test]
     async fn an_unknown_provider_lists_the_known_ones() {
-        let Err((reason, detail)) = connect("gemini", "gemini-2.5-pro", None, None).await else {
+        let Err(Refusal {
+            reason,
+            message: detail,
+        }) = connect("gemini", "gemini-2.5-pro", None, None).await
+        else {
             panic!()
         };
         assert_eq!(reason, Reason::ModelFailed);
@@ -386,7 +434,7 @@ mod tests {
         let Err(error) = connect("hyperbolic", "a-model-from-next-year", None, None).await else {
             panic!()
         };
-        assert_eq!(error.0, Reason::ModelKeyMissing);
+        assert_eq!(error.reason, Reason::ModelKeyMissing);
     }
 
     #[tokio::test]

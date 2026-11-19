@@ -271,12 +271,14 @@ pub enum Phase {
     Unknown,
 }
 
-/// Why a `BuildRun` waits or failed.
+/// Why a `BuildRun` waits or failed, written as its name. The `Build`'s `Ready` condition
+/// repeats it.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
 pub enum Reason {
-    /// The namespace or the cluster runs as many builds as it may, or the `Build`'s previous run
-    /// has not stopped yet.
+    /// The namespace or the cluster runs as many builds as it may.
     QuotaExceeded,
+    /// The `Build`'s previous run has not stopped yet.
+    PreviousRunRunning,
     /// The cluster has no free memory or CPU for the namespace's buildkitd. The controller
     /// frees an idle buildkitd in another namespace, and the run gives its slot back to another
     /// that can start now.
@@ -421,6 +423,18 @@ pub struct CacheStats {
     /// Steps answered from cache.
     #[schemars(range(min = 0))]
     pub cached: i64,
+}
+
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
+}
+
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
 }
 
 #[cfg(test)]

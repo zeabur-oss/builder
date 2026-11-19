@@ -36,6 +36,7 @@ use rig_core::providers::registry::{ConnectOptions, ProviderConfig};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
+use zeabur_builder_core::refusal::Refusal;
 
 use crate::http::HyperClient;
 use crate::plan::Reason;
@@ -76,7 +77,7 @@ pub(crate) enum Federation {
 
 impl Federation {
     /// The federation `vendor`'s variables set up, from the process environment.
-    pub(crate) fn from_env(vendor: &str) -> Result<Option<Self>, (Reason, String)> {
+    pub(crate) fn from_env(vendor: &str) -> Result<Option<Self>, Refusal<Reason>> {
         Self::from_vars(vendor, |name| std::env::var(name).ok())
     }
 
@@ -85,10 +86,11 @@ impl Federation {
     fn from_vars(
         vendor: &str,
         var: impl Fn(&str) -> Option<String>,
-    ) -> Result<Option<Self>, (Reason, String)> {
+    ) -> Result<Option<Self>, Refusal<Reason>> {
         let var = |name: &str| var(name).filter(|value| !value.is_empty());
-        let required =
-            |name: &str| var(name).ok_or_else(|| (Reason::ModelKeyMissing, format!("set {name}")));
+        let required = |name: &str| {
+            var(name).ok_or_else(|| Refusal::new(Reason::ModelKeyMissing, format!("set {name}")))
+        };
         match vendor {
             "anthropic" if var("ANTHROPIC_API_KEY").is_none() => {
                 let Some(rule) = var("ANTHROPIC_FEDERATION_RULE_ID") else {
@@ -123,7 +125,7 @@ impl Federation {
         spec: &ModelSpec,
         http: HyperClient,
         base_url: Option<&str>,
-    ) -> Result<DynModel<Completion>, (Reason, String)> {
+    ) -> Result<DynModel<Completion>, Refusal<Reason>> {
         let access = self.exchange(&http, token_url(self), EXCHANGE_TIME).await?;
         let token = access.token.clone();
         let client = Federated {
@@ -141,12 +143,12 @@ impl Federation {
         http: &HyperClient,
         url: &str,
         limit: Duration,
-    ) -> Result<Access, (Reason, String)> {
+    ) -> Result<Access, Refusal<Reason>> {
         let token_file = match self {
             Self::Anthropic { token_file, .. } | Self::OpenAi { token_file, .. } => token_file,
         };
         let jwt = tokio::fs::read_to_string(token_file).await.map_err(|e| {
-            (
+            Refusal::new(
                 Reason::ModelKeyMissing,
                 format!(
                     "cannot read the service account token {}: {e}",
@@ -158,12 +160,13 @@ impl Federation {
         let reply = tokio::time::timeout(limit, http.post_json(url, self.request(jwt.trim())))
             .await
             .map_err(|_elapsed| {
-                (
+                Refusal::new(
                     Reason::ModelFailed,
                     format!("{url} did not answer in {} s", limit.as_secs()),
                 )
             })?;
-        let (status, reply) = reply.map_err(|e| (Reason::ModelFailed, format!("{url}: {e}")))?;
+        let (status, reply) =
+            reply.map_err(|e| Refusal::new(Reason::ModelFailed, format!("{url}: {e}")))?;
         let token = self.access_token(status, &reply)?;
         Ok(Access {
             renew_at: started + Duration::from_secs(token.expires_in.saturating_mul(3) / 4),
@@ -179,7 +182,7 @@ impl Federation {
         spec: &ModelSpec,
         http: impl HttpClientExt + 'static,
         base_url: Option<&str>,
-    ) -> Result<DynModel<Completion>, (Reason, String)> {
+    ) -> Result<DynModel<Completion>, Refusal<Reason>> {
         match self {
             Self::Anthropic { .. } => {
                 // Rig's Anthropic dialect sends its key as `x-api-key`; an access token is a
@@ -201,7 +204,7 @@ impl Federation {
                 }
                 catalog
                     .connect_with(spec, options)
-                    .map_err(|e| (Reason::ModelFailed, e.to_string()))
+                    .map_err(|e| Refusal::new(Reason::ModelFailed, e.to_string()))
             }
         }
     }
@@ -240,7 +243,7 @@ impl Federation {
     }
 
     /// The access token in a reply, or what the user checks.
-    fn access_token(&self, status: StatusCode, reply: &[u8]) -> Result<Token, (Reason, String)> {
+    fn access_token(&self, status: StatusCode, reply: &[u8]) -> Result<Token, Refusal<Reason>> {
         let (vendor, check) = match self {
             Self::Anthropic { .. } => (
                 "Anthropic",
@@ -254,8 +257,9 @@ impl Federation {
             ),
         };
         if status.is_success() {
-            return serde_json::from_slice::<Token>(reply)
-                .map_err(|e| (Reason::ModelFailed, format!("{vendor}'s token reply: {e}")));
+            return serde_json::from_slice::<Token>(reply).map_err(|e| {
+                Refusal::new(Reason::ModelFailed, format!("{vendor}'s token reply: {e}"))
+            });
         }
         let text = String::from_utf8_lossy(reply);
         let end = text
@@ -265,9 +269,12 @@ impl Federation {
         let text = text.get(..end).unwrap_or_default().trim();
         let detail = format!("{vendor} refused the service account token ({status}): {text}");
         if status.is_client_error() {
-            Err((Reason::ModelKeyMissing, format!("{detail}; {check}")))
+            Err(Refusal::new(
+                Reason::ModelKeyMissing,
+                format!("{detail}; {check}"),
+            ))
         } else {
-            Err((Reason::ModelFailed, detail))
+            Err(Refusal::new(Reason::ModelFailed, detail))
         }
     }
 }
@@ -333,7 +340,7 @@ impl Federated {
                     .federation
                     .exchange(&self.http, url, EXCHANGE_TIME)
                     .await
-                    .map_err(|(_, detail)| Error::instance(std::io::Error::other(detail)))?;
+                    .map_err(Error::instance)?;
             }
             access.token.clone()
         };
@@ -403,7 +410,7 @@ mod tests {
     use super::*;
     use crate::testing::{Replay, text};
 
-    fn from(vendor: &str, vars: &[(&str, &str)]) -> Result<Option<Federation>, (Reason, String)> {
+    fn from(vendor: &str, vars: &[(&str, &str)]) -> Result<Option<Federation>, Refusal<Reason>> {
         let vars: HashMap<_, _> = vars.iter().copied().collect();
         Federation::from_vars(vendor, |name| vars.get(name).map(|v| (*v).to_owned()))
     }
@@ -502,9 +509,9 @@ mod tests {
         ];
         assert_eq!(
             from("openai", &vars),
-            Err((
+            Err(Refusal::new(
                 Reason::ModelKeyMissing,
-                "set OPENAI_IDENTITY_TOKEN_FILE".to_owned()
+                "set OPENAI_IDENTITY_TOKEN_FILE"
             ))
         );
     }
@@ -627,7 +634,11 @@ mod tests {
             .await;
         drop(listener);
 
-        let Err((reason, detail)) = result else {
+        let Err(Refusal {
+            reason,
+            message: detail,
+        }) = result
+        else {
             panic!("exchanged");
         };
         assert_eq!(reason, Reason::ModelFailed);
@@ -636,8 +647,10 @@ mod tests {
 
     #[test]
     fn a_refused_token_says_what_to_check() {
-        let Err((reason, detail)) =
-            anthropic().access_token(StatusCode::UNAUTHORIZED, b"Authentication failed")
+        let Err(Refusal {
+            reason,
+            message: detail,
+        }) = anthropic().access_token(StatusCode::UNAUTHORIZED, b"Authentication failed")
         else {
             panic!("accepted");
         };
@@ -646,7 +659,8 @@ mod tests {
         assert!(detail.contains("Authentication failed"), "{detail}");
         assert!(detail.contains("authentication history"), "{detail}");
 
-        let Err((reason, _)) = openai().access_token(StatusCode::BAD_GATEWAY, b"") else {
+        let Err(Refusal { reason, .. }) = openai().access_token(StatusCode::BAD_GATEWAY, b"")
+        else {
             panic!("accepted");
         };
         assert_eq!(reason, Reason::ModelFailed);

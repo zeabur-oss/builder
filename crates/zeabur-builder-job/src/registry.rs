@@ -19,8 +19,8 @@
 //! [token authentication]: https://distribution.github.io/distribution/spec/auth/token/
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
-use std::path::Path;
+use std::io::{self, Write as _};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +39,8 @@ use rustls::pki_types::pem::PemObject as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use zeabur_builder_core::archive::{
-    self, EMPTY_CONFIG_MEDIA_TYPE, LAYER_MEDIA_TYPE, Layer, MANIFEST_MEDIA_TYPE, MAX_MANIFEST_BYTES,
+    self, ArchiveError, EMPTY_CONFIG_MEDIA_TYPE, LAYER_MEDIA_TYPE, Layer, MANIFEST_MEDIA_TYPE,
+    MAX_MANIFEST_BYTES,
 };
 use zeabur_builder_core::result::{MAX_EXPOSED_PORTS, is_digest};
 
@@ -55,8 +56,89 @@ const USER_AGENT: &str = concat!("zeabur-builder-job/", env!("CARGO_PKG_VERSION"
 
 type HttpClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
+/// Why a registry call failed. The controller shows the message as the run's message.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RegistryError {
+    #[error("cannot read the registry CA: {0}")]
+    ReadCa(#[source] rustls::pki_types::pem::Error),
+    #[error("cannot use the registry CA: {0}")]
+    UseCa(#[source] rustls::Error),
+    #[error("cannot set up TLS: {0}")]
+    Tls(#[source] rustls::Error),
+    #[error("cannot read the Docker config: {0}")]
+    DockerConfig(#[source] serde_json::Error),
+    #[error("`{0}` is not <host>/<name>")]
+    Repository(String),
+    #[error("invalid credentials")]
+    Credentials,
+    #[error("{url}: {source}")]
+    Request { url: String, source: http::Error },
+    #[error("{url}: {source:?}")]
+    Send {
+        url: String,
+        source: hyper_util::client::legacy::Error,
+    },
+    #[error("{url} answered {status}")]
+    Status { url: String, status: StatusCode },
+    #[error("{url} answered {status} without a Location")]
+    RedirectWithoutLocation { url: String, status: StatusCode },
+    #[error("redirect to {next}: {source}")]
+    RedirectTarget {
+        next: String,
+        source: http::uri::InvalidUri,
+    },
+    #[error("{url} redirects to {next}, which is not https")]
+    Downgrade { url: String, next: String },
+    #[error("{0}: too many redirects")]
+    TooManyRedirects(String),
+    #[error("cannot read the token: {0}")]
+    ReadToken(#[source] serde_json::Error),
+    #[error("{0} gave no token")]
+    NoToken(String),
+    #[error("{0} answered without a Location")]
+    UploadWithoutLocation(String),
+    #[error("the upload goes to {location}, not to {base}")]
+    UploadHost { location: String, base: String },
+    #[error("the blob upload answered {0}")]
+    BlobUpload(StatusCode),
+    #[error("cannot write the manifest: {0}")]
+    WriteManifest(#[source] serde_json::Error),
+    #[error(transparent)]
+    Archive(#[from] ArchiveError),
+    #[error("the manifest does not match {0}")]
+    ManifestDigest(String),
+    #[error("cannot read the manifest: {0}")]
+    ReadManifest(#[source] serde_json::Error),
+    #[error("the registry did not answer within {0}s")]
+    Timeout(u64),
+    #[error("the index has no image")]
+    NoImage,
+    #[error("the manifest has no config")]
+    NoConfig,
+    #[error("`{0}` is not a digest")]
+    NotDigest(String),
+    #[error("the image config does not match {0}")]
+    ConfigDigest(String),
+    #[error("cannot read the image config: {0}")]
+    ReadImageConfig(#[source] serde_json::Error),
+    #[error("cannot create {}: {source}", path.display())]
+    CreateFile { path: PathBuf, source: io::Error },
+    #[error("cannot write {}: {source}", path.display())]
+    WriteFile { path: PathBuf, source: io::Error },
+    #[error("cannot download the archive: {0}")]
+    Download(#[source] hyper::Error),
+    #[error("the archive is larger than the {0} bytes its manifest gives")]
+    LayerTooLarge(u64),
+    #[error("the archive has {size} bytes, not the {expected} its manifest gives")]
+    LayerSize { size: u64, expected: u64 },
+    #[error("the archive does not match {0}")]
+    LayerDigest(String),
+    #[error("cannot read the answer: {0}")]
+    ReadAnswer(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
 /// A client that trusts the system's CAs and `ca`, a PEM bundle.
-pub(crate) fn client(ca: Option<&str>) -> Result<HttpClient, String> {
+pub(crate) fn client(ca: Option<&str>) -> Result<HttpClient, RegistryError> {
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls_native_certs::load_native_certs().certs {
         // A system certificate rustls cannot parse is skipped, as the controller does not need it.
@@ -64,17 +146,15 @@ pub(crate) fn client(ca: Option<&str>) -> Result<HttpClient, String> {
     }
     if let Some(ca) = ca {
         for cert in CertificateDer::pem_slice_iter(ca.as_bytes()) {
-            let cert = cert.map_err(|e| format!("cannot read the registry CA: {e}"))?;
-            roots
-                .add(cert)
-                .map_err(|e| format!("cannot use the registry CA: {e}"))?;
+            let cert = cert.map_err(RegistryError::ReadCa)?;
+            roots.add(cert).map_err(RegistryError::UseCa)?;
         }
     }
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_safe_default_protocol_versions()
-    .map_err(|e| e.to_string())?
+    .map_err(RegistryError::Tls)?
     .with_root_certificates(roots)
     .with_no_client_auth();
     let mut http = HttpConnector::new();
@@ -127,9 +207,9 @@ struct Token {
 /// The credentials for `host` in a Docker config: its `registrytoken`, else its `auth`, or
 /// `username` and `password`. A key may carry a scheme and a path, as `docker login` writes for
 /// Docker Hub.
-pub(crate) fn credentials(config: &[u8], host: &str) -> Result<Option<Credentials>, String> {
-    let config: DockerConfig = serde_json::from_slice(config)
-        .map_err(|e| format!("cannot read the Docker config: {e}"))?;
+pub(crate) fn credentials(config: &[u8], host: &str) -> Result<Option<Credentials>, RegistryError> {
+    let config: DockerConfig =
+        serde_json::from_slice(config).map_err(RegistryError::DockerConfig)?;
     let entry = config.auths.into_iter().find_map(|(key, entry)| {
         let key = key
             .strip_prefix("https://")
@@ -186,19 +266,16 @@ pub(crate) fn bearer_challenge(value: &str) -> Option<Challenge> {
 
 /// Percent-encodes a query value: everything except the unreserved characters of RFC 3986.
 fn encode(value: &str) -> String {
-    let mut out = String::new();
-    for b in value.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(b));
-        } else {
-            out.push('%');
-            for nibble in [b >> 4, b & 0xF] {
-                let digit = char::from_digit(u32::from(nibble), 16).unwrap_or('0');
-                out.push(digit.to_ascii_uppercase());
+    value
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
             }
-        }
-    }
-    out
+        })
+        .collect()
 }
 
 /// One request: its method, headers and body.
@@ -273,11 +350,11 @@ impl Repository {
         repository: &str,
         plain_http: bool,
         credentials: Option<Credentials>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, RegistryError> {
         let (host, name) = repository
             .split_once('/')
             .filter(|(host, name)| !host.is_empty() && !name.is_empty())
-            .ok_or_else(|| format!("`{repository}` is not <host>/<name>"))?;
+            .ok_or_else(|| RegistryError::Repository(repository.to_owned()))?;
         let (basic, bearer) = match credentials {
             Some(Credentials::Basic(basic)) => (Some(basic), None),
             Some(Credentials::Bearer(bearer)) => (None, Some(bearer)),
@@ -297,7 +374,7 @@ impl Repository {
         &self,
         call: &Call<'_>,
         authorization: Option<&str>,
-    ) -> Result<Response<Incoming>, String> {
+    ) -> Result<Response<Incoming>, RegistryError> {
         let url = call.url;
         let mut retries = 0;
         loop {
@@ -313,19 +390,27 @@ impl Repository {
             }
             if let Some(value) = authorization {
                 let mut value =
-                    HeaderValue::from_str(value).map_err(|_e| "invalid credentials".to_owned())?;
+                    HeaderValue::from_str(value).map_err(|_e| RegistryError::Credentials)?;
                 value.set_sensitive(true);
                 request = request.header(header::AUTHORIZATION, value);
             }
             let request = request
                 .body(Full::new(call.body.clone()))
-                .map_err(|e| format!("{url}: {e}"))?;
+                .map_err(|source| RegistryError::Request {
+                    url: url.to_owned(),
+                    source,
+                })?;
             match self.client.request(request).await {
                 Err(e) if e.is_connect() && retries < CONNECT_RETRIES => {
                     retries += 1;
                     tokio::time::sleep(CONNECT_RETRY).await;
                 }
-                answer => return answer.map_err(|e| format!("{url}: {e:?}")),
+                answer => {
+                    return answer.map_err(|source| RegistryError::Send {
+                        url: url.to_owned(),
+                        source,
+                    });
+                }
             }
         }
     }
@@ -336,7 +421,7 @@ impl Repository {
         &mut self,
         path: &str,
         accept: Option<&str>,
-    ) -> Result<Response<Incoming>, String> {
+    ) -> Result<Response<Incoming>, RegistryError> {
         let first = format!("{}://{}/v2/{}/{path}", self.scheme, self.host, self.name);
         let mut url = first.clone();
         let mut same_host = true;
@@ -364,17 +449,23 @@ impl Repository {
                     .headers()
                     .get(header::LOCATION)
                     .and_then(|v| v.to_str().ok())
-                    .ok_or_else(|| format!("{url} answered {status} without a Location"))?;
+                    .ok_or_else(|| RegistryError::RedirectWithoutLocation {
+                        url: url.clone(),
+                        status,
+                    })?;
                 let next = if location.starts_with('/') {
                     format!("{}://{}{location}", self.scheme, self.host)
                 } else {
                     location.to_owned()
                 };
-                let next_uri: http::Uri = next
-                    .parse()
-                    .map_err(|e| format!("redirect to {next}: {e}"))?;
+                let next_uri: http::Uri =
+                    next.parse()
+                        .map_err(|source| RegistryError::RedirectTarget {
+                            next: next.clone(),
+                            source,
+                        })?;
                 if self.scheme == "https" && next_uri.scheme_str() != Some("https") {
-                    return Err(format!("{url} redirects to {next}, which is not https"));
+                    return Err(RegistryError::Downgrade { url, next });
                 }
                 same_host &= next_uri.authority().map(http::uri::Authority::as_str)
                     == Some(self.host.as_str());
@@ -382,15 +473,15 @@ impl Repository {
                 continue;
             }
             if !status.is_success() {
-                return Err(format!("{first} answered {status}"));
+                return Err(RegistryError::Status { url: first, status });
             }
             return Ok(response);
         }
-        Err(format!("{first}: too many redirects"))
+        Err(RegistryError::TooManyRedirects(first))
     }
 
     /// A token for `actions` (`pull`, or `pull,push`) from the challenge's realm.
-    async fn token(&self, challenge: &Challenge, actions: &str) -> Result<String, String> {
+    async fn token(&self, challenge: &Challenge, actions: &str) -> Result<String, RegistryError> {
         let service = challenge
             .service
             .as_deref()
@@ -409,25 +500,26 @@ impl Repository {
             .send(&Call::get(&url, None), self.basic.as_deref())
             .await?;
         if !response.status().is_success() {
-            return Err(format!(
-                "{} answered {}",
-                challenge.realm,
-                response.status()
-            ));
+            return Err(RegistryError::Status {
+                url: challenge.realm.clone(),
+                status: response.status(),
+            });
         }
         let body = read_limited(response, MAX_TOKEN_BYTES).await?;
-        let token: Token =
-            serde_json::from_slice(&body).map_err(|e| format!("cannot read the token: {e}"))?;
+        let token: Token = serde_json::from_slice(&body).map_err(RegistryError::ReadToken)?;
         token
             .token
             .or(token.access_token)
             .map(|t| format!("Bearer {t}"))
-            .ok_or_else(|| format!("{} gave no token", challenge.realm))
+            .ok_or_else(|| RegistryError::NoToken(challenge.realm.clone()))
     }
 
     /// Sends `call` with the credentials, buying a pull and push token when the registry asks for
     /// one. Only for URLs on the registry's own host.
-    async fn send_for_push(&mut self, call: &Call<'_>) -> Result<Response<Incoming>, String> {
+    async fn send_for_push(
+        &mut self,
+        call: &Call<'_>,
+    ) -> Result<Response<Incoming>, RegistryError> {
         let response = self
             .send(call, self.bearer.as_deref().or(self.basic.as_deref()))
             .await?;
@@ -447,7 +539,11 @@ impl Repository {
     }
 
     /// Uploads `blob` in one request and returns its descriptor.
-    async fn push_blob(&mut self, media_type: &str, blob: Bytes) -> Result<Descriptor, String> {
+    async fn push_blob(
+        &mut self,
+        media_type: &str,
+        blob: Bytes,
+    ) -> Result<Descriptor, RegistryError> {
         let base = format!("{}://{}", self.scheme, self.host);
         let start = format!("{base}/v2/{}/blobs/uploads/", self.name);
         let response = self
@@ -460,20 +556,23 @@ impl Repository {
             })
             .await?;
         if response.status() != StatusCode::ACCEPTED {
-            return Err(format!("{start} answered {}", response.status()));
+            return Err(RegistryError::Status {
+                url: start,
+                status: response.status(),
+            });
         }
         let location = response
             .headers()
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| format!("{start} answered without a Location"))?;
+            .ok_or_else(|| RegistryError::UploadWithoutLocation(start.clone()))?;
         let location = if location.starts_with('/') {
             format!("{base}{location}")
         } else {
             location.to_owned()
         };
         if !location.starts_with(&format!("{base}/")) {
-            return Err(format!("the upload goes to {location}, not to {base}"));
+            return Err(RegistryError::UploadHost { location, base });
         }
         let digest = archive::sha256(&blob);
         let size = u64::try_from(blob.len()).unwrap_or(u64::MAX);
@@ -492,7 +591,7 @@ impl Repository {
             })
             .await?;
         if response.status() != StatusCode::CREATED {
-            return Err(format!("the blob upload answered {}", response.status()));
+            return Err(RegistryError::BlobUpload(response.status()));
         }
         Ok(Descriptor {
             media_type: media_type.to_owned(),
@@ -508,7 +607,7 @@ impl Repository {
         tag: &str,
         artifact_type: &str,
         layer: Bytes,
-    ) -> Result<String, String> {
+    ) -> Result<String, RegistryError> {
         let config = self
             .push_blob(EMPTY_CONFIG_MEDIA_TYPE, Bytes::from_static(b"{}"))
             .await?;
@@ -520,7 +619,7 @@ impl Repository {
             config,
             layers: [layer],
         })
-        .map_err(|e| format!("cannot write the manifest: {e}"))?;
+        .map_err(RegistryError::WriteManifest)?;
         let digest = archive::sha256(&manifest);
         let url = format!(
             "{}://{}/v2/{}/manifests/{tag}",
@@ -536,7 +635,10 @@ impl Repository {
             })
             .await?;
         if response.status() != StatusCode::CREATED {
-            return Err(format!("{url} answered {}", response.status()));
+            return Err(RegistryError::Status {
+                url,
+                status: response.status(),
+            });
         }
         Ok(digest)
     }
@@ -546,24 +648,24 @@ impl Repository {
         &mut self,
         digest: &str,
         artifact_type: &str,
-    ) -> Result<Layer, String> {
+    ) -> Result<Layer, RegistryError> {
         let response = self
             .get(&format!("manifests/{digest}"), Some(MANIFEST_MEDIA_TYPE))
             .await?;
         let body = read_limited(response, MAX_MANIFEST_BYTES).await?;
-        archive::layer(&body, digest, artifact_type).map_err(|e| e.to_string())
+        Ok(archive::layer(&body, digest, artifact_type)?)
     }
 
     /// A manifest or index with `digest`, checked against it.
-    async fn manifest_json(&mut self, digest: &str) -> Result<ImageManifest, String> {
+    async fn manifest_json(&mut self, digest: &str) -> Result<ImageManifest, RegistryError> {
         let response = self
             .get(&format!("manifests/{digest}"), Some(MANIFEST_ACCEPT))
             .await?;
         let body = read_limited(response, MAX_MANIFEST_BYTES).await?;
         if archive::sha256(&body) != digest {
-            return Err(format!("the manifest does not match {digest}"));
+            return Err(RegistryError::ManifestDigest(digest.to_owned()));
         }
-        serde_json::from_slice(&body).map_err(|e| format!("cannot read the manifest: {e}"))
+        serde_json::from_slice(&body).map_err(RegistryError::ReadManifest)
     }
 
     /// The `ExposedPorts` of the image with `digest`, or an error once `within` passes: the client
@@ -572,43 +674,41 @@ impl Repository {
         &mut self,
         digest: &str,
         within: Duration,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, RegistryError> {
         tokio::time::timeout(within, self.read_exposed_ports(digest))
             .await
-            .map_err(|_elapsed| {
-                format!("the registry did not answer within {}s", within.as_secs())
-            })?
+            .map_err(|_elapsed| RegistryError::Timeout(within.as_secs()))?
     }
 
     /// An index gives its first image that is not an attestation.
-    async fn read_exposed_ports(&mut self, digest: &str) -> Result<Vec<String>, String> {
+    async fn read_exposed_ports(&mut self, digest: &str) -> Result<Vec<String>, RegistryError> {
         let mut manifest = self.manifest_json(digest).await?;
         if manifest.config.is_none() {
             let entry = manifest
                 .manifests
                 .iter()
                 .find(|m| m.platform.as_ref().is_some_and(|p| p.os != "unknown"))
-                .ok_or("the index has no image")?;
+                .ok_or(RegistryError::NoImage)?;
             if !is_digest(&entry.digest) {
-                return Err(format!("`{}` is not a digest", entry.digest));
+                return Err(RegistryError::NotDigest(entry.digest.clone()));
             }
             let entry = entry.digest.clone();
             manifest = self.manifest_json(&entry).await?;
         }
-        let config = manifest.config.ok_or("the manifest has no config")?;
+        let config = manifest.config.ok_or(RegistryError::NoConfig)?;
         if !is_digest(&config.digest) {
-            return Err(format!("`{}` is not a digest", config.digest));
+            return Err(RegistryError::NotDigest(config.digest));
         }
         let response = self.get(&format!("blobs/{}", config.digest), None).await?;
         let body = read_limited(response, MAX_CONFIG_BYTES).await?;
         if archive::sha256(&body) != config.digest {
-            return Err(format!("the image config does not match {}", config.digest));
+            return Err(RegistryError::ConfigDigest(config.digest));
         }
         exposed_ports(&body)
     }
 
     /// Downloads the layer to `to`, checks its size and digest, and removes the file if it fails.
-    pub(crate) async fn download(&mut self, layer: &Layer, to: &Path) -> Result<(), String> {
+    pub(crate) async fn download(&mut self, layer: &Layer, to: &Path) -> Result<(), RegistryError> {
         let written = self.download_unchecked(layer, to).await;
         if written.is_err() {
             drop(std::fs::remove_file(to));
@@ -616,36 +716,39 @@ impl Repository {
         written
     }
 
-    async fn download_unchecked(&mut self, layer: &Layer, to: &Path) -> Result<(), String> {
+    async fn download_unchecked(&mut self, layer: &Layer, to: &Path) -> Result<(), RegistryError> {
         let mut response = self.get(&format!("blobs/{}", layer.digest), None).await?;
-        let mut file = std::fs::File::create_new(to)
-            .map_err(|e| format!("cannot create {}: {e}", to.display()))?;
+        let mut file =
+            std::fs::File::create_new(to).map_err(|source| RegistryError::CreateFile {
+                path: to.to_path_buf(),
+                source,
+            })?;
         let mut hash = Sha256::new();
         let mut size = 0_u64;
         while let Some(frame) = response.body_mut().frame().await {
-            let frame = frame.map_err(|e| format!("cannot download the archive: {e}"))?;
+            let frame = frame.map_err(RegistryError::Download)?;
             let Ok(data) = frame.into_data() else {
                 continue;
             };
             size += u64::try_from(data.len()).unwrap_or(u64::MAX);
             if size > layer.size {
-                return Err(format!(
-                    "the archive is larger than the {} bytes its manifest gives",
-                    layer.size
-                ));
+                return Err(RegistryError::LayerTooLarge(layer.size));
             }
             hash.update(&data);
             file.write_all(&data)
-                .map_err(|e| format!("cannot write {}: {e}", to.display()))?;
+                .map_err(|source| RegistryError::WriteFile {
+                    path: to.to_path_buf(),
+                    source,
+                })?;
         }
         if size != layer.size {
-            return Err(format!(
-                "the archive has {size} bytes, not the {} its manifest gives",
-                layer.size
-            ));
+            return Err(RegistryError::LayerSize {
+                size,
+                expected: layer.size,
+            });
         }
-        if archive::hex(&hash.finalize()) != layer.digest {
-            return Err(format!("the archive does not match {}", layer.digest));
+        if format!("sha256:{}", archive::hex(&hash.finalize())) != layer.digest {
+            return Err(RegistryError::LayerDigest(layer.digest.clone()));
         }
         Ok(())
     }
@@ -686,9 +789,9 @@ struct ContainerConfig {
 
 /// The `ExposedPorts` keys of an image config, sorted, without keys that are not `<port>/<proto>`
 /// or `<low>-<high>/<proto>`.
-fn exposed_ports(config: &[u8]) -> Result<Vec<String>, String> {
+fn exposed_ports(config: &[u8]) -> Result<Vec<String>, RegistryError> {
     let config: ImageConfig =
-        serde_json::from_slice(config).map_err(|e| format!("cannot read the image config: {e}"))?;
+        serde_json::from_slice(config).map_err(RegistryError::ReadImageConfig)?;
     let mut ports: Vec<String> = config
         .config
         .and_then(|c| c.exposed_ports)
@@ -715,13 +818,13 @@ fn is_port_key(key: &str) -> bool {
 }
 
 /// The body, refused when it is longer than `limit`.
-async fn read_limited(response: Response<Incoming>, limit: u64) -> Result<Bytes, String> {
+async fn read_limited(response: Response<Incoming>, limit: u64) -> Result<Bytes, RegistryError> {
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
     http_body_util::Limited::new(response.into_body(), limit)
         .collect()
         .await
         .map(http_body_util::Collected::to_bytes)
-        .map_err(|e| format!("cannot read the answer: {e}"))
+        .map_err(RegistryError::ReadAnswer)
 }
 
 #[cfg(test)]
@@ -901,7 +1004,7 @@ mod tests {
         .into_bytes()
     }
 
-    async fn pull(addr: SocketAddr, digest: &str, to: &Path) -> Result<(), String> {
+    async fn pull(addr: SocketAddr, digest: &str, to: &Path) -> Result<(), RegistryError> {
         let mut repository = Repository::new(
             client(None).unwrap(),
             &format!("127.0.0.1:{}/{NAME}", addr.port()),
@@ -913,7 +1016,7 @@ mod tests {
         repository.download(&layer, to).await
     }
 
-    fn scratch(name: &str) -> std::path::PathBuf {
+    fn scratch(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "zeabur-builder-registry-{}-{name}",
             std::process::id()
@@ -1009,7 +1112,7 @@ mod tests {
         addr
     }
 
-    async fn ports(addr: SocketAddr, digest: &str) -> Result<Vec<String>, String> {
+    async fn ports(addr: SocketAddr, digest: &str) -> Result<Vec<String>, RegistryError> {
         let mut repository = Repository::new(
             client(None).unwrap(),
             &format!("127.0.0.1:{}/{NAME}", addr.port()),
@@ -1097,7 +1200,7 @@ mod tests {
             .exposed_ports(&digest, Duration::from_millis(200))
             .await
             .unwrap_err();
-        assert!(error.contains("did not answer"), "{error}");
+        assert!(error.to_string().contains("did not answer"), "{error}");
     }
 
     #[tokio::test]
@@ -1253,7 +1356,10 @@ mod tests {
             .push_artifact("t", ARTIFACT_TYPE, Bytes::from_static(b"x"))
             .await
             .unwrap_err();
-        assert!(error.contains("not to http://127.0.0.1"), "{error}");
+        assert!(
+            error.to_string().contains("not to http://127.0.0.1"),
+            "{error}"
+        );
         assert!(pushed.blobs.lock().unwrap().is_empty());
     }
 }

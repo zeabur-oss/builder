@@ -83,34 +83,52 @@ impl ResolveError {
 /// An HTTP/1.1 client for `http://` and `https://` URLs.
 pub(crate) type HttpClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
+/// Why an HTTP client could not be built.
+#[derive(Debug, Error)]
+pub(crate) enum ClientError {
+    /// A CA certificate of the system is unusable.
+    #[error("cannot use a system CA certificate: {0}")]
+    SystemCa(#[source] rustls::Error),
+    /// The registry CA is not PEM.
+    #[error("cannot read the registry CA: {0}")]
+    ReadCa(#[source] rustls::pki_types::pem::Error),
+    /// The registry CA is no certificate.
+    #[error("cannot use the registry CA: {0}")]
+    UseCa(#[source] rustls::Error),
+    /// The system has no CA certificates and none was given.
+    #[error("no CA certificates found: {0:?}")]
+    NoCa(Vec<rustls_native_certs::Error>),
+    /// The TLS library has no protocol version to offer.
+    #[error("cannot configure TLS: {0}")]
+    Tls(#[source] rustls::Error),
+}
+
 /// A client that trusts the system's CA bundle (`SSL_CERT_FILE` or `/etc/ssl/certs`).
-pub(crate) fn http_client() -> Result<HttpClient, String> {
+pub(crate) fn http_client() -> Result<HttpClient, ClientError> {
     http_client_with(None)
 }
 
 /// A client that trusts the system's CA bundle and `ca`, a PEM bundle.
-pub(crate) fn http_client_with(ca: Option<&str>) -> Result<HttpClient, String> {
+pub(crate) fn http_client_with(ca: Option<&str>) -> Result<HttpClient, ClientError> {
     let mut roots = rustls::RootCertStore::empty();
     let found = rustls_native_certs::load_native_certs();
     for cert in found.certs {
-        roots.add(cert).map_err(|e| e.to_string())?;
+        roots.add(cert).map_err(ClientError::SystemCa)?;
     }
     if let Some(ca) = ca {
         for cert in CertificateDer::pem_slice_iter(ca.as_bytes()) {
-            let cert = cert.map_err(|e| format!("cannot read the registry CA: {e}"))?;
-            roots
-                .add(cert)
-                .map_err(|e| format!("cannot use the registry CA: {e}"))?;
+            let cert = cert.map_err(ClientError::ReadCa)?;
+            roots.add(cert).map_err(ClientError::UseCa)?;
         }
     }
     if roots.is_empty() {
-        return Err(format!("no CA certificates found: {:?}", found.errors));
+        return Err(ClientError::NoCa(found.errors));
     }
     let config = ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_safe_default_protocol_versions()
-    .map_err(|e| e.to_string())?
+    .map_err(ClientError::Tls)?
     .with_root_certificates(roots)
     .with_no_client_auth();
     let https = HttpsConnectorBuilder::new()

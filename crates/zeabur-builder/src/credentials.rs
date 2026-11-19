@@ -8,6 +8,7 @@ use std::fmt;
 use k8s_openapi::api::core::v1::Secret;
 use zeabur_builder_api::build::ConditionReason;
 use zeabur_builder_api::labels;
+use zeabur_builder_core::refusal::Refusal;
 use zeabur_builder_jobspec::GitAuth;
 
 const BASIC_AUTH: &str = "kubernetes.io/basic-auth";
@@ -37,12 +38,12 @@ impl fmt::Debug for GitCredentials {
     }
 }
 
-/// Why a Secret gives no credentials: the `SourceReady` reason and message.
-pub(crate) type Refusal = (ConditionReason, String);
-
 impl GitCredentials {
     /// Reads `secret`, named `name`.
-    pub(crate) fn from_secret(name: &str, secret: &Secret) -> Result<Self, Refusal> {
+    pub(crate) fn from_secret(
+        name: &str,
+        secret: &Secret,
+    ) -> Result<Self, Refusal<ConditionReason>> {
         let labelled = secret
             .metadata
             .labels
@@ -50,7 +51,7 @@ impl GitCredentials {
             .and_then(|l| l.get(labels::GIT_CREDENTIALS))
             .is_some_and(|v| v == "true");
         if !labelled {
-            return Err((
+            return Err(Refusal::new(
                 ConditionReason::CredentialsMissing,
                 format!(
                     "Secret `{name}` needs the label `{}: \"true\"`",
@@ -58,7 +59,7 @@ impl GitCredentials {
                 ),
             ));
         }
-        let invalid = |message: String| (ConditionReason::CredentialsInvalid, message);
+        let invalid = |message: String| Refusal::new(ConditionReason::CredentialsInvalid, message);
         let data = secret.data.as_ref();
         let key = |key: &str| {
             data.and_then(|d| d.get(key))
@@ -147,7 +148,7 @@ mod tests {
 
     #[test]
     fn refuses() {
-        let reason = |s: &Secret| GitCredentials::from_secret("git", s).map_err(|(r, _)| r);
+        let reason = |s: &Secret| GitCredentials::from_secret("git", s).map_err(|e| e.reason);
         let data = [("username", "u"), ("password", "p")];
         assert_eq!(
             reason(&secret(None, BASIC_AUTH, &data)),
