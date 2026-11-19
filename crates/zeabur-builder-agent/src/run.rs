@@ -7,6 +7,7 @@ use rig_core::providers::registry::{ConnectError, ConnectOptions, ProviderId};
 
 use crate::agent::Agent;
 use crate::budget::{Limits, Spent};
+use crate::federation::Federation;
 use crate::http::HyperClient;
 use crate::output;
 use crate::plan::{Details, Info, Outcome, Plan, Reason, Source};
@@ -70,8 +71,8 @@ pub(crate) async fn run(args: Args) -> Result<bool, String> {
         Some(dir) => read_previous(dir).await,
         None => None,
     };
-    let (outcome, spent) = plan(&repo, &builder, previous, limits, || {
-        connect(&args.provider, &args.model, args.base_url.as_deref())
+    let (outcome, spent) = plan(&repo, &builder, previous, limits, async || {
+        connect(&args.provider, &args.model, args.base_url.as_deref()).await
     })
     .await;
     report(&args.out, outcome, spent.as_ref()).await
@@ -91,9 +92,10 @@ async fn read_previous(dir: &Path) -> Option<Files> {
 }
 
 /// `model` of `provider`, sending through [`HyperClient`]. Rig reads the key from the
-/// provider's own variable, such as `ANTHROPIC_API_KEY`. A model its catalogue does not list
-/// still connects.
-fn connect(
+/// provider's own variable, such as `ANTHROPIC_API_KEY`; without it, an Anthropic or OpenAI run
+/// can exchange a service account token instead ([`Federation`]). A model its catalogue does not
+/// list still connects.
+async fn connect(
     provider: &str,
     model: &str,
     base_url: Option<&str>,
@@ -116,6 +118,9 @@ fn connect(
         |found| found.spec.clone(),
     );
     let http = HyperClient::new().map_err(|e| (Reason::ModelFailed, e))?;
+    if let Some(federation) = Federation::from_env(provider.vendor())? {
+        return federation.connect(catalog, &spec, http, base_url).await;
+    }
     let mut options = ConnectOptions::new().http(http);
     if let Some(base_url) = base_url {
         options = options.base_url(base_url);
@@ -142,7 +147,8 @@ pub(crate) async fn plan<B, C>(
 ) -> (Outcome, Option<Spent>)
 where
     B: TrialBuild + Clone,
-    C: FnOnce() -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)>,
+    C: AsyncFnOnce()
+        -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)>,
 {
     if let Some(dockerfile) = repo.file("Dockerfile") {
         let plan = Plan {
@@ -170,7 +176,7 @@ where
             }
         }
     }
-    let model = match connect() {
+    let model = match connect().await {
         Ok(model) => model,
         Err((reason, detail)) => return (Outcome::NeedsUser { reason, detail }, None),
     };
@@ -249,7 +255,8 @@ mod tests {
     use super::*;
     use crate::testing::{Dir, Replay, Script, failed, tool_use};
 
-    fn no_model() -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)> {
+    async fn no_model()
+    -> Result<rig_core::DynModel<rig_core::operation::Completion>, (Reason, String)> {
         panic!("the model was called");
     }
 
@@ -314,7 +321,7 @@ mod tests {
         )]);
         let script = Script::new([failed("manifest unknown")]);
 
-        let (outcome, spent) = plan(&repo, &script, previous, Limits::default(), || {
+        let (outcome, spent) = plan(&repo, &script, previous, Limits::default(), async || {
             Ok(replay.model())
         })
         .await;
@@ -333,10 +340,10 @@ mod tests {
         assert!(first.contains("manifest unknown"));
     }
 
-    #[test]
-    fn no_key_names_the_vendor_s_variable() {
+    #[tokio::test]
+    async fn no_key_names_the_vendor_s_variable() {
         // Assumes `HYPERBOLIC_API_KEY` is unset: removing a variable needs `unsafe`.
-        let Err(error) = connect("hyperbolic", "some-model", None) else {
+        let Err(error) = connect("hyperbolic", "some-model", None).await else {
             panic!()
         };
         assert_eq!(
@@ -345,18 +352,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_unknown_provider_lists_the_known_ones() {
-        let Err((reason, detail)) = connect("gemini", "gemini-2.5-pro", None) else {
+    #[tokio::test]
+    async fn an_unknown_provider_lists_the_known_ones() {
+        let Err((reason, detail)) = connect("gemini", "gemini-2.5-pro", None).await else {
             panic!()
         };
         assert_eq!(reason, Reason::ModelFailed);
         assert!(detail.contains("gcp.gemini"), "{detail}");
     }
 
-    #[test]
-    fn a_model_the_catalogue_does_not_list_is_not_refused() {
-        let Err(error) = connect("hyperbolic", "a-model-from-next-year", None) else {
+    #[tokio::test]
+    async fn a_model_the_catalogue_does_not_list_is_not_refused() {
+        let Err(error) = connect("hyperbolic", "a-model-from-next-year", None).await else {
             panic!()
         };
         assert_eq!(error.0, Reason::ModelKeyMissing);

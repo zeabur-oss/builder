@@ -56,6 +56,8 @@ impl Drop for Dir {
 pub(crate) struct Replay {
     responses: Arc<Mutex<VecDeque<String>>>,
     pub(crate) requests: Arc<Mutex<Vec<String>>>,
+    /// The headers of each request.
+    pub(crate) headers: Arc<Mutex<Vec<HeaderMap>>>,
 }
 
 impl Replay {
@@ -63,6 +65,7 @@ impl Replay {
         Self {
             responses: Arc::new(Mutex::new(responses.into_iter().collect())),
             requests: Arc::default(),
+            headers: Arc::default(),
         }
     }
 
@@ -94,6 +97,7 @@ impl HttpClientExt for Replay {
         T: Into<Bytes> + Send,
         U: From<Bytes> + Send + 'static,
     {
+        self.headers.lock().unwrap().push(req.headers().clone());
         let reply = self.next(&req.into_body().into());
         async move {
             let reply = reply.ok_or_else(|| {

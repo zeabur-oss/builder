@@ -59,6 +59,24 @@ impl HyperClient {
         })
     }
 
+    /// Posts `body` as JSON to `url` and returns the status and the reply, whatever the status.
+    pub(crate) async fn post_json(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+    ) -> std::result::Result<(http::StatusCode, Bytes), String> {
+        let req = Request::post(url)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| e.to_string())?;
+        let response = self.client.request(req).await.map_err(|e| e.to_string())?;
+        let status = response.status();
+        let reply = read(response.into_body())
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok((status, reply))
+    }
+
     /// Sends `req` and returns the response, or the error a non-success status makes.
     async fn exchange(&self, req: Request<Full<Bytes>>) -> Result<Response<hyper::body::Incoming>> {
         let response = self.client.request(req).await.map_err(Error::instance)?;
