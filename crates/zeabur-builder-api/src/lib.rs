@@ -57,6 +57,9 @@ pub mod annotations {
     /// On a `Build`: a new value rebuilds the ref's current commit. On a `BuildRun` the
     /// controller created: the `Build`'s value when it was created, the request it answered.
     pub const REBUILD: &str = "builder.zeabur.com/rebuild";
+    /// On a `BuildRun` the controller created: the `Build`'s `metadata.generation` when it was
+    /// created, which the `Build`'s `Ready` condition compares with the current one.
+    pub const BUILD_GENERATION: &str = "builder.zeabur.com/build-generation";
     /// On a Namespace: overrides the controller's limit of concurrent builds, and with it how many
     /// builds its buildkitd runs at once.
     pub const MAX_CONCURRENT_BUILDS: &str = "builder.zeabur.com/max-concurrent-builds";
