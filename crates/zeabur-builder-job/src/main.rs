@@ -219,6 +219,9 @@ fn pushed_repository(command: &[String]) -> Option<String> {
 /// How long reading the pushed image's ports may take; the ports are only a hint.
 const IMAGE_PORTS_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long pushing the plan image may take; the plan only saves a model call on the next run.
+const SAVE_PLAN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// The ports the pushed image declares, read back from the registry the build pushed to.
 async fn image_ports(
     repository: &str,
@@ -275,6 +278,7 @@ async fn build(
         .args(rest)
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn();
     renderer.next_run();
     steps.next_run();
@@ -378,11 +382,16 @@ async fn run(args: &Args) -> BuildResult {
                 }
             }
             if let Some(command) = &args.save_plan {
-                match save_plan(command).await {
-                    Ok(digest) => result.plan_digest = digest,
-                    Err(e) => drop(writeln!(
+                match tokio::time::timeout(SAVE_PLAN_TIMEOUT, save_plan(command)).await {
+                    Ok(Ok(digest)) => result.plan_digest = digest,
+                    Ok(Err(e)) => drop(writeln!(
                         std::io::stderr().lock(),
                         "cannot push the plan image: {e}"
+                    )),
+                    Err(_elapsed) => drop(writeln!(
+                        std::io::stderr().lock(),
+                        "cannot push the plan image: no answer in {} s",
+                        SAVE_PLAN_TIMEOUT.as_secs()
                     )),
                 }
             }
