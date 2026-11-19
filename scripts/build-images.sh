@@ -21,7 +21,7 @@ out="$root/target/image"
 unset RUSTC_WRAPPER
 
 if [[ $(uname -s) == Linux ]]; then
-  cargo auditable build --profile "$profile" --locked --target "$target" -p zeabur-builder -p zeabur-builder-job \
+  cargo auditable build --profile "$profile" --locked --target "$target" -p zeabur-builder -p zeabur-builder-job -p zeabur-builder-agent \
     --manifest-path "$root/Cargo.toml"
   bin="$root/target/$target/$dir"
 else
@@ -33,16 +33,17 @@ else
     nix --extra-experimental-features 'nix-command flakes' develop --command bash -c "
       set -euo pipefail
       unset RUSTC_WRAPPER
-      cargo auditable build --profile $profile --locked --target $target -p zeabur-builder -p zeabur-builder-job
+      cargo auditable build --profile $profile --locked --target $target -p zeabur-builder -p zeabur-builder-job -p zeabur-builder-agent
       mkdir -p /src/target/linux
-      cp /target/$target/$dir/zeabur-builder /target/$target/$dir/zeabur-builder-job /src/target/linux/"
+      cp /target/$target/$dir/zeabur-builder /target/$target/$dir/zeabur-builder-job \
+        /target/$target/$dir/zeabur-builder-agent /src/target/linux/"
   bin="$root/target/linux"
 fi
 
 rm -rf "$out"
 mkdir -p "$out/controller" "$out/job"
 cp "$bin/zeabur-builder" "$out/controller/"
-cp "$bin/zeabur-builder-job" "$out/job/"
+cp "$bin/zeabur-builder-job" "$bin/zeabur-builder-agent" "$out/job/"
 # Staged with explicit modes: a 0444 /etc could not be traversed by the non-root user.
 install -d -m 0755 "$out/controller/etc" "$out/controller/etc/ssl" "$out/controller/etc/ssl/certs"
 install -m 0444 "${ZEABUR_BUILDER_CA_BUNDLE:?run inside nix develop}" \

@@ -1,8 +1,10 @@
-# The build Job's `fetch` and `build` containers: BuildKit's own image, for `buildctl`, `git` and
-# `ssh`, plus the static `zeabur-builder-job` wrapper. Built by scripts/build-images.sh.
+# The build Job's `fetch` and `build` containers and the `agent` planner: BuildKit's own image, for
+# `buildctl`, `git` and `ssh`, plus the static `zeabur-builder-job` wrapper and
+# `zeabur-builder-agent`. Built by scripts/build-images.sh.
 ARG BUILDKIT=docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 FROM ${BUILDKIT}
 # The Job runs as 1000 (jobspec RUN_AS), and OpenSSH refuses a user /etc/passwd does not list.
 RUN echo 'zeabur:x:1000:1000::/tmp:/sbin/nologin' >> /etc/passwd \
  && echo 'zeabur:x:1000:' >> /etc/group
 COPY --chmod=0555 zeabur-builder-job /usr/bin/zeabur-builder-job
+COPY --chmod=0555 zeabur-builder-agent /usr/bin/zeabur-builder-agent
