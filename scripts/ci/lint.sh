@@ -20,6 +20,13 @@ cargo_checks() {
   cargo lint
   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --locked
   cargo deny --locked check
+  cargo clippy -p zeabur-builder-api --no-default-features --all-targets --locked -- -D warnings
+  # A crate that only reads and writes the objects turns the schema feature off to drop these.
+  if cargo tree --locked -e normal --no-default-features -p zeabur-builder-api --prefix none |
+    grep -E '^(schemars|dyn-clone|ref-cast) '; then
+    echo "zeabur-builder-api without its schema feature still depends on the crates above" >&2
+    exit 1
+  fi
 }
 
 case "${1:-all}" in

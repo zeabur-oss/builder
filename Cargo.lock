@@ -4397,6 +4397,7 @@ dependencies = [
  "jiff",
  "k8s-openapi",
  "kube",
+ "kube-derive",
  "schemars",
  "serde",
  "serde_json",

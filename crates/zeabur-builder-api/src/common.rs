@@ -1,6 +1,7 @@
 //! Types shared by the custom resources.
 
 use jiff::Timestamp;
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -20,26 +21,29 @@ pub const MAX_REVISION: usize = 71;
 pub const DIGEST_PATTERN: &str = "^sha256:[0-9a-f]{64}$";
 
 /// A Secret in the same namespace as the object that names it.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct SecretRef {
     /// The Secret's name.
-    #[schemars(length(min = 1, max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
     pub name: String,
 }
 
 /// One key of a Secret in the same namespace.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct SecretKeyRef {
     /// The Secret's name.
-    #[schemars(length(min = 1, max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
     pub name: String,
     /// The key.
-    #[schemars(length(min = 1, max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
     pub key: String,
 }
 
 /// A status condition, as `metav1.Condition`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
     /// The type.
@@ -48,23 +52,24 @@ pub struct Condition {
     /// `True`, `False` or `Unknown`.
     pub status: ConditionStatus,
     /// A `CamelCase` reason.
-    #[schemars(length(min = 1, max = 1024))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = 1024)))]
     pub reason: String,
     /// A human-readable message.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    #[schemars(length(max = 32768))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 32768)))]
     pub message: String,
     /// When the status last changed (RFC 3339).
-    #[schemars(with = "String", extend("format" = "date-time"))]
+    #[cfg_attr(feature = "schema", schemars(with = "String", extend("format" = "date-time")))]
     pub last_transition_time: Timestamp,
     /// The `metadata.generation` the condition was computed from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 0)))]
     pub observed_generation: Option<i64>,
 }
 
 /// The status of a [`Condition`].
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum ConditionStatus {
     /// It holds.
     True,
@@ -76,7 +81,8 @@ pub enum ConditionStatus {
 
 /// The `type` of a [`Condition`]. A `Build` has `Ready`, `SourceReady` and `BuilderReady`, a
 /// `BuildRun` has `Reconciling`, `Stalled` and `Ready`, a `ClusterBuilder` has `Ready`.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum ConditionType {
     /// The object has reached what its spec asks.
     Ready,

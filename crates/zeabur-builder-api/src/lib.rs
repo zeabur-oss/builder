@@ -18,15 +18,21 @@
 //! The namespace rule (a `Build` pushes only to its own repositories in the default registry) is
 //! kept by the registry: the controller gives each run a token for those repositories only.
 //!
+//! The default feature `schema` adds `JsonSchema` to every type and [`definitions`]. A crate that
+//! only reads and writes the objects can turn it off and builds without schemars.
+//!
 //! [CRD validation]: https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-rules
 
 pub mod build;
 pub mod build_run;
 pub mod cluster_builder;
 pub mod common;
+#[cfg(feature = "schema")]
 mod union;
 
+#[cfg(feature = "schema")]
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+#[cfg(feature = "schema")]
 use kube::CustomResourceExt as _;
 
 /// The API group.
@@ -92,6 +98,7 @@ pub mod annotations {
 }
 
 /// Every custom resource definition, in a stable order.
+#[cfg(feature = "schema")]
 #[must_use]
 pub fn definitions() -> Vec<CustomResourceDefinition> {
     vec![
@@ -107,6 +114,7 @@ pub fn definitions() -> Vec<CustomResourceDefinition> {
 /// # Errors
 ///
 /// Returns an error if serialization fails.
+#[cfg(feature = "schema")]
 pub fn definitions_yaml() -> serde_json::Result<String> {
     let documents = definitions()
         .iter()
@@ -116,6 +124,7 @@ pub fn definitions_yaml() -> serde_json::Result<String> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "schema")]
 mod tests {
     use super::*;
 
