@@ -159,7 +159,7 @@ impl Buildctl {
         let Some(stderr) = child.stderr.take() else {
             return failed("buildctl has no stderr".to_owned());
         };
-        let mut progress = Progress::default();
+        let mut progress = Progress::new(Redactor::new(&self.secrets));
         let run = async {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -184,19 +184,6 @@ impl Buildctl {
         }
     }
 
-    /// `attempt` with every secret value in its output replaced by the secret's name, so the
-    /// model never reads one.
-    fn redact(&self, mut attempt: Attempt) -> Attempt {
-        if let Attempt::Failed { summary, log } = &mut attempt {
-            for secret in self.secrets.iter().filter(|s| !s.value.is_empty()) {
-                let name = format!("[secret {}]", secret.name);
-                *summary = summary.replace(&secret.value, &name);
-                *log = log.replace(&secret.value, &name);
-            }
-        }
-        attempt
-    }
-
     async fn write(&self, dockerfile: &str, rules: &str) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&self.work).await?;
         tokio::fs::write(self.work.join("Dockerfile"), dockerfile).await?;
@@ -213,7 +200,7 @@ impl Buildctl {
 
 impl TrialBuild for Buildctl {
     async fn build(&self, dockerfile: &str, dockerignore: &str) -> Attempt {
-        self.redact(self.attempt(dockerfile, dockerignore).await)
+        self.attempt(dockerfile, dockerignore).await
     }
 
     fn variables(&self) -> Vec<String> {
@@ -280,9 +267,60 @@ fn source_policy(registries: &[String]) -> Policy {
     Policy { version: 1, rules }
 }
 
+/// Replaces each secret value in build output with `[secret NAME]`, so the model never reads one.
+#[derive(Debug, Default)]
+struct Redactor {
+    /// Value and replacement, the longest value first.
+    secrets: Vec<(Vec<u8>, String)>,
+}
+
+impl Redactor {
+    fn new(secrets: &[Secret]) -> Self {
+        let mut secrets: Vec<_> = secrets
+            .iter()
+            .filter(|s| !s.value.is_empty())
+            .map(|s| (s.value.as_bytes().to_vec(), format!("[secret {}]", s.name)))
+            .collect();
+        secrets.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        Self { secrets }
+    }
+
+    /// Redacts `text` in one pass, the longest value first where values overlap. While `more`
+    /// output follows, a tail that can still grow into a value is not redacted and is returned.
+    fn redact<'a>(&self, text: &'a [u8], more: bool) -> (Vec<u8>, &'a [u8]) {
+        let mut out = Vec::with_capacity(text.len());
+        let mut rest = text;
+        while let Some((&first, tail)) = rest.split_first() {
+            if more
+                && self
+                    .secrets
+                    .iter()
+                    .any(|(value, _)| value.len() > rest.len() && value.starts_with(rest))
+            {
+                return (out, rest);
+            }
+            if let Some((value, name)) = self.secrets.iter().find(|(v, _)| rest.starts_with(v)) {
+                out.extend_from_slice(name.as_bytes());
+                rest = rest.get(value.len()..).unwrap_or_default();
+            } else {
+                out.push(first);
+                rest = tail;
+            }
+        }
+        (out, rest)
+    }
+
+    fn text(&self, text: &str) -> String {
+        String::from_utf8_lossy(&self.redact(text.as_bytes(), false).0).into_owned()
+    }
+}
+
 /// What a `--progress rawjson` stream said about a build.
 #[derive(Debug, Default)]
 struct Progress {
+    redactor: Redactor,
+    /// Digest → output not yet redacted, since it can still grow into a secret value.
+    pending: BTreeMap<String, Vec<u8>>,
     /// Digest → step name, in the order steps first appeared.
     names: BTreeMap<String, String>,
     /// Digest → output.
@@ -296,10 +334,18 @@ struct Progress {
 }
 
 impl Progress {
+    fn new(redactor: Redactor) -> Self {
+        Self {
+            redactor,
+            ..Self::default()
+        }
+    }
+
     fn line(&mut self, line: &str) {
         let Some(status) = SolveStatus::parse(line) else {
-            push_bounded(&mut self.messages, line, SUMMARY_OUTPUT);
-            push_bounded(&mut self.log, line, MAX_LOG);
+            let line = self.redactor.text(line);
+            push_bounded(&mut self.messages, &line, SUMMARY_OUTPUT);
+            push_bounded(&mut self.log, &line, MAX_LOG);
             return;
         };
         for vertex in status.vertexes {
@@ -310,23 +356,39 @@ impl Progress {
             if let Some(error) = vertex.error
                 && self.failed.is_none()
             {
-                self.failed = Some((vertex.digest, error));
+                self.failed = Some((vertex.digest, self.redactor.text(&error)));
             }
         }
         for log in status.logs {
             let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&log.data) else {
                 continue;
             };
-            let text = String::from_utf8_lossy(&data);
-            push_bounded(&mut self.log, text.trim_end(), MAX_LOG);
-            let output = self.output.entry(log.vertex).or_default();
-            output.push_str(&text);
-            keep_tail(output, SUMMARY_OUTPUT);
+            let pending = self.pending.entry(log.vertex.clone()).or_default();
+            pending.extend_from_slice(&data);
+            let (text, rest) = self.redactor.redact(pending, true);
+            *pending = rest.to_vec();
+            self.push(log.vertex, &text);
         }
     }
 
+    /// Adds redacted output of the step `digest`.
+    fn push(&mut self, digest: String, text: &[u8]) {
+        if text.is_empty() {
+            return;
+        }
+        let text = String::from_utf8_lossy(text);
+        push_bounded(&mut self.log, text.trim_end(), MAX_LOG);
+        let output = self.output.entry(digest).or_default();
+        output.push_str(&text);
+        keep_tail(output, SUMMARY_OUTPUT);
+    }
+
     /// The failure: the failing step, its error and the end of its output.
-    fn failure(self) -> Attempt {
+    fn failure(mut self) -> Attempt {
+        for (digest, pending) in std::mem::take(&mut self.pending) {
+            let text = self.redactor.redact(&pending, false).0;
+            self.push(digest, &text);
+        }
         let mut summary = String::new();
         if let Some((digest, error)) = &self.failed {
             let name = self.names.get(digest).map_or("(unnamed)", String::as_str);
@@ -437,10 +499,59 @@ mod tests {
                 .any(|w| w == ["--secret", "id=NPM_TOKEN,env=ZB_SECRET_NPM_TOKEN"])
         );
         assert_eq!(buildctl.variables(), ["NPM_TOKEN"]);
-        let attempt = buildctl.redact(failed("401 for token npm_s3cret".to_owned()));
+    }
+
+    fn redactor(secrets: &[(&str, &str)]) -> Redactor {
+        let secrets: Vec<Secret> = secrets
+            .iter()
+            .map(|(name, value)| Secret {
+                name: (*name).to_owned(),
+                value: (*value).to_owned(),
+            })
+            .collect();
+        Redactor::new(&secrets)
+    }
+
+    #[test]
+    fn a_secret_split_across_log_records_stays_hidden() {
+        let mut progress = Progress::new(redactor(&[("NPM_TOKEN", "npm_s3cret")]));
+        for part in ["401 for npm_s3", "cret\n", "next line\n"] {
+            progress.line(&line(
+                &json!({"logs": [{"vertex": "b", "data": b64(part)}]}),
+            ));
+        }
+        progress.line(&line(
+            &json!({"logs": [{"vertex": "c", "data": b64("npm_s")}]}),
+        ));
+        progress.line(&line(&json!({"vertexes": [
+            {"digest": "b", "name": "RUN npm ci", "error": "exit code: 1 (npm_s3cret)"},
+        ]})));
+        let Attempt::Failed { summary, log } = progress.failure() else {
+            panic!("built");
+        };
         assert_eq!(
-            attempt,
-            failed("401 for token [secret NPM_TOKEN]".to_owned())
+            summary,
+            "failed step: RUN npm ci\nerror: exit code: 1 ([secret NPM_TOKEN])\nlast output:\n401 for [secret NPM_TOKEN]\nnext line"
+        );
+        assert!(log.contains("[secret NPM_TOKEN]"), "{log}");
+        assert!(log.contains("npm_s\n"), "{log}");
+        assert!(!log.contains("s3"), "{log}");
+    }
+
+    #[test]
+    fn overlapping_secrets_hide_the_longest_value() {
+        let redactor = redactor(&[
+            ("ORIGIN", "https://example.com"),
+            ("PRIVATE_URL", "https://example.com/private-token"),
+        ]);
+        assert_eq!(
+            redactor.text("at https://example.com/private-token and https://example.com/"),
+            "at [secret PRIVATE_URL] and [secret ORIGIN]/"
+        );
+        let (text, rest) = redactor.redact(b"at https://example.com/priv", true);
+        assert_eq!(
+            (text.as_slice(), rest),
+            (b"at ".as_slice(), b"https://example.com/priv".as_slice())
         );
     }
 
