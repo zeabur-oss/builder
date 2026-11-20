@@ -110,7 +110,15 @@ kubectl -n team-a annotate build node-hello builder.zeabur.com/plan-
 
 ## 把 Dockerfile 提交进仓库
 
-不想再让模型决定 Dockerfile 的话，从 plan 步骤的日志复制 Dockerfile，以 `Dockerfile` 为文件名提交进仓库，再把 Build 的 `builderRef` 改成 `dockerfile`。之后就像普通文件一样自己修改。
+不想再让模型决定 Dockerfile 的话，用 [oras](https://oras.land) 取回保存的 plan：
+
+```sh
+plan=$(kubectl -n team-a get build node-hello -o jsonpath='{.status.plan.image}')
+layer=$(oras manifest fetch "$plan" | jq -r '.layers[0].digest')
+mkdir plan && oras blob fetch --output - "${plan%@*}@$layer" | tar -xz -C plan
+```
+
+把 `plan/Dockerfile` 和 `plan/Dockerfile.dockerignore` 两个文件都提交进仓库。第二个文件会排除 agent 有意略过的文件，包括凭据；少了它，`COPY . .` 会把这些文件复制进镜像。再把 Build 的 `builderRef` 改成 `dockerfile`，之后就像普通文件一样自己修改。
 
 ## 遇到问题
 
@@ -120,6 +128,6 @@ kubectl -n team-a annotate build node-hello builder.zeabur.com/plan-
 | run 以 `PlanFailed` 失败 | 从 `status.plan.stopped` 看停止原因，从 `status.message` 看怎么处理。 |
 | `stopped` 是 `ModelKeyMissing` 或 `ModelFailed` | 检查密钥和 `status.message`。密钥缺失或被拒绝是 `ModelKeyMissing`；模型 API 拒绝请求或请求失败是 `ModelFailed`。 |
 | `stopped` 是 `SeveralApps` | 在 `spec.source.git.contextDir` 指定应用所在的目录。 |
-| `stopped` 是 `NeedsBuildVariable` | 在 Build 的 `spec.env` 设置 `status.message` 提到的变量。 |
+| `stopped` 是 `NeedsBuildVariable` | 试构建拿不到 Build 的变量，所以 agent 写不完这个 Dockerfile。请自己写 Dockerfile，用 `RUN --mount=type=secret,id=NAME,env=NAME` 读取变量，提交进仓库，把 `builderRef` 改成 `dockerfile`，再在 `spec.env` 设置变量。 |
 | `stopped` 是 `NoAppFound`、`NeedsPrivateDependency` 或 `UnsupportedPlatform` | `status.message` 会说明应用、私有依赖或平台需要什么。 |
 | `stopped` 是 `BudgetSpent` 或 `BuildKeepsFailing` | 查看 `status.message`。`BudgetSpent` 表示到了上限：模型调用次数、构建失败次数、时间或 token。 |

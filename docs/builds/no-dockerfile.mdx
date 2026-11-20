@@ -110,7 +110,15 @@ kubectl -n team-a annotate build node-hello builder.zeabur.com/plan-
 
 ## Commit the Dockerfile to the repository
 
-To take the Dockerfile out of the model's hands, copy it from the plan step's log into the repository as `Dockerfile`. Then set the Build's `builderRef` to `dockerfile`. You can now change it like any other file.
+To take the Dockerfile out of the model's hands, fetch the saved plan with [oras](https://oras.land):
+
+```sh
+plan=$(kubectl -n team-a get build node-hello -o jsonpath='{.status.plan.image}')
+layer=$(oras manifest fetch "$plan" | jq -r '.layers[0].digest')
+mkdir plan && oras blob fetch --output - "${plan%@*}@$layer" | tar -xz -C plan
+```
+
+Commit both `plan/Dockerfile` and `plan/Dockerfile.dockerignore` to the repository. The second file keeps out the files the agent excluded, credentials among them; without it, a `COPY . .` copies them into the image. Then set the Build's `builderRef` to `dockerfile`. You can now change the files like any others.
 
 ## Troubleshooting
 
@@ -120,6 +128,6 @@ To take the Dockerfile out of the model's hands, copy it from the plan step's lo
 | The run fails with `PlanFailed`. | Read `status.plan.stopped` for the reason and `status.message` for what to do. |
 | `stopped` is `ModelKeyMissing` or `ModelFailed`. | Check the key and `status.message`. A missing or refused key is `ModelKeyMissing`; a refused or failed request to the model API is `ModelFailed`. |
 | `stopped` is `SeveralApps`. | Set the app's folder in `spec.source.git.contextDir`. |
-| `stopped` is `NeedsBuildVariable`. | Set the variable that `status.message` names in the Build's `spec.env`. |
+| `stopped` is `NeedsBuildVariable`. | Trial builds run without the Build's variables, so the agent cannot finish this Dockerfile. Write it yourself, read the variable with `RUN --mount=type=secret,id=NAME,env=NAME`, commit it, set `builderRef` to `dockerfile` and the variable in `spec.env`. |
 | `stopped` is `NoAppFound`, `NeedsPrivateDependency` or `UnsupportedPlatform`. | `status.message` says what the app, its private dependency or its platform needs. |
 | `stopped` is `BudgetSpent` or `BuildKeepsFailing`. | Read `status.message`. `BudgetSpent` means a limit was reached: model calls, failed builds, time or tokens. |
