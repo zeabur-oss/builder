@@ -19,7 +19,7 @@ use zeabur_builder_api::build_run::{
 };
 use zeabur_builder_api::cluster_builder::{
     BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderSpec,
-    ClusterBuilderStatus,
+    ClusterBuilderStatus, Planner,
 };
 use zeabur_builder_api::common::{Condition, ConditionStatus, ConditionType, SecretKeyRef};
 use zeabur_builder_api::{annotations, labels};
@@ -1248,14 +1248,14 @@ pub(crate) const NOTIFY_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Durati
 
 /// The Secret with the model API key a run needs: the one the builder's planner names, unless
 /// the run restores a saved plan and so calls no model.
-pub(crate) fn model_key_ref(
+pub(crate) const fn model_key_ref(
     builder: &ClusterBuilderSpec,
     restores_plan: bool,
 ) -> Option<&SecretKeyRef> {
-    if restores_plan {
-        return None;
+    match &builder.planner {
+        Planner::Agent { agent } if !restores_plan => Some(&agent.model.api_key_secret),
+        Planner::Agent { .. } | Planner::Dockerfile | Planner::Railpack { .. } => None,
     }
-    Some(&builder.planner.as_ref()?.model.as_ref()?.api_key_secret)
 }
 
 /// Whether `secret`, the Secret the `agent` builder names in the run's namespace, holds the

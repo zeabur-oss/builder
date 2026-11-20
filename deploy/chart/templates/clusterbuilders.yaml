@@ -15,7 +15,7 @@ metadata:
   labels: {{- include "builder.labels" . | nindent 4 }}
 spec:
   type: railpack
-  planner:
+  railpack:
     image: {{ include "builder.image" (list .Values.railpackImage .Chart) | quote }}
   frontend:
     type: gateway.v0
@@ -30,7 +30,7 @@ metadata:
   labels: {{- include "builder.labels" $ | nindent 4 }}
 spec:
   type: agent
-  planner:
+  agent:
     image: {{ include "builder.image" (list $.Values.jobImage $.Chart) | quote }}
     # The agent stops itself after 20 minutes.
     timeout: 25m

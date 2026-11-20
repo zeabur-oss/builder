@@ -10,7 +10,9 @@ use zeabur_builder_api::build::{
     TriggerSpec,
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
-use zeabur_builder_api::cluster_builder::{FrontendSpec, ModelSpec, PlannerSpec};
+use zeabur_builder_api::cluster_builder::{
+    AgentPlanner, Frontend, FrontendSpec, ModelSpec, Planner, PlannerSpec,
+};
 use zeabur_builder_api::common::SecretKeyRef;
 
 use super::*;
@@ -90,11 +92,9 @@ fn build_run() -> BuildRun {
 
 fn dockerfile() -> ClusterBuilderSpec {
     ClusterBuilderSpec {
-        kind: BuilderType::Dockerfile,
-        planner: None,
+        planner: Planner::Dockerfile,
         frontend: FrontendSpec {
-            kind: FrontendType::Dockerfile,
-            source: None,
+            kind: Frontend::Dockerfile,
             opts: BTreeMap::new(),
         },
     }
@@ -102,41 +102,46 @@ fn dockerfile() -> ClusterBuilderSpec {
 
 fn railpack() -> ClusterBuilderSpec {
     ClusterBuilderSpec {
-        kind: BuilderType::Railpack,
-        planner: Some(PlannerSpec {
-            image: format!("ghcr.io/zeabur-oss/builder-railpack:{RAILPACK}"),
-            timeout: None,
-            resources: None,
-            model: None,
-        }),
+        planner: Planner::Railpack {
+            railpack: PlannerSpec {
+                image: format!("ghcr.io/zeabur-oss/builder-railpack:{RAILPACK}"),
+                timeout: None,
+                resources: None,
+            },
+        },
         frontend: FrontendSpec {
-            kind: FrontendType::Gateway,
-            source: Some(format!("ghcr.io/railwayapp/railpack-frontend:{RAILPACK}")),
+            kind: Frontend::Gateway {
+                source: format!("ghcr.io/railwayapp/railpack-frontend:{RAILPACK}"),
+            },
             opts: BTreeMap::new(),
         },
     }
 }
 
+const AGENT_IMAGE: &str = "ghcr.io/zeabur-oss/builder-agent:v0.0.1";
+
 fn agent() -> ClusterBuilderSpec {
     ClusterBuilderSpec {
-        kind: BuilderType::Agent,
-        planner: Some(PlannerSpec {
-            image: "ghcr.io/zeabur-oss/builder-agent:v0.0.1".to_owned(),
-            timeout: None,
-            resources: None,
-            model: Some(ModelSpec {
-                provider: "anthropic".to_owned(),
-                model: "claude-opus-5-5".to_owned(),
-                base_url: None,
-                api_key_secret: SecretKeyRef {
-                    name: "model".to_owned(),
-                    key: "anthropic".to_owned(),
+        planner: Planner::Agent {
+            agent: AgentPlanner {
+                planner: PlannerSpec {
+                    image: AGENT_IMAGE.to_owned(),
+                    timeout: None,
+                    resources: None,
                 },
-            }),
-        }),
+                model: ModelSpec {
+                    provider: "anthropic".to_owned(),
+                    model: "claude-opus-5-5".to_owned(),
+                    base_url: None,
+                    api_key_secret: SecretKeyRef {
+                        name: "model".to_owned(),
+                        key: "anthropic".to_owned(),
+                    },
+                },
+            },
+        },
         frontend: FrontendSpec {
-            kind: FrontendType::Dockerfile,
-            source: None,
+            kind: Frontend::Dockerfile,
             opts: BTreeMap::new(),
         },
     }
@@ -323,10 +328,7 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
     assert_eq!(annotation(&fresh_job, annotations::SAVED_PLAN), None);
     let fresh = pod(fresh_job);
     let planner = plan_of(&fresh);
-    assert_eq!(
-        planner.image.as_deref(),
-        Some(builder.planner.as_ref().unwrap().image.as_str())
-    );
+    assert_eq!(planner.image.as_deref(), Some(AGENT_IMAGE));
     assert!(!reads_registry(&planner));
     assert!(saves(&fresh));
 
@@ -499,6 +501,47 @@ fn a_revision_must_fit_the_source() {
 }
 
 #[test]
+fn a_dockerfile_frontend_image_reads_the_dockerfile_the_builder_names() {
+    let tags = tags();
+    let run = build_run();
+    let mut build = build("https://github.com/acme/mono", Some("api"), Vec::new());
+    build.spec.source.dockerfile = Some("docker/Dockerfile.prod".to_owned());
+    let image = Frontend::Gateway {
+        source: "docker/dockerfile:1".to_owned(),
+    };
+    let mut repository = dockerfile();
+    repository.frontend.kind = image.clone();
+    let mut planned = agent();
+    planned.frontend.kind = image;
+    for (builder, dir, filename) in [
+        (repository, "/workspace/src/api/docker", "Dockerfile.prod"),
+        (planned, "/workspace/plan", "Dockerfile"),
+    ] {
+        let job = job(&inputs(
+            &run,
+            &build,
+            "custom",
+            &builder,
+            &tags,
+            GitAuth::Anonymous,
+        ))
+        .unwrap();
+        let command = job.spec.unwrap().template.spec.unwrap().containers[0]
+            .command
+            .clone()
+            .unwrap();
+        for expected in [
+            "gateway.v0".to_owned(),
+            "source=docker/dockerfile:1".to_owned(),
+            format!("dockerfile={dir}"),
+            format!("filename={filename}"),
+        ] {
+            assert!(command.contains(&expected), "{expected} in {command:?}");
+        }
+    }
+}
+
+#[test]
 fn refuses_what_admission_should_have_caught() {
     let tags = tags();
     let builder = dockerfile();
@@ -554,40 +597,7 @@ fn refuses_what_admission_should_have_caught() {
         )),
         Err(JobError::Metadata("uid"))
     );
-
     let run = build_run();
-    let mut inconsistent = dockerfile();
-    inconsistent.planner = railpack().planner;
-    assert!(matches!(
-        job(&inputs(
-            &run,
-            &build,
-            "dockerfile",
-            &inconsistent,
-            &tags,
-            GitAuth::Anonymous
-        )),
-        Err(JobError::Builder(_))
-    ));
-    let mut no_model = agent();
-    if let Some(planner) = &mut no_model.planner {
-        planner.model = None;
-    }
-    let mut gateway = agent();
-    gateway.frontend = railpack().frontend;
-    for inconsistent in [no_model, gateway] {
-        assert!(matches!(
-            job(&inputs(
-                &run,
-                &build,
-                "agent",
-                &inconsistent,
-                &tags,
-                GitAuth::Anonymous
-            )),
-            Err(JobError::Builder(_))
-        ));
-    }
     assert_eq!(
         job(&inputs(
             &run,

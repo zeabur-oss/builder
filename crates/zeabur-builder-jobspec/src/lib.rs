@@ -47,7 +47,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference}
 use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar, SourceKind};
 use zeabur_builder_api::build_run::BuildRun;
 use zeabur_builder_api::cluster_builder::{
-    BuilderType, ClusterBuilderSpec, FrontendType, PlannerSpec,
+    AgentPlanner, ClusterBuilderSpec, Frontend as FrontendKind, Planner, PlannerSpec,
 };
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::repo::{RepoKey, RepoUrlError};
@@ -194,19 +194,89 @@ pub enum JobError {
     /// The repository URL is not one `fetch` may use.
     #[error(transparent)]
     Url(#[from] RepoUrlError),
-    /// The builder has a planner when it should not, or lacks one, or a gateway frontend has no
-    /// source. Admission rules prevent this; the check is repeated for `ClusterBuilder`s written
-    /// before a rule existed.
-    #[error("the ClusterBuilder is inconsistent: {0}")]
-    Builder(&'static str),
+}
+
+/// What the builder and the saved plan make of one Job, decided once.
+struct Resolved<'a> {
+    /// The `plan` container.
+    plan: Plan<'a>,
+    /// How the `build` container reads the plan.
+    frontend: Frontend<'a>,
+}
+
+/// The `plan` container.
+enum Plan<'a> {
+    /// None: the repository has its own Dockerfile.
+    None,
+    /// `zeabur-builder-job plan restore` unpacks the saved plan with this digest instead of
+    /// planning.
+    Restore(&'a str),
+    /// `railpack prepare`.
+    Railpack(&'a PlannerSpec),
+    /// `zeabur-builder-agent`.
+    Agent(&'a AgentPlanner),
+}
+
+/// How the `build` container reads the plan.
+enum Frontend<'a> {
+    /// A Dockerfile frontend, `dockerfile.v0` or an image, reading `filename` in `dir`.
+    Dockerfile {
+        image: Option<&'a str>,
+        dir: String,
+        filename: String,
+    },
+    /// Railpack's frontend image. It writes an image that runs as root, so a second build
+    /// makes it run as a non-root user ([`non_root_build`]).
+    Railpack { image: &'a str },
+}
+
+/// Resolves the builder for this run; `context` is the build context in the Pod.
+fn resolve<'a>(inputs: &JobInputs<'a>, context: &str) -> Resolved<'a> {
+    let builder = inputs.builder;
+    let plan = match (&builder.planner, inputs.saved_plan.filter(|d| is_digest(d))) {
+        (Planner::Dockerfile, _) => Plan::None,
+        (Planner::Railpack { .. } | Planner::Agent { .. }, Some(digest)) => Plan::Restore(digest),
+        (Planner::Railpack { railpack }, None) => Plan::Railpack(railpack),
+        (Planner::Agent { agent }, None) => Plan::Agent(agent),
+    };
+    let image = match &builder.frontend.kind {
+        FrontendKind::Dockerfile => None,
+        FrontendKind::Gateway { source } => Some(source.as_str()),
+    };
+    let frontend = match (&builder.planner, image) {
+        (Planner::Railpack { .. }, Some(image)) => Frontend::Railpack { image },
+        (Planner::Dockerfile, image) => {
+            let path = inputs
+                .build
+                .spec
+                .source
+                .dockerfile
+                .as_deref()
+                .unwrap_or("Dockerfile");
+            let (dir, filename) = path
+                .rsplit_once('/')
+                .map_or((None, path), |(d, f)| (Some(d), f));
+            Frontend::Dockerfile {
+                image,
+                dir: dir.map_or_else(|| context.to_owned(), |d| format!("{context}/{d}")),
+                filename: filename.to_owned(),
+            }
+        }
+        (Planner::Railpack { .. } | Planner::Agent { .. }, image) => Frontend::Dockerfile {
+            image,
+            dir: PLAN.to_owned(),
+            filename: "Dockerfile".to_owned(),
+        },
+    };
+    Resolved { plan, frontend }
 }
 
 /// Builds the Job.
 ///
 /// # Errors
 ///
-/// When the `BuildRun` lacks metadata, has a name too long for a Job, or the builder is
-/// inconsistent.
+/// When the `BuildRun` lacks metadata or has a name too long for a Job, the revision does not fit
+/// the source, or the repository URL is not one `fetch` may use.
 pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     let meta = &inputs.build_run.metadata;
     let name = meta.name.as_deref().ok_or(JobError::Metadata("name"))?;
@@ -240,19 +310,21 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
         (labels::BUILDER.to_owned(), inputs.builder_name.to_owned()),
         (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
     ]);
-    let annotations = job_annotations(inputs, revision);
+    let context = context_path(inputs);
+    let resolved = resolve(inputs, &context);
+    let annotations = job_annotations(inputs, &resolved, revision);
 
     let fetch = match &source.kind {
         SourceKind::Git { git } => fetch_container(inputs, &git.url),
         SourceKind::Archive { .. } => archive_container(inputs, namespace),
     };
     let mut init_containers = vec![fetch];
-    init_containers.extend(plan_container(inputs)?);
+    init_containers.extend(plan_container(inputs, &resolved, &context));
     let resources = inputs.memory.requirements();
     for container in &mut init_containers {
         container.resources = Some(resources.clone());
     }
-    let mut build = build_container(inputs, repo.as_ref())?;
+    let mut build = build_container(inputs, &resolved, &context, repo.as_ref());
     build.resources = Some(resources);
 
     let pod = PodSpec {
@@ -418,47 +490,38 @@ exit "$code"
 
 /// The Job's and Pod's annotations: the commit, and what the controller reads back when the run
 /// finishes (the repository and any saved plan the Job restores).
-fn job_annotations(inputs: &JobInputs<'_>, revision: &str) -> BTreeMap<String, String> {
+fn job_annotations(
+    inputs: &JobInputs<'_>,
+    resolved: &Resolved<'_>,
+    revision: &str,
+) -> BTreeMap<String, String> {
     let mut found = BTreeMap::from([
         (annotations::REVISION.to_owned(), revision.to_owned()),
         (annotations::IMAGE.to_owned(), inputs.image.to_owned()),
     ]);
-    if let Some(digest) = reused_plan(inputs) {
+    if let Plan::Restore(digest) = resolved.plan {
         found.insert(annotations::SAVED_PLAN.to_owned(), digest.to_owned());
     }
     found
 }
 
-fn plan_container(inputs: &JobInputs<'_>) -> Result<Option<Container>, JobError> {
-    let builder = inputs.builder;
-    match (builder.kind, &builder.planner) {
-        (BuilderType::Dockerfile, None) => Ok(None),
-        (BuilderType::Dockerfile, Some(_)) => Err(JobError::Builder("dockerfile with a planner")),
-        (BuilderType::Railpack | BuilderType::Agent, None) => {
-            Err(JobError::Builder("planner missing"))
-        }
-        (BuilderType::Railpack | BuilderType::Agent, Some(_)) if reused_plan(inputs).is_some() => {
-            Ok(Some(restore_container(inputs)))
-        }
-        (BuilderType::Railpack, Some(planner)) => Ok(Some(railpack_container(inputs, planner))),
-        (BuilderType::Agent, Some(planner)) => agent_container(inputs, planner).map(Some),
-    }
-}
-
-/// The digest of the saved plan the Job builds with instead of running its planner.
-fn reused_plan<'a>(inputs: &JobInputs<'a>) -> Option<&'a str> {
-    match inputs.builder.kind {
-        BuilderType::Dockerfile => None,
-        BuilderType::Railpack | BuilderType::Agent => {
-            inputs.saved_plan.filter(|digest| is_digest(digest))
-        }
+fn plan_container(
+    inputs: &JobInputs<'_>,
+    resolved: &Resolved<'_>,
+    context: &str,
+) -> Option<Container> {
+    match resolved.plan {
+        Plan::None => None,
+        Plan::Restore(digest) => Some(restore_container(inputs, digest)),
+        Plan::Railpack(planner) => Some(railpack_container(inputs, planner, context)),
+        Plan::Agent(agent) => Some(agent_container(inputs, agent, context)),
     }
 }
 
 /// `zeabur-builder-job plan restore`, which unpacks the saved plan into `/workspace/plan`, with
 /// the run's push credentials. Only the digest comes from the saved plan; the repository is the
 /// one the Job pushes to, so a run never reads another repository with them.
-fn restore_container(inputs: &JobInputs<'_>) -> Container {
+fn restore_container(inputs: &JobInputs<'_>, digest: &str) -> Container {
     let mut command = vec![
         "zeabur-builder-job".to_owned(),
         "plan".to_owned(),
@@ -467,11 +530,7 @@ fn restore_container(inputs: &JobInputs<'_>) -> Container {
     if inputs.registry_http {
         command.push("--plain-http".to_owned());
     }
-    command.extend([
-        literal(inputs.image),
-        reused_plan(inputs).unwrap_or_default().to_owned(),
-        PLAN.to_owned(),
-    ]);
+    command.extend([literal(inputs.image), digest.to_owned(), PLAN.to_owned()]);
     let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
     if let Some(ca) = inputs.registry_ca {
         env_vars.push(env(REGISTRY_CA_ENV, &literal(ca)));
@@ -490,14 +549,13 @@ fn restore_container(inputs: &JobInputs<'_>) -> Container {
 }
 
 /// `railpack prepare`, which writes the plan and its info into `/workspace/plan`.
-fn railpack_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Container {
-    let context = context_path(inputs);
+fn railpack_container(inputs: &JobInputs<'_>, planner: &PlannerSpec, context: &str) -> Container {
     let mounts = workspace_mounts();
     let mut env_vars = vec![env("HOME", "/tmp")];
     let mut args = vec![
         "railpack".to_owned(),
         "prepare".to_owned(),
-        literal(&context),
+        literal(context),
         "--plan-out".to_owned(),
         format!("{PLAN}/railpack-plan.json"),
         "--info-out".to_owned(),
@@ -529,15 +587,12 @@ fn railpack_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Containe
 /// `zeabur-builder-agent`, which trial-builds on the namespace's buildkitd and writes the
 /// Dockerfile into `/workspace/plan`, with the model API key from the namespace's Secret in
 /// `ZB_MODEL_API_KEY`.
-fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Container, JobError> {
-    let model = planner
-        .model
-        .as_ref()
-        .ok_or(JobError::Builder("agent without planner.model"))?;
+fn agent_container(inputs: &JobInputs<'_>, agent: &AgentPlanner, context: &str) -> Container {
+    let model = &agent.model;
     let mut args = vec![
         "zeabur-builder-agent".to_owned(),
         "--context".to_owned(),
-        literal(&context_path(inputs)),
+        literal(context),
         "--buildkit".to_owned(),
         inputs.buildkitd_addr.to_owned(),
         "--tlsdir".to_owned(),
@@ -554,9 +609,9 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
     }
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
-    Ok(Container {
+    Container {
         name: "plan".to_owned(),
-        image: Some(planner.image.clone()),
+        image: Some(agent.planner.image.clone()),
         command: Some(vec![
             "sh".to_owned(),
             "-c".to_owned(),
@@ -582,12 +637,16 @@ fn agent_container(inputs: &JobInputs<'_>, planner: &PlannerSpec) -> Result<Cont
         volume_mounts: Some(mounts),
         termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
         ..hardened()
-    })
+    }
 }
 
-fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Container, JobError> {
-    let context = context_path(inputs);
-    let non_root = non_root(inputs.builder);
+fn build_container(
+    inputs: &JobInputs<'_>,
+    resolved: &Resolved<'_>,
+    context: &str,
+    repo: Option<&RepoKey>,
+) -> Container {
+    let non_root = matches!(resolved.frontend, Frontend::Railpack { .. });
     let mut wrapper = vec!["zeabur-builder-job".to_owned(), "build".to_owned()];
     if inputs.registry_http {
         wrapper.push("--plain-http".to_owned());
@@ -599,7 +658,7 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
     };
     let mut buildctl = buildctl(inputs, &metadata);
     buildctl.extend(["--local".to_owned(), format!("context={context}")]);
-    frontend_args(inputs, &context, &mut wrapper, &mut buildctl)?;
+    frontend_args(inputs, &resolved.frontend, &mut wrapper, &mut buildctl);
     buildctl.extend(inputs.build.spec.env.iter().flat_map(|var| {
         [
             "--secret".to_owned(),
@@ -618,7 +677,7 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
             NON_ROOT.to_owned(),
         ]);
     }
-    if let Some(name) = saved_plan_name(inputs) {
+    if let Some(name) = saved_plan_name(inputs, &resolved.plan) {
         wrapper.extend(["--save-plan".to_owned(), literal(&name)]);
     }
     wrapper.push("--build".to_owned());
@@ -636,7 +695,7 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
     mounts.push(mount("registry-auth", REGISTRY_AUTH));
-    Ok(Container {
+    Container {
         name: "build".to_owned(),
         image: Some(inputs.job_image.to_owned()),
         command: Some(wrapper),
@@ -645,13 +704,7 @@ fn build_container(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Result<Con
         termination_message_policy: Some("File".to_owned()),
         termination_message_path: Some("/dev/termination-log".to_owned()),
         ..hardened()
-    })
-}
-
-/// Whether the build ends with [`non_root_build`]: Railpack's frontend writes an image that runs
-/// as root ([`zeabur_builder_core::railpack`]).
-fn non_root(builder: &ClusterBuilderSpec) -> bool {
-    builder.kind == BuilderType::Railpack && builder.frontend.kind == FrontendType::Gateway
+    }
 }
 
 /// `buildctl … build` up to the frontend.
@@ -692,13 +745,10 @@ fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String>
 
 /// Where a builder with a planner saves the plan it wrote ([`zeabur_builder_core::plan`]):
 /// `<image>:zeabur-plan-<Build uid>`. None for `dockerfile` and for a run that reused a plan.
-fn saved_plan_name(inputs: &JobInputs<'_>) -> Option<String> {
-    match inputs.builder.kind {
-        BuilderType::Dockerfile => return None,
-        BuilderType::Railpack | BuilderType::Agent => {}
-    }
-    if reused_plan(inputs).is_some() {
-        return None;
+fn saved_plan_name(inputs: &JobInputs<'_>, plan: &Plan<'_>) -> Option<String> {
+    match plan {
+        Plan::None | Plan::Restore(_) => return None,
+        Plan::Railpack(_) | Plan::Agent(_) => {}
     }
     let uid = inputs.build.metadata.uid.as_deref()?;
     Some(format!("{}:{}", inputs.image, plan::saved_tag(uid)))
@@ -707,71 +757,57 @@ fn saved_plan_name(inputs: &JobInputs<'_>) -> Option<String> {
 /// `--frontend`, the plan's location and the frontend options.
 fn frontend_args(
     inputs: &JobInputs<'_>,
-    context: &str,
+    frontend: &Frontend<'_>,
     wrapper: &mut Vec<String>,
     buildctl: &mut Vec<String>,
-) -> Result<(), JobError> {
-    let builder = inputs.builder;
-    match (builder.frontend.kind, builder.kind) {
-        (FrontendType::Dockerfile, BuilderType::Dockerfile) => {
-            let path = inputs
-                .build
-                .spec
-                .source
-                .dockerfile
-                .as_deref()
-                .unwrap_or("Dockerfile");
-            let (dir, file) = path
-                .rsplit_once('/')
-                .map_or((None, path), |(d, f)| (Some(d), f));
-            let dir = dir.map_or_else(|| context.to_owned(), |d| format!("{context}/{d}"));
+) {
+    match frontend {
+        Frontend::Dockerfile {
+            image: None,
+            dir,
+            filename,
+        } => {
             buildctl.extend(["--frontend".to_owned(), "dockerfile.v0".to_owned()]);
             buildctl.extend(["--local".to_owned(), format!("dockerfile={dir}")]);
-            buildctl.extend(["--opt".to_owned(), format!("filename={file}")]);
+            buildctl.extend(["--opt".to_owned(), format!("filename={filename}")]);
         }
-        (FrontendType::Dockerfile, BuilderType::Railpack | BuilderType::Agent) => {
-            buildctl.extend(["--frontend".to_owned(), "dockerfile.v0".to_owned()]);
-            buildctl.extend(["--local".to_owned(), format!("dockerfile={PLAN}")]);
-            buildctl.extend(["--opt".to_owned(), "filename=Dockerfile".to_owned()]);
-        }
-        (FrontendType::Gateway, BuilderType::Agent) => {
-            return Err(JobError::Builder("agent with a gateway frontend"));
-        }
-        (FrontendType::Gateway, BuilderType::Dockerfile | BuilderType::Railpack) => {
-            let source = builder
-                .frontend
-                .source
-                .as_deref()
-                .ok_or(JobError::Builder("gateway frontend without source"))?;
+        Frontend::Dockerfile {
+            image: Some(image),
+            dir,
+            filename,
+        } => {
             buildctl.extend(["--frontend".to_owned(), "gateway.v0".to_owned()]);
-            buildctl.extend(["--opt".to_owned(), format!("source={source}")]);
-            let plan = if non_root(builder) { NON_ROOT } else { PLAN };
-            buildctl.extend(["--local".to_owned(), format!("dockerfile={plan}")]);
-            if builder.kind == BuilderType::Railpack {
-                // Railpack reads build arguments only under `build-arg:`; the wrapper hashes the
-                // secret values into `build-arg:secrets-hash` so a changed value invalidates the
-                // cache without the value entering the cache key or image metadata.
-                wrapper.extend(inputs.build.spec.env.iter().flat_map(|var| {
-                    [
-                        "--secrets-hash-env".to_owned(),
-                        format!("{SECRET_ENV_PREFIX}{}", var.name),
-                    ]
-                }));
-                buildctl.extend([
-                    "--opt".to_owned(),
-                    format!("build-arg:cache-key={}", cache_key(inputs)),
-                ]);
-            }
+            buildctl.extend(["--opt".to_owned(), format!("source={image}")]);
+            buildctl.extend(["--local".to_owned(), format!("dockerfile={dir}")]);
+            buildctl.extend(["--opt".to_owned(), format!("filename={filename}")]);
+        }
+        Frontend::Railpack { image } => {
+            buildctl.extend(["--frontend".to_owned(), "gateway.v0".to_owned()]);
+            buildctl.extend(["--opt".to_owned(), format!("source={image}")]);
+            buildctl.extend(["--local".to_owned(), format!("dockerfile={NON_ROOT}")]);
+            // Railpack reads build arguments only under `build-arg:`; the wrapper hashes the
+            // secret values into `build-arg:secrets-hash` so a changed value invalidates the
+            // cache without the value entering the cache key or image metadata.
+            wrapper.extend(inputs.build.spec.env.iter().flat_map(|var| {
+                [
+                    "--secrets-hash-env".to_owned(),
+                    format!("{SECRET_ENV_PREFIX}{}", var.name),
+                ]
+            }));
+            buildctl.extend([
+                "--opt".to_owned(),
+                format!("build-arg:cache-key={}", cache_key(inputs)),
+            ]);
         }
     }
     buildctl.extend(
-        builder
+        inputs
+            .builder
             .frontend
             .opts
             .iter()
             .flat_map(|(key, value)| ["--opt".to_owned(), format!("{key}={value}")]),
     );
-    Ok(())
 }
 
 /// `<image>:<tag>` for each tag.
