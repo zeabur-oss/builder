@@ -98,15 +98,10 @@ where
         + Sync,
 {
     let api: Api<K> = Api::namespaced(client.clone(), namespace);
-    let mut body = serde_json::to_value(object).map_err(kube::Error::SerdeError)?;
-    if let Some(map) = body.as_object_mut() {
-        map.insert("apiVersion".to_owned(), K::api_version(&()).into());
-        map.insert("kind".to_owned(), K::kind(&()).into());
-    }
     api.patch(
         &object.name_any(),
         &PatchParams::apply(MANAGER).force(),
-        &Patch::Apply(body),
+        &Patch::Apply(object),
     )
     .await
 }
@@ -279,6 +274,17 @@ fn selector() -> String {
     )
 }
 
+/// A merge patch of the `scale` subresource that sets only `spec.replicas`.
+#[derive(Debug, serde::Serialize)]
+struct ScalePatch {
+    spec: Replicas,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct Replicas {
+    replicas: i32,
+}
+
 async fn scale_to_zero(
     client: &Client,
     settings: &Settings,
@@ -288,7 +294,9 @@ async fn scale_to_zero(
         .patch_scale(
             &set.name_any(),
             &PatchParams::default(),
-            &Patch::Merge(serde_json::json!({"spec": {"replicas": 0}})),
+            &Patch::Merge(ScalePatch {
+                spec: Replicas { replicas: 0 },
+            }),
         )
         .await
         .map(drop)

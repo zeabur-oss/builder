@@ -256,7 +256,7 @@ fn open_repository(repository: &str, plain_http: bool) -> Result<registry::Repos
 fn prepare_non_root(plan: &str, out: &str) -> Result<(), StepError> {
     let path = format!("{plan}/railpack-plan.json");
     let text = std::fs::read_to_string(&path).map_err(StepError::read(&path))?;
-    let mut value: serde_json::Value =
+    let mut value: railpack::Plan =
         serde_json::from_str(&text).map_err(|source| StepError::ParsePlan {
             path: path.clone(),
             source,
@@ -683,12 +683,11 @@ mod tests {
         let (plan_dir, out_dir) = (dir.to_str().unwrap(), out.to_str().unwrap());
         prepare_non_root(plan_dir, out_dir).unwrap();
         let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap();
-        let written: serde_json::Value =
+        let mut owned: railpack::Plan = serde_json::from_value(plan.clone()).unwrap();
+        railpack::own_deploy_layers(&mut owned);
+        let written: railpack::Plan =
             serde_json::from_str(&read(out.join("railpack-plan.json"))).unwrap();
-        assert_eq!(
-            written["steps"][0]["commands"][1]["cmd"],
-            railpack::OWN_COMMAND
-        );
+        assert_eq!(written, owned);
         assert_eq!(read(out.join("Dockerfile")), railpack::dockerfile());
         assert_eq!(read(dir.join("railpack-plan.json")), plan.to_string());
         std::fs::remove_dir_all(&dir).unwrap();

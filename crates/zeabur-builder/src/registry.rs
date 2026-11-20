@@ -322,13 +322,20 @@ struct Grant<'a> {
     actions: Vec<&'static str>,
 }
 
+/// A field of a user's Docker config that this crate does not read, kept as it is.
+#[expect(
+    clippy::disallowed_types,
+    reason = "a Docker config holds fields of any shape, such as credHelpers, that pass through unread"
+)]
+type PassThrough = serde_json::Value;
+
 /// A Docker config. Fields this crate does not set pass through.
 #[derive(Serialize, Deserialize, Default)]
 struct DockerConfig {
     #[serde(default)]
     auths: BTreeMap<String, Auth>,
     #[serde(flatten)]
-    rest: BTreeMap<String, serde_json::Value>,
+    rest: BTreeMap<String, PassThrough>,
 }
 
 /// The credentials of one registry host.
@@ -337,7 +344,7 @@ struct Auth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     registrytoken: Option<String>,
     #[serde(flatten)]
-    rest: BTreeMap<String, serde_json::Value>,
+    rest: BTreeMap<String, PassThrough>,
 }
 
 /// A Docker config that sends `token` to `host` as it is.
@@ -595,6 +602,11 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use aws_lc_rs::rand::SystemRandom;
     use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
     use serde_json::json;
@@ -634,17 +646,20 @@ mod tests {
                 &URL_SAFE_NO_PAD.decode(signature).unwrap(),
             )
             .unwrap();
-        let claims = claims(&token);
+        let t = now.as_second();
+        let skew = i64::try_from(CLOCK_SKEW.as_secs()).unwrap();
         assert_eq!(
-            claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap(),
-            600
-        );
-        assert_eq!(
-            claims["access"],
-            json!([
-                {"type": "repository", "name": "team-a/api", "actions": ["pull", "push"]},
-                {"type": "repository", "name": "team-a/api/source", "actions": ["pull"]},
-            ])
+            claims(&token),
+            json!({
+                "iss": "zeabur-builder",
+                "iat": t,
+                "nbf": t - skew,
+                "exp": t + 600,
+                "access": [
+                    {"type": "repository", "name": "team-a/api", "actions": ["pull", "push"]},
+                    {"type": "repository", "name": "team-a/api/source", "actions": ["pull"]},
+                ],
+            })
         );
     }
 

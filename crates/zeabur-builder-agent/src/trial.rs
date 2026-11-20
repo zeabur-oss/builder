@@ -435,8 +435,8 @@ mod tests {
 
     use super::*;
 
-    fn line(value: &serde_json::Value) -> String {
-        value.to_string()
+    fn line(value: &impl Serialize) -> String {
+        serde_json::to_string(value).unwrap()
     }
 
     fn b64(text: &str) -> String {

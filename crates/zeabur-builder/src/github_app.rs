@@ -446,16 +446,18 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            m["default_permissions"],
-            json!({"contents": "read", "metadata": "read", "statuses": "write"})
+            m,
+            json!({
+                "name": "Zeabur Builder",
+                "url": "https://github.com/zeabur-oss/builder",
+                "description": "Builds container images of pushed commits with Zeabur Builder.",
+                "hook_attributes": {"url": "https://hooks.example.com/hooks/github-app", "active": true},
+                "redirect_url": "http://127.0.0.1:9/callback",
+                "public": false,
+                "default_permissions": {"contents": "read", "metadata": "read", "statuses": "write"},
+                "default_events": ["push"],
+            })
         );
-        assert_eq!(m["default_events"], json!(["push"]));
-        assert_eq!(m["public"], json!(false));
-        assert_eq!(
-            m["hook_attributes"],
-            json!({"url": "https://hooks.example.com/hooks/github-app", "active": true})
-        );
-        assert_eq!(m["redirect_url"], "http://127.0.0.1:9/callback");
     }
 
     #[test]
@@ -473,18 +475,42 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            s["stringData"],
-            json!({"app-id": "42", "client-id": "Iv23li", "private-key": "-----BEGIN RSA PRIVATE KEY-----",
-                   "webhook-secret": "ws"})
+            s,
+            json!({
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {
+                    "name": "github-app",
+                    "namespace": "builder-system",
+                    "annotations": {"builder.zeabur.com/github-app": "https://github.com/apps/zeabur-builder"},
+                },
+                "type": "Opaque",
+                "stringData": {
+                    "app-id": "42", "client-id": "Iv23li",
+                    "private-key": "-----BEGIN RSA PRIVATE KEY-----", "webhook-secret": "ws",
+                },
+            })
         );
-        assert_eq!(s["kind"], "Secret");
-        assert_eq!(s["metadata"]["namespace"], "builder-system");
         let ghes =
             serde_json::to_value(conversion.secret("x", "y", "https://ghe.example.com/api/v3"))
                 .unwrap();
         assert_eq!(
-            ghes["stringData"]["api-url"],
-            "https://ghe.example.com/api/v3"
+            ghes,
+            json!({
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {
+                    "name": "x",
+                    "namespace": "y",
+                    "annotations": {"builder.zeabur.com/github-app": "https://github.com/apps/zeabur-builder"},
+                },
+                "type": "Opaque",
+                "stringData": {
+                    "app-id": "42", "client-id": "Iv23li",
+                    "private-key": "-----BEGIN RSA PRIVATE KEY-----", "webhook-secret": "ws",
+                    "api-url": "https://ghe.example.com/api/v3",
+                },
+            })
         );
     }
 

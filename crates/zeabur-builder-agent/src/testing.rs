@@ -136,7 +136,7 @@ impl HttpClientExt for Replay {
 }
 
 /// A Messages API reply that calls `tool` with `input`.
-pub(crate) fn tool_use(id: &str, tool: &str, input: &serde_json::Value) -> String {
+pub(crate) fn tool_use(id: &str, tool: &str, input: &impl serde::Serialize) -> String {
     serde_json::json!({
         "id": format!("msg_{id}"),
         "type": "message",

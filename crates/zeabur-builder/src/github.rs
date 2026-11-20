@@ -619,6 +619,11 @@ fn github_message(answer: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use std::collections::BTreeMap;
 
     use aws_lc_rs::encoding::AsDer as _;

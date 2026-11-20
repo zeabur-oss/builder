@@ -14,12 +14,12 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::result::{CacheStats, Step, StepState};
 
 /// One line of the stream: a `client.SolveStatus`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct SolveStatus {
     /// Steps that started, completed, were cached or failed since the last line.
     #[serde(default)]
@@ -38,7 +38,7 @@ impl SolveStatus {
 }
 
 /// One report of a build step.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Vertex {
     /// The step's identity within one `buildctl` run.
     pub digest: String,
@@ -60,7 +60,7 @@ pub struct Vertex {
 }
 
 /// Output of a step.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Log {
     /// The [`Vertex::digest`] of the step.
     pub vertex: String,

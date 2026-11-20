@@ -712,21 +712,32 @@ fn flags() -> Resources {
     }
 }
 
+fn assert_status_is(status: &ClusterBuilderStatus, expected: impl Serialize) {
+    let status = ClusterBuilderStatus {
+        conditions: Vec::new(),
+        ..status.clone()
+    };
+    assert_eq!(
+        serde_json::to_value(status).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}
+
 #[test]
 fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
     let status =
         cluster_builder_status(&cluster_builder(1), &flags(), &Ceiling::default(), 3, now());
-    let json = serde_json::to_value(&status).unwrap();
-    assert_eq!(
-        json["buildDefaults"],
-        serde_json::json!({
-            "requests": {"cpu": "100m", "memory": "256Mi"},
-            "limits": {"cpu": "1", "memory": "1Gi"},
-        })
-    );
-    assert_eq!(json["defaultConcurrentBuilds"], 3);
     // No ceiling is a missing field, never a zero.
-    assert!(json.get("buildCeiling").is_none(), "{json}");
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {
+                "requests": {"cpu": "100m", "memory": "256Mi"},
+                "limits": {"cpu": "1", "memory": "1Gi"},
+            },
+            "defaultConcurrentBuilds": 3,
+        }),
+    );
     let ready = &status.conditions[0];
     assert_eq!(
         (ready.kind, ready.status, ready.reason.as_str()),
@@ -738,32 +749,30 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
         cpu_limit: None,
         ..flags()
     };
-    let json = serde_json::to_value(cluster_builder_status(
-        &cluster_builder(1),
-        &unset,
-        &Ceiling::default(),
-        3,
-        now(),
-    ))
-    .unwrap();
-    assert_eq!(
-        json["buildDefaults"]["limits"],
-        serde_json::json!({"memory": "1Gi"})
+    let status = cluster_builder_status(&cluster_builder(1), &unset, &Ceiling::default(), 3, now());
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {
+                "requests": {"cpu": "100m", "memory": "256Mi"},
+                "limits": {"memory": "1Gi"},
+            },
+            "defaultConcurrentBuilds": 3,
+        }),
     );
     let none = Resources {
         cpu_limit: None,
         memory_limit: None,
         ..flags()
     };
-    let json = serde_json::to_value(cluster_builder_status(
-        &cluster_builder(1),
-        &none,
-        &Ceiling::default(),
-        3,
-        now(),
-    ))
-    .unwrap();
-    assert!(json["buildDefaults"].get("limits").is_none(), "{json}");
+    let status = cluster_builder_status(&cluster_builder(1), &none, &Ceiling::default(), 3, now());
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {"requests": {"cpu": "100m", "memory": "256Mi"}},
+            "defaultConcurrentBuilds": 3,
+        }),
+    );
 }
 
 #[test]
@@ -773,9 +782,16 @@ fn a_cluster_builder_status_shows_the_ceiling_namespaces_are_held_to() {
         memory: Some("4Gi".to_owned()),
     };
     let status = cluster_builder_status(&cluster_builder(1), &flags(), &ceiling, 1, now());
-    assert_eq!(
-        serde_json::to_value(&status).unwrap()["buildCeiling"],
-        serde_json::json!({"memory": "4Gi"})
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {
+                "requests": {"cpu": "100m", "memory": "256Mi"},
+                "limits": {"cpu": "1", "memory": "1Gi"},
+            },
+            "buildCeiling": {"memory": "4Gi"},
+            "defaultConcurrentBuilds": 1,
+        }),
     );
     // A namespace that asks for more gets the ceiling the status shows.
     let annotations = BTreeMap::from([(annotations::BUILD_MEMORY.to_owned(), "16Gi".to_owned())]);

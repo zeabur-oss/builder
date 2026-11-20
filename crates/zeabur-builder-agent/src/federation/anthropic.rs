@@ -123,6 +123,11 @@ impl TokenSource for Anthropic {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use std::collections::HashMap;
 
     use pretty_assertions::assert_eq;

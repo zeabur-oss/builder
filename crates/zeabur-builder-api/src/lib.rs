@@ -126,6 +126,10 @@ pub fn definitions_yaml() -> serde_json::Result<String> {
 #[cfg(test)]
 #[cfg(feature = "schema")]
 mod tests {
+    use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::{
+        JSONSchemaProps, JSONSchemaPropsOrArray, JSONSchemaPropsOrBool,
+    };
+
     use super::*;
 
     /// The committed manifest must match the code. Regenerate with
@@ -133,7 +137,7 @@ mod tests {
     #[test]
     fn committed_manifest_is_current() {
         let committed = include_str!("../../../deploy/chart/crds/crds.yaml");
-        let parse = |s: &str| -> Vec<serde_json::Value> {
+        let parse = |s: &str| -> Vec<CustomResourceDefinition> {
             s.split("---\n")
                 .filter(|d| !d.trim().is_empty())
                 .map(|d| serde_json::from_str(d).unwrap())
@@ -171,49 +175,44 @@ mod tests {
     /// finite.
     #[test]
     fn every_value_is_bounded() {
-        fn walk(path: &str, schema: &serde_json::Value, unbounded: &mut Vec<String>) {
-            let Some(object) = schema.as_object() else {
-                return;
-            };
-            let ty = object.get("type").and_then(serde_json::Value::as_str);
-            let bounded = match ty {
+        fn walk(path: &str, schema: &JSONSchemaProps, unbounded: &mut Vec<String>) {
+            let bounded = match schema.type_.as_deref() {
                 Some("string") => {
-                    object.contains_key("maxLength")
-                        || object.contains_key("enum")
-                        || object.contains_key("format")
+                    schema.max_length.is_some() || schema.enum_.is_some() || schema.format.is_some()
                 }
-                Some("array") => object.contains_key("maxItems"),
-                Some("object") if object.contains_key("additionalProperties") => {
-                    object.contains_key("maxProperties")
+                Some("array") => schema.max_items.is_some(),
+                Some("object") if schema.additional_properties.is_some() => {
+                    schema.max_properties.is_some()
                 }
                 _ => true,
             };
             if !bounded {
                 unbounded.push(path.to_owned());
             }
-            for (key, child) in object {
-                match key.as_str() {
-                    "properties" => {
-                        for (name, property) in child.as_object().into_iter().flatten() {
-                            walk(&format!("{path}.{name}"), property, unbounded);
-                        }
-                    }
-                    "items" | "additionalProperties" => {
-                        walk(&format!("{path}[]"), child, unbounded);
-                    }
-                    _ => {}
-                }
+            for (name, property) in schema.properties.iter().flatten() {
+                walk(&format!("{path}.{name}"), property, unbounded);
+            }
+            if let Some(JSONSchemaPropsOrArray::Schema(items)) = &schema.items {
+                walk(&format!("{path}[]"), items, unbounded);
+            }
+            if let Some(JSONSchemaPropsOrBool::Schema(values)) = &schema.additional_properties {
+                walk(&format!("{path}[]"), values, unbounded);
             }
         }
         let mut unbounded = Vec::new();
         for crd in definitions() {
             let version = &crd.spec.versions[0];
-            let schema =
-                serde_json::to_value(&version.schema.as_ref().unwrap().open_api_v3_schema).unwrap();
+            let schema = version
+                .schema
+                .as_ref()
+                .unwrap()
+                .open_api_v3_schema
+                .as_ref()
+                .unwrap();
             for part in ["spec", "status"] {
                 walk(
                     &format!("{}.{part}", crd.spec.names.kind),
-                    &schema["properties"][part],
+                    &schema.properties.as_ref().unwrap()[part],
                     &mut unbounded,
                 );
             }

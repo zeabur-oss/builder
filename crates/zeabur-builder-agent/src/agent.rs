@@ -2,15 +2,15 @@
 //! attempt keeps what the earlier ones learned. The host runs the loop and checks the budget
 //! before every model call and every trial build.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rig_core::DynModel;
 use rig_core::completion::{CompletionRequest, ToolDefinition};
 use rig_core::message::{Message, ToolCall, ToolName, ToolResult, ToolResultContent};
 use rig_core::operation::Completion;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use zeabur_builder_core::refusal::Refusal;
 
 use crate::budget::{Limits, Spent};
@@ -61,64 +61,145 @@ fn task(hint: Option<&str>, variables: &[String]) -> String {
     task
 }
 
+/// A tool's arguments, as JSON Schema.
+#[derive(Serialize)]
+struct Parameters {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    properties: BTreeMap<&'static str, Property>,
+    required: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct Property {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    items: Option<&'static Self>,
+    #[serde(rename = "enum", skip_serializing_if = "<[_]>::is_empty")]
+    values: &'static [&'static str],
+}
+
+impl Property {
+    const STRING: Self = Self::of("string");
+    const INTEGER: Self = Self::of("integer");
+    const STRINGS: Self = Self {
+        items: Some(&Self::STRING),
+        ..Self::of("array")
+    };
+    const PATH: Self =
+        Self::STRING.described("A path relative to the repository root; `.` is the root.");
+
+    const fn of(kind: &'static str) -> Self {
+        Self {
+            kind,
+            description: None,
+            items: None,
+            values: &[],
+        }
+    }
+
+    const fn described(self, description: &'static str) -> Self {
+        Self {
+            description: Some(description),
+            ..self
+        }
+    }
+}
+
 /// The tools the model may call, with their argument schemas.
 fn tools() -> Vec<Arc<ToolDefinition>> {
-    let tool = |name: &str, description: &str, parameters: Value| {
+    let tool = |name: &str,
+                description: &str,
+                properties: &[(&'static str, Property)],
+                required: &'static [&'static str]| {
+        let parameters = Parameters {
+            kind: "object",
+            properties: properties.iter().copied().collect(),
+            required,
+        };
+        let parameters = serde_json::to_value(parameters).ok()?;
         ToolName::new(name)
             .map(|name| Arc::new(ToolDefinition::new(name, description, parameters)))
             .ok()
     };
-    let path = json!({"type": "string", "description": "A path relative to the repository root; `.` is the root."});
     [
         tool(
             "list",
             "List files and directories under a path, `depth` levels down (1 to 4).",
-            json!({"type": "object", "properties": {"path": path, "depth": {"type": "integer"}}, "required": ["path"]}),
+            &[("path", Property::PATH), ("depth", Property::INTEGER)],
+            &["path"],
         ),
         tool(
             "read",
             "Read a text file, 12 KiB at a time from byte `offset`.",
-            json!({"type": "object", "properties": {"path": path, "offset": {"type": "integer"}}, "required": ["path"]}),
+            &[("path", Property::PATH), ("offset", Property::INTEGER)],
+            &["path"],
         ),
         tool(
             "grep",
             "Find the lines that contain `pattern` (plain text, case-sensitive) under a path.",
-            json!({"type": "object", "properties": {"pattern": {"type": "string"}, "path": path}, "required": ["pattern", "path"]}),
+            &[("pattern", Property::STRING), ("path", Property::PATH)],
+            &["pattern", "path"],
         ),
         tool(
             "build",
             "Build a Dockerfile against the repository. `facts` is what you now know about the app (runtime, version and where it came from, package manager, build and start commands); it is kept and returned with every result.",
-            json!({"type": "object", "properties": {
-                "dockerfile": {"type": "string"},
-                "dockerignore": {"type": "string", "description": "Lines of a .dockerignore. It replaces the repository's own; credentials and .git are always ignored."},
-                "facts": {"type": "string"}
-            }, "required": ["dockerfile", "facts"]}),
+            &[
+                ("dockerfile", Property::STRING),
+                (
+                    "dockerignore",
+                    Property::STRING.described("Lines of a .dockerignore. It replaces the repository's own; credentials and .git are always ignored."),
+                ),
+                ("facts", Property::STRING),
+            ],
+            &["dockerfile", "facts"],
         ),
         tool(
             "read_build_log",
             "Read the full log of the last failed build, 8 KiB per page from page 0.",
-            json!({"type": "object", "properties": {"page": {"type": "integer"}}, "required": ["page"]}),
+            &[("page", Property::INTEGER)],
+            &["page"],
         ),
         tool(
             "finish",
             "Finish after a build succeeded. The last Dockerfile that built is the result.",
-            json!({"type": "object", "properties": {
-                "port": {"type": "integer"},
-                "language": {"type": "string"},
-                "version": {"type": "string"},
-                "versionSource": {"type": "string", "description": "The file the version came from; empty for a default."},
-                "buildVariables": {"type": "array", "items": {"type": "string"}},
-                "runtimeVariables": {"type": "array", "items": {"type": "string"}},
-                "notes": {"type": "array", "items": {"type": "string"}}
-            }, "required": ["language"]}),
+            &[
+                ("port", Property::INTEGER),
+                ("language", Property::STRING),
+                ("version", Property::STRING),
+                (
+                    "versionSource",
+                    Property::STRING.described("The file the version came from; empty for a default."),
+                ),
+                ("buildVariables", Property::STRINGS),
+                ("runtimeVariables", Property::STRINGS),
+                ("notes", Property::STRINGS),
+            ],
+            &["language"],
         ),
         tool(
             "stop",
             "Stop without a Dockerfile and tell the user what to do.",
-            json!({"type": "object", "properties": {
-                "reason": {"type": "string", "enum": ["NoAppFound", "SeveralApps", "NeedsBuildVariable", "NeedsPrivateDependency", "UnsupportedPlatform"]},
-                "detail": {"type": "string"}
-            }, "required": ["reason", "detail"]}),
+            &[
+                (
+                    "reason",
+                    Property {
+                        values: &[
+                            "NoAppFound",
+                            "SeveralApps",
+                            "NeedsBuildVariable",
+                            "NeedsPrivateDependency",
+                            "UnsupportedPlatform",
+                        ],
+                        ..Property::STRING
+                    },
+                ),
+                ("detail", Property::STRING),
+            ],
+            &["reason", "detail"],
         ),
     ]
     .into_iter()
@@ -388,7 +469,7 @@ fn args<T: DeserializeOwned>(call: &ToolCall) -> Result<T, Step> {
             "The arguments are not a JSON object: {invalid}"
         )));
     }
-    serde_json::from_value(Value::Object(call.function.arguments.clone()))
+    T::deserialize(call.function.arguments.clone())
         .map_err(|e| Step::error(format!("Invalid arguments: {e}")))
 }
 

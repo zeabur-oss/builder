@@ -325,6 +325,11 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
