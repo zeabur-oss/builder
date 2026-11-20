@@ -616,6 +616,14 @@ fn agent_container(inputs: &JobInputs<'_>, agent: &AgentPlanner, context: &str) 
     if let Some(base_url) = &model.base_url {
         args.extend(["--base-url".to_owned(), literal(base_url)]);
     }
+    // Trial builds get the build variables as the final build does; the agent keeps their
+    // values out of what the model reads.
+    let variables = &inputs.build.spec.env;
+    args.extend(
+        variables
+            .iter()
+            .flat_map(|var| ["--secret".to_owned(), var.name.clone()]),
+    );
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
     let sign_in = sign_in(&model.auth);
@@ -632,7 +640,14 @@ fn agent_container(inputs: &JobInputs<'_>, agent: &AgentPlanner, context: &str) 
             "plan".to_owned(),
         ]),
         args: Some(args),
-        env: Some([vec![env("HOME", "/tmp")], sign_in.env].concat()),
+        env: Some(
+            [
+                vec![env("HOME", "/tmp")],
+                sign_in.env,
+                variables.iter().map(secret_env).collect(),
+            ]
+            .concat(),
+        ),
         volume_mounts: Some(mounts),
         termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
         ..hardened()

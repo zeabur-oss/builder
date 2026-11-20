@@ -64,6 +64,7 @@ Adjust the flags to your BuildKit setup:
 | `--buildkit` | The address of `buildkitd`. |
 | `--tlsdir` | A folder with `ca.pem`, `cert.pem` and `key.pem`, when `buildkitd` uses mTLS. |
 | `--registry` | A registry images may come from. The default is `docker.io`, `ghcr.io`, `quay.io` and `gcr.io`. Repeat the flag to set your own list. |
+| `--secret` | A build variable that trial builds read with `RUN --mount=type=secret,id=NAME`. Pass its name and set its value in `ZB_SECRET_<NAME>`. Repeat the flag for each variable. |
 | `--out` | The output folder. The default is `/workspace/plan`; the example above uses `./plan`. |
 
 </Step>
@@ -249,7 +250,7 @@ With exit code `2`, act on `reason`. `detail` names what to check or holds the e
 | `ModelFailed` | The model API refused the request or returned an error. Check the provider, the model name, the key or your quota against the API's message in `detail`. |
 | `NoAppFound` | The folder has no app to build, for example only a README. Add the app's code, or point `--context` at the app's folder. |
 | `SeveralApps` | The folder has several apps, such as a monorepo. Point `--context` at one of them. |
-| `NeedsBuildVariable` | The build needs the variable that `detail` names. Trial builds cannot pass variables yet: add it to the Dockerfile yourself, or change the app so the build does not need it. |
+| `NeedsBuildVariable` | The build needs the variable that `detail` names. Pass it with `--secret` and run the tool again. |
 | `NeedsPrivateDependency` | The build needs the private package or repository that `detail` names. Trial builds cannot reach private sources yet: write the Dockerfile yourself. |
 | `UnsupportedPlatform` | The app needs a platform BuildKit cannot build; `detail` names it. Build this app another way. |
 | `BudgetSpent` | The tool reached a limit. See the next section for which one. |
@@ -280,5 +281,7 @@ The tool keeps these from the model:
 - Dependency folders such as `node_modules`, `.venv`, `vendor` and `target`
 
 Every trial build leaves out the same credential files, even when the Dockerfile has `COPY . .`.
+
+The model sees the names of the build variables, not their values. When a trial build's output holds a value, the tool replaces it with the variable's name before the model reads the output.
 
 Trial builds pull images only from the allowed registries. The tool refuses other images, files downloaded with `ADD <url>`, Git sources and `RUN --network=host`. The tool ignores a `# syntax=` line in the Dockerfile and uses the Dockerfile frontend built into `buildkitd`. Trial builds push nothing.

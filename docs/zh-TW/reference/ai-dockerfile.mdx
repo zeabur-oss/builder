@@ -64,6 +64,7 @@ zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
 | `--buildkit` | `buildkitd` 的連線位址。 |
 | `--tlsdir` | `buildkitd` 使用 mTLS 時，指定含有 `ca.pem`、`cert.pem`、`key.pem` 的資料夾。 |
 | `--registry` | 允許拉取映像檔的 registry。預設為 `docker.io`、`ghcr.io`、`quay.io`、`gcr.io`；重複傳入此參數可設定自己的清單。 |
+| `--secret` | 試建置用 `RUN --mount=type=secret,id=NAME` 讀取的建置變數。傳入變數名稱，值放在 `ZB_SECRET_<NAME>`。每個變數各傳一次。 |
 | `--out` | 輸出資料夾，預設為 `/workspace/plan`，上面的例子改成 `./plan`。 |
 
 </Step>
@@ -249,7 +250,7 @@ CMD ["node", "server.js"]
 | `ModelFailed` | 模型 API 拒絕請求，或呼叫失敗時，依照 `detail` 的 API 訊息檢查供應商、模型名稱、金鑰或額度。 |
 | `NoAppFound` | 資料夾內沒有可建置的應用程式，例如只有 README；加入程式碼，或將 `--context` 指向應用程式資料夾。 |
 | `SeveralApps` | 找到多個應用程式，例如 monorepo；將 `--context` 指向其中一個。 |
-| `NeedsBuildVariable` | 建置需要 `detail` 指出的變數。試建置目前無法帶入變數，請自行在 Dockerfile 加上這個變數，或調整程式讓建置時不需要它。 |
+| `NeedsBuildVariable` | 建置需要 `detail` 指出的變數。用 `--secret` 傳入這個變數，再執行一次工具。 |
 | `NeedsPrivateDependency` | 建置需要 `detail` 指出的私有套件或儲存庫。試建置目前無法存取私有來源，請自行撰寫 Dockerfile。 |
 | `UnsupportedPlatform` | 應用程式需要 BuildKit 無法建置的平台，`detail` 會說明是哪個平台。這類應用程式需要另外的建置方式。 |
 | `BudgetSpent` | 已達工具限制，對照下一節，確認碰到哪一項上限。 |
@@ -280,5 +281,7 @@ CMD ["node", "server.js"]
 - `node_modules`、`.venv`、`vendor`、`target` 等相依套件資料夾
 
 每次試建置也會排除同一組認證資訊檔案，就算 Dockerfile 寫了 `COPY . .`，這些檔案也不會進到建置。
+
+模型看得到建置變數的名稱，看不到變數值。試建置的輸出如果出現變數值，工具會先把它換成變數名稱，再交給模型。
 
 試建置只能從允許的 registry 拉取映像檔，其他映像檔、用 `ADD <url>` 下載的檔案和 Git 來源都不允許，`RUN --network=host` 也不允許。工具會忽略 Dockerfile 的 `# syntax=`，改用 buildkitd 內建的 Dockerfile frontend。試建置不會推送映像檔。

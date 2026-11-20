@@ -13,7 +13,7 @@ use crate::http::HyperClient;
 use crate::output::{self, WriteError};
 use crate::plan::{Details, Info, Outcome, Plan, Reason, Source};
 use crate::repo::{Repo, dockerignore, rules_of};
-use crate::trial::{Attempt, Buildctl, TrialBuild};
+use crate::trial::{Attempt, Buildctl, SECRET_ENV_PREFIX, Secret, TrialBuild};
 
 /// Writes a Dockerfile for a repository and trial-builds it on a buildkitd.
 ///
@@ -53,6 +53,10 @@ pub(crate) struct Args {
     /// Registries images may come from.
     #[arg(long = "registry", default_values = ["docker.io", "ghcr.io", "quay.io", "gcr.io"])]
     registries: Vec<String>,
+    /// A build variable the trial builds get as a secret, by name; its value is in
+    /// `ZB_SECRET_<name>`.
+    #[arg(long = "secret")]
+    secrets: Vec<String>,
 }
 
 /// The variable with the model API key. The build Job sets it from the namespace's Secret.
@@ -100,6 +104,14 @@ pub(crate) async fn run(args: Args) -> Result<bool, RunError> {
         work: std::env::temp_dir().join(format!("zeabur-builder-agent-{}", std::process::id())),
         registries: args.registries.clone(),
         timeout: limits.per_build,
+        secrets: args
+            .secrets
+            .iter()
+            .map(|name| Secret {
+                name: name.clone(),
+                value: std::env::var(format!("{SECRET_ENV_PREFIX}{name}")).unwrap_or_default(),
+            })
+            .collect(),
     };
     let previous = match &args.previous {
         Some(dir) => read_previous(dir).await,
