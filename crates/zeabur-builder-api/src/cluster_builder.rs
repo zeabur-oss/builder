@@ -3,12 +3,16 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use kube::CustomResource;
+use kube_derive::CustomResource;
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "schema")]
 use crate::build::MAX_CONDITIONS;
-use crate::common::{Condition, DURATION_PATTERN, MAX_NAME, SecretKeyRef};
+use crate::common::{Condition, SecretKeyRef};
+#[cfg(feature = "schema")]
+use crate::common::{DURATION_PATTERN, MAX_NAME};
 
 /// Longest image reference.
 pub const MAX_IMAGE: usize = 512;
@@ -22,11 +26,13 @@ pub const MAX_OPT_VALUE: usize = 512;
 /// Longest quantity in the status.
 pub const MAX_QUANTITY: usize = 64;
 /// Longest model provider id, such as a federation rule.
+#[cfg(feature = "schema")]
 const MAX_ID: usize = 256;
 
 /// A way to build. Every builder reduces to the same shape: an optional planner that writes files
 /// into `/workspace/plan`, then a `BuildKit` frontend with options that reads them.
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[kube(
     group = "builder.zeabur.com",
     version = "v1alpha1",
@@ -48,6 +54,7 @@ const MAX_ID: usize = 256;
     ),
     doc = "How Zeabur Builder plans and builds: Dockerfile, Railpack or the agent."
 )]
+#[cfg_attr(not(feature = "schema"), kube(schema = "disabled"))]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterBuilderSpec {
     /// What the planning step does.
@@ -60,7 +67,8 @@ pub struct ClusterBuilderSpec {
 /// The controller's settings for every build, whatever the builder. Each value is the
 /// controller's command-line setting; a Namespace annotation can change some of them for its
 /// builds.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterBuilderStatus {
     /// What one build gets on its namespace's buildkitd when the Namespace annotations
@@ -78,13 +86,14 @@ pub struct ClusterBuilderStatus {
     /// `Ready` is `True` once the controller that holds the lease has written this status for the
     /// current generation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = MAX_CONDITIONS))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_CONDITIONS)))]
     pub conditions: Vec<Condition>,
 }
 
 /// One build's CPU and memory by default, laid out as Kubernetes writes `resources`. A missing
 /// value means the controller sets none.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BuildDefaults {
     /// `--buildkitd-cpu-request` and `--buildkitd-memory-request`.
@@ -96,37 +105,40 @@ pub struct BuildDefaults {
 }
 
 /// A CPU and a memory quantity.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BuildQuantities {
     /// CPU, such as `100m` or `1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
     pub cpu: Option<Quantity>,
     /// Memory, such as `256Mi`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
     pub memory: Option<Quantity>,
 }
 
 /// The most CPU and memory one build may get.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BuildCeiling {
     /// `--buildkitd-cpu-max`; missing: no ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
     pub cpu: Option<Quantity>,
     /// `--buildkitd-memory-max`; missing: no ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", length(max = MAX_QUANTITY))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
     pub memory: Option<Quantity>,
 }
 
 /// The planners.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
-#[schemars(transform = crate::union::tagged)]
+#[cfg_attr(feature = "schema", schemars(transform = crate::union::tagged))]
 pub enum Planner {
     /// The repository's own Dockerfile; nothing to plan.
     Dockerfile,
@@ -143,15 +155,16 @@ pub enum Planner {
 }
 
 /// A planner's container.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PlannerSpec {
     /// The planner image, pinned by digest in production.
-    #[schemars(length(min = 1, max = MAX_IMAGE))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_IMAGE)))]
     pub image: String,
     /// How long planning may take. Default `10m`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 32), regex(pattern = DURATION_PATTERN))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 32), regex(pattern = DURATION_PATTERN)))]
     pub timeout: Option<String>,
     /// CPU and memory for the plan container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,7 +172,8 @@ pub struct PlannerSpec {
 }
 
 /// The agent planner and the model it calls.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPlanner {
     /// The planner's container.
@@ -170,9 +184,10 @@ pub struct AgentPlanner {
 }
 
 /// The model of the `agent` planner.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
-#[schemars(extend("x-kubernetes-validations" = [
+#[cfg_attr(feature = "schema", schemars(extend("x-kubernetes-validations" = [
     {
         "rule": "self.auth.type != 'anthropicFederation' || self.provider == 'anthropic'",
         "message": "anthropicFederation needs provider anthropic",
@@ -181,18 +196,18 @@ pub struct AgentPlanner {
         "rule": "self.auth.type != 'openaiFederation' || self.provider == 'openai'",
         "message": "openaiFederation needs provider openai",
     },
-]))]
+])))]
 pub struct ModelSpec {
     /// The provider, by Rig's name, such as `anthropic`, `openai`, `gcp.gemini` or `openrouter`.
     /// It sets the endpoint and the API format.
-    #[schemars(length(min = 1, max = 64))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = 64)))]
     pub provider: String,
     /// The model, as the provider names it, such as `claude-opus-5-5`.
-    #[schemars(length(min = 1, max = 256))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = 256)))]
     pub model: String,
     /// The model API's base URL, for a proxy or a self-hosted endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 2048))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 2048)))]
     pub base_url: Option<String>,
     /// How the run signs in to the model API.
     pub auth: ModelAuth,
@@ -200,13 +215,14 @@ pub struct ModelSpec {
 
 /// How a run signs in to the model API. A run waits with `ModelKeyMissing` while the Secret or
 /// the service account it names is missing from the `Build`'s namespace.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-#[schemars(transform = crate::union::tagged)]
+#[cfg_attr(feature = "schema", schemars(transform = crate::union::tagged))]
 pub enum ModelAuth {
     /// An API key in a Secret.
     ApiKey {
@@ -261,26 +277,27 @@ pub enum Credential<'a> {
 }
 
 /// Anthropic's federation rule. The projected token's audience is `https://api.anthropic.com`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AnthropicFederation {
     /// The Kubernetes service account, in each `Build`'s own namespace, whose token the run
     /// exchanges.
-    #[schemars(length(min = 1, max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
     pub service_account_name: String,
     /// The federation rule, `fdrl_…`.
-    #[schemars(length(min = 1, max = MAX_ID))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
     pub federation_rule_id: String,
     /// The organization.
-    #[schemars(length(min = 1, max = MAX_ID))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
     pub organization_id: String,
     /// The workspace, `wrkspc_…`, needed when the rule has several.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = MAX_ID))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
     pub workspace_id: Option<String>,
     /// Anthropic's service account, `svac_…`, when the rule does not name one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = MAX_ID))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
     pub service_account_id: Option<String>,
 }
 
@@ -291,18 +308,19 @@ impl AnthropicFederation {
 
 /// OpenAI's workload identity provider. The projected token's audience is
 /// `https://api.openai.com/v1`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAiFederation {
     /// The Kubernetes service account, in each `Build`'s own namespace, whose token the run
     /// exchanges.
-    #[schemars(length(min = 1, max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
     pub service_account_name: String,
     /// The workload identity provider.
-    #[schemars(length(min = 1, max = MAX_ID))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
     pub identity_provider_id: String,
     /// OpenAI's service account the token maps to.
-    #[schemars(length(min = 1, max = MAX_ID))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
     pub service_account_id: String,
 }
 
@@ -312,7 +330,8 @@ impl OpenAiFederation {
 }
 
 /// CPU and memory, as Kubernetes quantities.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct Resources {
     /// Requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -323,41 +342,44 @@ pub struct Resources {
 }
 
 /// A CPU and memory amount.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct ResourceList {
     /// CPU, such as `500m`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 32))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 32)))]
     pub cpu: Option<String>,
     /// Memory, such as `1Gi`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 32))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 32)))]
     pub memory: Option<String>,
 }
 
 /// The `BuildKit` frontend.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct FrontendSpec {
     /// Built into buildkitd, or an image.
     #[serde(flatten)]
     pub kind: Frontend,
     /// Frontend options added to every build, as `buildctl --opt key=value`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    #[schemars(extend(
+    #[cfg_attr(feature = "schema", schemars(extend(
         "maxProperties" = MAX_OPTS,
         "additionalProperties" = {"type": "string", "maxLength": MAX_OPT_VALUE},
         "x-kubernetes-validations" = [{
             "rule": format!("self.all(k, size(k) <= {MAX_OPT_KEY})"),
             "message": format!("an option name is at most {MAX_OPT_KEY} characters"),
         }],
-    ))]
+    )))]
     pub opts: BTreeMap<String, String>,
 }
 
 /// Frontend kinds.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "type")]
-#[schemars(transform = crate::union::tagged)]
+#[cfg_attr(feature = "schema", schemars(transform = crate::union::tagged))]
 pub enum Frontend {
     /// The Dockerfile frontend in buildkitd.
     #[serde(rename = "dockerfile.v0")]
@@ -367,7 +389,7 @@ pub enum Frontend {
     Gateway {
         /// The frontend image, such as `ghcr.io/railwayapp/railpack-frontend:v0.43.0` for
         /// `railpack`, whose version must match the planner's, or `docker/dockerfile:1`.
-        #[schemars(length(min = 1, max = MAX_IMAGE))]
+        #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_IMAGE)))]
         source: String,
     },
 }

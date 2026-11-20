@@ -1,19 +1,28 @@
 //! `BuildRun`: one build of one commit or archive.
 
-#![expect(
-    unreachable_pub,
-    reason = "the KubeSchema derive re-emits these types inside a private module"
+#![cfg_attr(
+    feature = "schema",
+    expect(
+        unreachable_pub,
+        reason = "the KubeSchema derive re-emits these types inside a private module"
+    )
 )]
 
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
-use kube::{CustomResource, KubeSchema};
+use kube_derive::CustomResource;
+#[cfg(feature = "schema")]
+use kube_derive::KubeSchema;
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "schema")]
 use crate::build::MAX_CONDITIONS;
-use crate::common::{Condition, DIGEST_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN};
+use crate::common::Condition;
+#[cfg(feature = "schema")]
+use crate::common::{DIGEST_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN};
 
 /// The most steps a `BuildRun` records: the last ones, in the order they started.
 pub const MAX_STEPS: usize = 20;
@@ -23,7 +32,8 @@ pub const MAX_STEP_TEXT: usize = 120;
 pub const MAX_OBSERVED_REBUILD: usize = 1024;
 
 /// One build of one commit or archive. The spec is immutable: to build again, create another.
-#[derive(CustomResource, KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(KubeSchema))]
 #[kube(
     group = "builder.zeabur.com",
     version = "v1alpha1",
@@ -62,18 +72,19 @@ pub const MAX_OBSERVED_REBUILD: usize = 1024;
     ),
     doc = "One build of one Git commit or uploaded archive by Zeabur Builder."
 )]
-#[x_kube(validation = Rule::new("self == oldSelf").message("a BuildRun's spec is immutable; create another"))]
+#[cfg_attr(not(feature = "schema"), kube(schema = "disabled"))]
+#[cfg_attr(feature = "schema", x_kube(validation = Rule::new("self == oldSelf").message("a BuildRun's spec is immutable; create another")))]
 #[serde(rename_all = "camelCase")]
 pub struct BuildRunSpec {
     /// The `Build`.
-    #[schemars(length(min = 1, max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
     pub build_ref: String,
     /// The full commit SHA of a Git source, or the manifest digest of an archive source.
-    #[schemars(length(max = MAX_REVISION), regex(pattern = REVISION_PATTERN))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_REVISION), regex(pattern = REVISION_PATTERN)))]
     pub revision: String,
     /// The full name of the ref `revision` was resolved from, such as `refs/heads/master`.
     #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = crate::build::MAX_RESOLVED_REF))]
+    #[cfg_attr(feature = "schema", schemars(length(max = crate::build::MAX_RESOLVED_REF)))]
     pub git_ref: Option<String>,
     /// What started it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,7 +92,8 @@ pub struct BuildRunSpec {
 }
 
 /// What started a `BuildRun`.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Trigger {
     /// A push event.
@@ -93,7 +105,8 @@ pub enum Trigger {
 }
 
 /// Progress and result.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct BuildRunStatus {
     /// Where it is.
@@ -104,37 +117,40 @@ pub struct BuildRunStatus {
     pub reason: Option<Reason>,
     /// Details for people, at most 1 KiB from the Job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 4096))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 4096)))]
     pub message: Option<String>,
     /// The Job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_NAME)))]
     pub job_ref: Option<String>,
     /// The namespace's buildkitd Pod, such as `buildkitd-team-a-0`, set once the run is admitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_NAME)))]
     pub buildkitd_instance: Option<String>,
     /// The pushed manifest's digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 71), regex(pattern = DIGEST_PATTERN)))]
     pub image_digest: Option<String>,
     /// The tags pushed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = 16), inner(length(max = 128)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(length(max = 16), inner(length(max = 128)))
+    )]
     pub tags: Vec<String>,
     /// The `ClusterBuilder` the Job built with, read from the Job when the run finishes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_NAME))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_NAME)))]
     pub builder: Option<String>,
     /// The repository the Job pushed the image and the plan to, read from the Job when the run
     /// finishes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 1024))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 1024)))]
     pub image: Option<String>,
     /// The plan artifact in `image` the run built with: the one its planner wrote, or the saved
     /// one it restored (`planSource`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 71), regex(pattern = DIGEST_PATTERN)))]
     pub plan_digest: Option<String>,
     /// Where the plan came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,16 +160,22 @@ pub struct BuildRunStatus {
     pub plan: Option<PlanReport>,
     /// Base images, `name@sha256:…`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = 10), inner(length(max = 1024)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(length(max = 10), inner(length(max = 1024)))
+    )]
     pub base_images: Vec<String>,
     /// Ports the image declares in its `ExposedPorts`, as the image config writes them
     /// (`3000/tcp`), sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = 32), inner(length(max = 32)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(length(max = 32), inner(length(max = 32)))
+    )]
     pub exposed_ports: Vec<String>,
     /// Time per phase (`fetch`, `plan`, `build`, `push`), as durations such as `82.0s`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    #[schemars(extend("maxProperties" = 8, "additionalProperties" = {"type": "string", "maxLength": 32}))]
+    #[cfg_attr(feature = "schema", schemars(extend("maxProperties" = 8, "additionalProperties" = {"type": "string", "maxLength": 32})))]
     pub phase_durations: BTreeMap<String, String>,
     /// Build steps and cache hits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,29 +189,29 @@ pub struct BuildRunStatus {
     pub check_run_id: Option<i64>,
     /// When the Job was created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", extend("format" = "date-time")))]
     pub start_time: Option<Timestamp>,
     /// When it finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", extend("format" = "date-time")))]
     pub completion_time: Option<Timestamp>,
     /// When the run last gave its cluster slot back to a run that could start. The queue puts a
     /// run that gave its slot back behind every run that did so earlier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", extend("format" = "date-time")))]
     pub slot_released_at: Option<Timestamp>,
     /// When the `Build`'s notify targets were sent this run's image, whatever they answered.
     /// Set once; a run with it is not sent again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", extend("format" = "date-time")))]
     pub notified_at: Option<Timestamp>,
     /// The last build steps, in the order they started. Set when the run finishes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = MAX_STEPS))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_STEPS)))]
     pub steps: Vec<Step>,
     /// How many earlier steps `steps` leaves out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 1)))]
     pub omitted_steps: Option<i64>,
     /// The step that failed, also when `steps` leaves it out. `fetch` or `plan` when the run
     /// stopped while fetching the source or planning.
@@ -198,23 +220,24 @@ pub struct BuildRunStatus {
     /// The run's own `builder.zeabur.com/rebuild` annotation: the rebuild request it answers.
     /// Not set for a value longer than 1024 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_OBSERVED_REBUILD))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_OBSERVED_REBUILD)))]
     pub observed_rebuild: Option<String>,
     /// `Reconciling`, `Stalled` and `Ready`, in kstatus terms. `Reconciling` is `True` while
     /// the phase is `Pending`, `Planning` or `Building`; `Stalled` is `True` on `Failed` and
     /// `Cancelled`, with the run's `reason`; `Ready` is `True` on `Succeeded` and `False`
     /// otherwise. `Reconciling` and `Stalled` are left out when they do not hold.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = MAX_CONDITIONS))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_CONDITIONS)))]
     pub conditions: Vec<Condition>,
 }
 
 /// One build step: a `BuildKit` vertex, or `fetch` or `plan`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct Step {
     /// Its name, such as `[2/3] RUN npm ci`.
-    #[schemars(length(max = MAX_STEP_TEXT))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_STEP_TEXT)))]
     pub name: String,
     /// Where it got to.
     pub state: StepState,
@@ -223,20 +246,21 @@ pub struct Step {
     pub cached: bool,
     /// When it started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", extend("format" = "date-time")))]
     pub start_time: Option<Timestamp>,
     /// When it finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", extend("format" = "date-time")))]
     pub completion_time: Option<Timestamp>,
     /// Its error.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    #[schemars(length(max = MAX_STEP_TEXT))]
+    #[cfg_attr(feature = "schema", schemars(length(max = MAX_STEP_TEXT)))]
     pub message: String,
 }
 
 /// Where a [`Step`] got to.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum StepState {
     /// Started, and not reported finished.
     Running,
@@ -251,7 +275,8 @@ pub enum StepState {
 }
 
 /// The phases: `Pending → Planning → Building → Succeeded | Failed | Cancelled`.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum Phase {
     /// Waiting for capacity, or for its Job to start.
     Pending,
@@ -273,7 +298,8 @@ pub enum Phase {
 
 /// Why a `BuildRun` waits or failed, written as its name. The `Build`'s `Ready` condition
 /// repeats it.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum Reason {
     /// The namespace or the cluster runs as many builds as it may.
     QuotaExceeded,
@@ -312,7 +338,8 @@ pub enum Reason {
 }
 
 /// Where a plan came from.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum PlanSource {
     /// Planned in this run.
@@ -325,7 +352,8 @@ pub enum PlanSource {
 }
 
 /// What the `agent` planner reported: where the Dockerfile came from, or why it stopped.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PlanReport {
     /// Where the Dockerfile came from, when there is one.
@@ -336,43 +364,50 @@ pub struct PlanReport {
     pub stopped: Option<PlanStop>,
     /// What the user must do, when it stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = 1024))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 1024)))]
     pub detail: Option<String>,
     /// Whether the model was called.
     #[serde(default)]
     pub model_called: bool,
     /// Input tokens over every model call.
     #[serde(default)]
-    #[schemars(range(min = 0))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 0)))]
     pub input_tokens: i64,
     /// Output tokens over every model call.
     #[serde(default)]
-    #[schemars(range(min = 0))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 0)))]
     pub output_tokens: i64,
     /// The port the app listens on, when the agent wrote the Dockerfile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 65535))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = 65535)))]
     pub port: Option<i32>,
     /// Such as `node`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    #[schemars(length(max = 64))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 64)))]
     pub language: String,
     /// Such as `24.9`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    #[schemars(length(max = 64))]
+    #[cfg_attr(feature = "schema", schemars(length(max = 64)))]
     pub version: String,
     /// Variables the build reads as secrets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = 64), inner(length(max = 256)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(length(max = 64), inner(length(max = 256)))
+    )]
     pub build_variables: Vec<String>,
     /// Variables the app reads when it starts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = 64), inner(length(max = 256)))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(length(max = 64), inner(length(max = 256)))
+    )]
     pub runtime_variables: Vec<String>,
 }
 
 /// Where the `agent` planner's Dockerfile came from, in the order it tries them.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum DockerfileSource {
     /// The repository's own Dockerfile.
@@ -388,7 +423,8 @@ pub enum DockerfileSource {
 }
 
 /// Why the `agent` planner stopped without a Dockerfile.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub enum PlanStop {
     /// The model API key or service account token was missing or refused.
     ModelKeyMissing,
@@ -415,13 +451,14 @@ pub enum PlanStop {
 }
 
 /// Build steps and cache hits.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct CacheStats {
     /// Distinct steps.
-    #[schemars(range(min = 0))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 0)))]
     pub total: i64,
     /// Steps answered from cache.
-    #[schemars(range(min = 0))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 0)))]
     pub cached: i64,
 }
 

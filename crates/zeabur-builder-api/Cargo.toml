@@ -14,10 +14,16 @@ categories = ["development-tools::build-utils"]
 [lints]
 workspace = true
 
+[features]
+default = ["schema"]
+# `JsonSchema` for every type and the CRDs, for the controller and the CRD generator.
+schema = ["dep:schemars", "kube/derive"]
+
 [dependencies]
 k8s-openapi.workspace = true
 kube.workspace = true
-schemars.workspace = true
+kube-derive.workspace = true
+schemars = { workspace = true, optional = true }
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
