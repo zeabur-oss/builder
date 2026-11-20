@@ -43,7 +43,7 @@ registry 决定还有谁能读取归档文件。Zeabur Catalog 的 Zot 与测试
 
 Helm chart 的 ValidatingAdmissionPolicies 将控制器 ServiceAccount 创建的资源限制为：
 
-- 构建 Job：使用 chart 指定的镜像，以非 root 用户运行，不使用特权模式、不访问主机，只挂载 emptyDir 和 Secret 卷，不挂载 ServiceAccount 令牌，且不得位于 `kube-*`、控制器自身或 registry 的 Namespace。
+- 构建 Job：使用 chart 指定的镜像，以非 root 用户运行，不使用特权模式、不访问主机，只挂载 emptyDir 和 Secret 卷、自己的构建计划和用于模型提供商的服务账号令牌，拿不到 Kubernetes API 的令牌，且不得位于 `kube-*`、控制器自身或 registry 的 Namespace。
 - buildkitd StatefulSet：使用 chart 指定的 buildkitd 镜像，只能位于控制器的 Namespace，不访问主机，也不挂载 ServiceAccount 令牌。
 
 即使有这些限制，取得控制器令牌的攻击者仍能读取所有允许运行构建的 Namespace 内的 Secret。详见[控制器的权限](../operations/controller-permissions.mdx)。

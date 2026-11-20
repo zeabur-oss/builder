@@ -3,7 +3,7 @@
 //! ```text
 //! zeabur-builder-job fetch archive [--plain-http] <repository> <digest> <dir>
 //! zeabur-builder-job plan restore [--plain-http] <repository> <digest> <dir>
-//! zeabur-builder-job build <plan JSON>
+//! zeabur-builder-job build <plan file>
 //! ```
 //!
 //! `fetch archive` is the `fetch` container of an archive source: it pulls the archive
@@ -15,12 +15,12 @@
 //! the agent's `info.json`, it writes it to `/dev/termination-log` as reused. An error fails the
 //! run.
 //!
-//! `build` is the `build` container. Its one argument is a [`BuildPlan`] as JSON, written by
-//! `zeabur-builder-jobspec`. It runs each build in order, prints their `rawjson` progress for
-//! people, counts cached steps, records the steps, reads each digest from its metadata file, and
-//! writes the result to `/dev/termination-log`, where the controller reads it from the Pod's status
-//! ([`zeabur_builder_core::result`]). The same JSON is the last line on stdout. The image is the
-//! last build's digest and tags.
+//! `build` is the `build` container. Its one argument is a file with a [`BuildPlan`] as JSON,
+//! written by `zeabur-builder-jobspec`. It runs each build in order, prints their `rawjson`
+//! progress for people, counts cached steps, records the steps, reads each digest from its metadata
+//! file, and writes the result to `/dev/termination-log`, where the controller reads it from the
+//! Pod's status ([`zeabur_builder_core::result`]). The same JSON is the last line on stdout. The
+//! image is the last build's digest and tags.
 //!
 //! After a success it reads the pushed image's config from the registry (over HTTP when the plan
 //! says `plainHttp`) and reports its `ExposedPorts`; failing to read them does not fail the
@@ -76,10 +76,10 @@ enum UsageError {
     Job,
     #[error("usage: fetch archive|plan restore [--plain-http] <repository> <digest> <dir>")]
     Fetch,
-    #[error("usage: build <plan JSON>")]
+    #[error("usage: build <plan file>")]
     Build,
-    #[error("cannot read the build plan: {0}")]
-    Plan(String),
+    #[error("cannot read the build plan {path}: {message}")]
+    Plan { path: String, message: String },
     #[error("the build plan has no build")]
     NoBuild,
 }
@@ -150,13 +150,17 @@ impl StepError {
     }
 }
 
-/// Reads the argument of `build`.
-fn parse_plan(args: &[String]) -> Result<BuildPlan, UsageError> {
-    let [plan] = args else {
+/// Reads the plan file `build` names.
+fn read_plan(args: &[String]) -> Result<BuildPlan, UsageError> {
+    let [path] = args else {
         return Err(UsageError::Build);
     };
-    let plan: BuildPlan =
-        serde_json::from_str(plan).map_err(|e| UsageError::Plan(e.to_string()))?;
+    let failed = |message: String| UsageError::Plan {
+        path: path.clone(),
+        message,
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| failed(e.to_string()))?;
+    let plan: BuildPlan = serde_json::from_str(&text).map_err(|e| failed(e.to_string()))?;
     if plan.builds.is_empty() {
         return Err(UsageError::NoBuild);
     }
@@ -575,7 +579,7 @@ async fn main() -> ExitCode {
             }
         };
     }
-    let result = match parse_plan(raw.get(1..).unwrap_or_default()) {
+    let result = match read_plan(raw.get(1..).unwrap_or_default()) {
         Ok(plan) => run(&plan).await,
         Err(usage) => BuildResult {
             reason: Some(FailureReason::BuildFailed),
@@ -603,21 +607,35 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_plan() {
-        let plan = parse_plan(&strings(&[
+    fn reads_the_plan_file() {
+        let dir =
+            std::env::temp_dir().join(format!("zeabur-builder-plan-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let read = |name: &str, json: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, json).unwrap();
+            read_plan(&[path.display().to_string()])
+        };
+        let plan = read(
+            "plan.json",
             r#"{"plainHttp":true,"builds":[{"command":["buildctl","build"],"metadataFile":"/m.json","output":{"repository":"r/a"}}]}"#,
-        ]))
+        )
         .unwrap();
         assert!(plan.plain_http);
         assert_eq!(plan.builds[0].command, strings(&["buildctl", "build"]));
         assert_eq!(
-            parse_plan(&strings(&[r#"{"builds":[]}"#])),
+            read("empty.json", r#"{"builds":[]}"#),
             Err(UsageError::NoBuild)
         );
-        assert_eq!(parse_plan(&[]), Err(UsageError::Build));
         assert!(matches!(
-            parse_plan(&strings(&[r#"{"builds":[],"commands":[]}"#])),
-            Err(UsageError::Plan(_))
+            read("old.json", r#"{"builds":[],"commands":[]}"#),
+            Err(UsageError::Plan { .. })
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(read_plan(&[]), Err(UsageError::Build));
+        assert!(matches!(
+            read_plan(&strings(&["/nonexistent/plan.json"])),
+            Err(UsageError::Plan { .. })
         ));
     }
 

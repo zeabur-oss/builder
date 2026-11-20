@@ -27,7 +27,7 @@ Helm chart 提供兩個 ValidatingAdmissionPolicy，用來限制控制器的 Ser
 - 映像檔只能使用 `jobImage`、`railpackImage` 與 `admissionPolicy.extraImages`。
 - 不允許使用特權模式、額外的 capabilities，也不允許使用主機的網路、PID、IPC、連接埠或路徑。
 - 容器必須以非 root 使用者執行，且不能提升權限。
-- Job 只能掛載 emptyDir 和 Secret 磁碟區，以及給模型供應商（Anthropic 或 OpenAI）audience 的服務帳戶權杖。
+- Job 只能掛載 emptyDir 和 Secret 磁碟區、自己的建置計畫（Pod 的註解），以及給模型供應商（Anthropic 或 OpenAI）audience 的服務帳戶權杖。
 - Job 拿不到 Kubernetes API 的權杖。只有用工作負載身分聯合登入的 `agent` 建置器，才會讓 Job 以其他 ServiceAccount 執行。
 - 不得在 `kube-*` Namespace、控制器所在的 Namespace、registry 所在的 Namespace，或 `admissionPolicy.extraDeniedNamespaces` 中的 Namespace 建立 Job。
 

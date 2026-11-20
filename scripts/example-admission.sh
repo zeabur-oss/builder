@@ -73,6 +73,13 @@ job "$a" | token '{"serviceAccountToken": {"audience": "https://kubernetes.defau
   check fail "a Job with a token for another audience"
 job "$a" | token '{"configMap": {"name": "kube-root-ca.crt"}}' |
   check fail "a Job with another projected source"
+plan() { # $1 = a downward API field path
+  jq --arg path "$1" '.spec.template.spec.volumes += [{name: "build-plan",
+    downwardAPI: {items: [{path: "plan.json", fieldRef: {fieldPath: $path}}]}}]'
+}
+job "$a" | plan "metadata.annotations['builder.zeabur.com/build-plan']" |
+  check pass "a Job with its build plan"
+job "$a" | plan "metadata.labels" | check fail "a Job with other Pod fields"
 job "$a" | jq '.spec.template.spec.automountServiceAccountToken = true' |
   check fail "a Job with a ServiceAccount token"
 job "$a" | jq "$privileged" | check pass "an admin's privileged Job is not the policy's concern" admin

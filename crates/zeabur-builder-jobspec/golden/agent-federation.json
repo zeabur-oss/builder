@@ -31,6 +31,46 @@
     "template": {
       "metadata": {
         "annotations": {
+          "builder.zeabur.com/build-plan": {
+            "builds": [
+              {
+                "command": [
+                  "buildctl",
+                  "--addr",
+                  "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
+                  "--tlsdir",
+                  "/etc/zeabur-builder/buildkit",
+                  "build",
+                  "--progress",
+                  "rawjson",
+                  "--local",
+                  "context=/workspace/src",
+                  "--frontend",
+                  "dockerfile.v0",
+                  "--local",
+                  "dockerfile=/workspace/plan",
+                  "--opt",
+                  "filename=Dockerfile"
+                ],
+                "metadataFile": "/workspace/out/metadata.json",
+                "output": {
+                  "annotations": {
+                    "org.opencontainers.image.revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+                    "org.opencontainers.image.source": "https://github.com/acme/web"
+                  },
+                  "repository": "registry.internal/team-a/api",
+                  "tags": [
+                    "main-1761058800-3e1a9c2",
+                    "latest"
+                  ]
+                }
+              }
+            ],
+            "savePlan": {
+              "repository": "registry.internal/team-a/api",
+              "tag": "zeabur-plan-0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b"
+            }
+          },
           "builder.zeabur.com/image": "registry.internal/team-a/api",
           "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
         },
@@ -48,46 +88,7 @@
             "command": [
               "zeabur-builder-job",
               "build",
-              {
-                "builds": [
-                  {
-                    "command": [
-                      "buildctl",
-                      "--addr",
-                      "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
-                      "--tlsdir",
-                      "/etc/zeabur-builder/buildkit",
-                      "build",
-                      "--progress",
-                      "rawjson",
-                      "--local",
-                      "context=/workspace/src",
-                      "--frontend",
-                      "dockerfile.v0",
-                      "--local",
-                      "dockerfile=/workspace/plan",
-                      "--opt",
-                      "filename=Dockerfile"
-                    ],
-                    "metadataFile": "/workspace/out/metadata.json",
-                    "output": {
-                      "annotations": {
-                        "org.opencontainers.image.revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-                        "org.opencontainers.image.source": "https://github.com/acme/web"
-                      },
-                      "repository": "registry.internal/team-a/api",
-                      "tags": [
-                        "main-1761058800-3e1a9c2",
-                        "latest"
-                      ]
-                    }
-                  }
-                ],
-                "savePlan": {
-                  "repository": "registry.internal/team-a/api",
-                  "tag": "zeabur-plan-0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b"
-                }
-              }
+              "/etc/zeabur-builder/build-plan/plan.json"
             ],
             "env": [
               {
@@ -137,6 +138,11 @@
               {
                 "mountPath": "/etc/zeabur-builder/registry",
                 "name": "registry-auth",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/etc/zeabur-builder/build-plan",
+                "name": "build-plan",
                 "readOnly": true
               }
             ]
@@ -331,6 +337,19 @@
               "optional": false,
               "secretName": "api-x7k2p-registry"
             }
+          },
+          {
+            "downwardAPI": {
+              "items": [
+                {
+                  "fieldRef": {
+                    "fieldPath": "metadata.annotations['builder.zeabur.com/build-plan']"
+                  },
+                  "path": "plan.json"
+                }
+              ]
+            },
+            "name": "build-plan"
           },
           {
             "name": "model-token",

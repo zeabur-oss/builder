@@ -11,8 +11,8 @@ use zeabur_builder_api::build::{
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{
-    AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, ModelAuth, ModelSpec, Planner,
-    PlannerSpec,
+    AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, MAX_OPTS, ModelAuth, ModelSpec,
+    Planner, PlannerSpec,
 };
 use zeabur_builder_api::common::SecretKeyRef;
 
@@ -194,7 +194,7 @@ static MEMORY: std::sync::LazyLock<JobMemory> = std::sync::LazyLock::new(|| JobM
 /// Compares `job` with `golden/<name>.json`, with the build plan shown as JSON, not as a string.
 fn golden(name: &str, expected: &str, job: &Job) {
     let mut job = serde_json::to_value(job).unwrap();
-    let plan = &mut job["spec"]["template"]["spec"]["containers"][0]["command"][2];
+    let plan = &mut job["spec"]["template"]["metadata"]["annotations"][annotations::BUILD_PLAN];
     *plan = serde_json::from_str(plan.as_str().unwrap()).unwrap();
     let actual = serde_json::to_string_pretty(&job).unwrap() + "\n";
     if std::env::var_os("ZEABUR_BUILDER_BLESS").is_some() {
@@ -205,11 +205,11 @@ fn golden(name: &str, expected: &str, job: &Job) {
     assert_eq!(expected, actual, "golden/{name}.json is stale");
 }
 
-/// The plan the build container runs, with the kubelet's `$$` read back as `$`.
-fn build_plan_of(spec: &PodSpec) -> BuildPlan {
-    let command = spec.containers[0].command.as_ref().unwrap();
-    assert_eq!(command[..2], ["zeabur-builder-job", "build"]);
-    serde_json::from_str(&command[2].replace("$$", "$")).unwrap()
+/// The plan the build container runs.
+fn build_plan_of(job: &Job) -> BuildPlan {
+    let template = &job.spec.as_ref().unwrap().template;
+    let annotations = template.metadata.as_ref().unwrap().annotations.as_ref();
+    serde_json::from_str(&annotations.unwrap()[annotations::BUILD_PLAN]).unwrap()
 }
 
 fn tags() -> Vec<String> {
@@ -358,8 +358,8 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
             .flatten()
             .any(|m| m.name == "registry-auth")
     };
-    let saves = |spec: &PodSpec| {
-        build_plan_of(spec).save_plan
+    let saves = |job: &Job| {
+        build_plan_of(job).save_plan
             == Some(Image {
                 repository: "registry.internal/team-a/api".to_owned(),
                 tag: format!("zeabur-plan-{UID}"),
@@ -372,11 +372,11 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
         Some("registry.internal/team-a/api")
     );
     assert_eq!(annotation(&fresh_job, annotations::SAVED_PLAN), None);
+    assert!(saves(&fresh_job));
     let fresh = pod(fresh_job);
     let planner = plan_of(&fresh);
     assert_eq!(planner.image.as_deref(), Some(AGENT_IMAGE));
     assert!(!reads_registry(&planner));
-    assert!(saves(&fresh));
 
     let digest = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
     let reused_job = job_with(Some(digest));
@@ -384,6 +384,7 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
         annotation(&reused_job, annotations::SAVED_PLAN).as_deref(),
         Some(digest)
     );
+    assert!(!saves(&reused_job));
     let reused = pod(reused_job);
     let restore = plan_of(&reused);
     assert_eq!(
@@ -398,7 +399,6 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
         ]
     );
     assert!(reads_registry(&restore));
-    assert!(!saves(&reused));
     // The kubelet splits 12 KiB of termination messages over the Pod's containers, and the build
     // result needs 4096 bytes: the build container and at most two init containers.
     assert!(reused.init_containers.unwrap().len() <= 2);
@@ -420,9 +420,7 @@ fn every_builder_with_a_planner_saves_its_plan() {
             GitAuth::Anonymous,
         ))
         .unwrap();
-        build_plan_of(&job.spec.unwrap().template.spec.unwrap())
-            .save_plan
-            .is_some()
+        build_plan_of(&job).save_plan.is_some()
     };
 
     assert!(saves("agent", &agent()));
@@ -570,7 +568,7 @@ fn a_dockerfile_frontend_image_reads_the_dockerfile_the_builder_names() {
             GitAuth::Anonymous,
         ))
         .unwrap();
-        let command = &build_plan_of(&job.spec.unwrap().template.spec.unwrap()).builds[0].command;
+        let command = &build_plan_of(&job).builds[0].command;
         for expected in [
             "gateway.v0".to_owned(),
             "source=docker/dockerfile:1".to_owned(),
@@ -667,18 +665,18 @@ fn user_values_never_enter_scripts() {
         GitAuth::Anonymous,
     ))
     .unwrap();
+    // The kubelet does not expand the plan, which reaches the build container as a file.
+    assert_eq!(
+        build_plan_of(&job).builds[0].output.annotations["org.opencontainers.image.source"],
+        "https://github.com/acme/a$(id)b"
+    );
     let pod = job.spec.unwrap().template.spec.unwrap();
-    let fetch = &pod.init_containers.as_ref().unwrap()[0];
+    let fetch = &pod.init_containers.unwrap()[0];
     assert_eq!(fetch.command.as_ref().unwrap()[2], FETCH_SCRIPT);
     // Kubernetes expands `$(VAR)` in command and args; `$$` keeps a literal `$`.
     assert_eq!(
         fetch.args.as_ref().unwrap()[0],
         "https://github.com/acme/a$$(id)b"
-    );
-    assert!(pod.containers[0].command.as_ref().unwrap()[2].contains("acme/a$$(id)b"));
-    assert_eq!(
-        build_plan_of(&pod).builds[0].output.annotations["org.opencontainers.image.source"],
-        "https://github.com/acme/a$(id)b"
     );
 }
 
@@ -747,5 +745,40 @@ fn a_memory_request_never_exceeds_the_limit() {
         let want = BTreeMap::from([("memory".to_owned(), Quantity("256Mi".to_owned()))]);
         assert_eq!(resources.requests, Some(want.clone()), "{}", container.name);
         assert_eq!(resources.limits, Some(want), "{}", container.name);
+    }
+}
+
+#[test]
+fn the_largest_plan_passes_no_argument_over_the_kernel_limit() {
+    // Linux refuses `exec` when one argument passes 32 pages (128 KiB on 4 KiB pages).
+    const MAX_ARG: usize = 128 * 1024;
+    let run = build_run();
+    let build = build("https://github.com/acme/web", None, Vec::new());
+    let mut builder = dockerfile();
+    builder.frontend.opts = (0..MAX_OPTS)
+        .map(|i| (format!("build-arg:A{i}"), "x".repeat(4096)))
+        .collect();
+    let tags = tags();
+    let job = job(&inputs(
+        &run,
+        &build,
+        "dockerfile",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    ))
+    .unwrap();
+    let last = format!("build-arg:A{}={}", MAX_OPTS - 1, "x".repeat(4096));
+    assert!(build_plan_of(&job).builds[0].command.contains(&last));
+    let pod = job.spec.unwrap().template.spec.unwrap();
+    for container in pod.init_containers.unwrap().iter().chain(&pod.containers) {
+        for arg in container.command.iter().chain(&container.args).flatten() {
+            assert!(
+                arg.len() < MAX_ARG,
+                "{} has a {} byte argument",
+                container.name,
+                arg.len()
+            );
+        }
     }
 }

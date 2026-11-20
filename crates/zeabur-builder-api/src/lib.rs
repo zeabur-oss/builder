@@ -74,6 +74,9 @@ pub mod annotations {
     pub const IMAGE: &str = "builder.zeabur.com/image";
     /// On a Job: the digest of the saved plan it restores instead of running the planner.
     pub const SAVED_PLAN: &str = "builder.zeabur.com/saved-plan";
+    /// On a build Job's Pod: what its build container runs, a `BuildPlan` as JSON. The container
+    /// reads it as a file: as an argument it can pass Linux's 128 KiB limit for one argument.
+    pub const BUILD_PLAN: &str = "builder.zeabur.com/build-plan";
     /// On a `Build` with an archive source: a new value asks for an upload token
     /// (`status.uploadToken`).
     pub const UPLOAD_TOKEN_REQUEST: &str = "builder.zeabur.com/upload-token-request";

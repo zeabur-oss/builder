@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch archive` |
 //! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the controller hands it a saved plan (`JobInputs::saved_plan`), the job image's `zeabur-builder-job plan restore` unpacks it there instead |
-//! | `build` | job image | `zeabur-builder-job build <plan>`, a [`BuildPlan`] as JSON; after a planner ran, it pushes `/workspace/plan` as the plan artifact |
+//! | `build` | job image | `zeabur-builder-job build <file>`, a [`BuildPlan`] as JSON from the Pod's annotation; after a planner ran, it pushes `/workspace/plan` as the plan artifact |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
 //! Dockerfile build `FROM` it that makes it run as a non-root user and pushes the tags
@@ -38,10 +38,11 @@ use std::collections::BTreeMap;
 
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, KeyToPath,
-    PodSecurityContext, PodSpec, PodTemplateSpec, ProjectedVolumeSource, ResourceRequirements,
-    SeccompProfile, SecretKeySelector, SecretVolumeSource, SecurityContext,
-    ServiceAccountTokenProjection, Toleration, Volume, VolumeMount, VolumeProjection,
+    Capabilities, Container, DownwardAPIVolumeFile, DownwardAPIVolumeSource, EmptyDirVolumeSource,
+    EnvVar, EnvVarSource, KeyToPath, ObjectFieldSelector, PodSecurityContext, PodSpec,
+    PodTemplateSpec, ProjectedVolumeSource, ResourceRequirements, SeccompProfile,
+    SecretKeySelector, SecretVolumeSource, SecurityContext, ServiceAccountTokenProjection,
+    Toleration, Volume, VolumeMount, VolumeProjection,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
@@ -70,6 +71,9 @@ const NON_ROOT: &str = "/workspace/out/non-root";
 const GIT_CREDENTIALS: &str = "/etc/zeabur-builder/git";
 const BUILDKIT_TLS: &str = "/etc/zeabur-builder/buildkit";
 const REGISTRY_AUTH: &str = "/etc/zeabur-builder/registry";
+/// The build plan, from the Pod's [`annotations::BUILD_PLAN`].
+const BUILD_PLAN_DIR: &str = "/etc/zeabur-builder/build-plan";
+const BUILD_PLAN_FILE: &str = "plan.json";
 const MODEL_TOKEN_DIR: &str = "/var/run/secrets/zeabur.com/model";
 const MODEL_TOKEN: &str = "/var/run/secrets/zeabur.com/model/token";
 /// How long a projected model token lasts; the kubelet renews it before it expires.
@@ -331,7 +335,13 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     for container in &mut init_containers {
         container.resources = Some(resources.clone());
     }
-    let mut build = build_container(inputs, &resolved, &context, repo.as_ref());
+    let plan = build_plan(inputs, &resolved, &context, repo.as_ref());
+    let mut pod_annotations = annotations.clone();
+    pod_annotations.insert(
+        annotations::BUILD_PLAN.to_owned(),
+        serde_json::to_string(&plan).unwrap_or_default(),
+    );
+    let mut build = build_container(inputs);
     build.resources = Some(resources);
     let token = model_token(&resolved.plan);
 
@@ -354,7 +364,7 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
             name: Some(name.to_owned()),
             namespace: Some(namespace.to_owned()),
             labels: Some(labels.clone()),
-            annotations: Some(annotations.clone()),
+            annotations: Some(annotations),
             owner_references: Some(vec![OwnerReference {
                 api_version: format!("{}/v1alpha1", zeabur_builder_api::GROUP),
                 kind: "BuildRun".to_owned(),
@@ -372,7 +382,7 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
                     labels: Some(labels),
-                    annotations: Some(annotations),
+                    annotations: Some(pod_annotations),
                     ..ObjectMeta::default()
                 }),
                 spec: Some(pod),
@@ -730,14 +740,7 @@ fn token_volume(token: &ModelToken<'_>) -> Volume {
     }
 }
 
-fn build_container(
-    inputs: &JobInputs<'_>,
-    resolved: &Resolved<'_>,
-    context: &str,
-    repo: Option<&RepoKey>,
-) -> Container {
-    let plan = build_plan(inputs, resolved, context, repo);
-    let plan = serde_json::to_string(&plan).unwrap_or_default();
+fn build_container(inputs: &JobInputs<'_>) -> Container {
     let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
     if let Some(ca) = inputs.registry_ca {
         env_vars.push(env(REGISTRY_CA_ENV, &literal(ca)));
@@ -746,13 +749,14 @@ fn build_container(
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
     mounts.push(mount("registry-auth", REGISTRY_AUTH));
+    mounts.push(mount("build-plan", BUILD_PLAN_DIR));
     Container {
         name: "build".to_owned(),
         image: Some(inputs.job_image.to_owned()),
         command: Some(vec![
             "zeabur-builder-job".to_owned(),
             "build".to_owned(),
-            literal(&plan),
+            format!("{BUILD_PLAN_DIR}/{BUILD_PLAN_FILE}"),
         ]),
         env: Some(env_vars),
         volume_mounts: Some(mounts),
@@ -998,8 +1002,28 @@ fn volumes(inputs: &JobInputs<'_>, token: Option<&ModelToken<'_>>) -> Vec<Volume
             mode: None,
         }]),
     ));
+    volumes.push(build_plan_volume());
     volumes.extend(token.map(token_volume));
     volumes
+}
+
+/// The Pod's [`annotations::BUILD_PLAN`] as a file.
+fn build_plan_volume() -> Volume {
+    Volume {
+        name: "build-plan".to_owned(),
+        downward_api: Some(DownwardAPIVolumeSource {
+            items: Some(vec![DownwardAPIVolumeFile {
+                path: BUILD_PLAN_FILE.to_owned(),
+                field_ref: Some(ObjectFieldSelector {
+                    field_path: format!("metadata.annotations['{}']", annotations::BUILD_PLAN),
+                    ..ObjectFieldSelector::default()
+                }),
+                ..DownwardAPIVolumeFile::default()
+            }]),
+            ..DownwardAPIVolumeSource::default()
+        }),
+        ..Volume::default()
+    }
 }
 
 fn pod_security() -> PodSecurityContext {

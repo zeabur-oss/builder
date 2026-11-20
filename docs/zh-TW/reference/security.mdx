@@ -43,7 +43,7 @@ Zeabur Builder 以 Namespace 為隔離單位。即使多個團隊共用叢集，
 
 Helm chart 附的 ValidatingAdmissionPolicies 只允許控制器的 ServiceAccount 建立這兩種資源：
 
-- 建置 Job：使用 chart 指定的映像檔，以非 root 使用者執行，不具特權、不存取主機，只掛載 emptyDir 和 Secret 磁碟區，不掛載 ServiceAccount 權杖，且不得位於 `kube-*`、控制器自身或 registry 的 Namespace。
+- 建置 Job：使用 chart 指定的映像檔，以非 root 使用者執行，不具特權、不存取主機，只掛載 emptyDir 和 Secret 磁碟區、自己的建置計畫和給模型供應商的服務帳戶權杖，拿不到 Kubernetes API 的權杖，且不得位於 `kube-*`、控制器自身或 registry 的 Namespace。
 - buildkitd StatefulSet：使用 chart 指定的 buildkitd 映像檔，只能位於控制器的 Namespace，不存取主機，也不掛載 ServiceAccount 權杖。
 
 即使有這些限制，只要攻擊者取得控制器權杖，仍能讀取每個允許執行建置的 Namespace 內的 Secret。詳見[控制器的權限](../operations/controller-permissions.mdx)。
