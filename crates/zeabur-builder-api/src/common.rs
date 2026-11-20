@@ -5,6 +5,12 @@ use jiff::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// For `skip_serializing_if`: a field that holds its default stays out of what a client writes,
+/// so it does not own the field under server-side apply.
+pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
 /// Longest Kubernetes object name (DNS subdomain).
 pub const MAX_NAME: usize = 253;
 

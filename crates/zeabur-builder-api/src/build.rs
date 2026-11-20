@@ -16,7 +16,7 @@ use kube_derive::KubeSchema;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{Condition, SecretKeyRef, SecretRef};
+use crate::common::{Condition, SecretKeyRef, SecretRef, is_default};
 #[cfg(feature = "schema")]
 use crate::common::{DIGEST_PATTERN, DURATION_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN};
 
@@ -115,10 +115,13 @@ pub struct BuildSpec {
     #[cfg_attr(feature = "schema", schemars(length(max = MAX_ENV)))]
     pub env: Vec<EnvVar>,
     /// What starts a build.
-    #[serde(default)]
+    // schemars writes no default for a field it may skip; the API server fills it in from this.
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[cfg_attr(feature = "schema", schemars(extend("default" = {})))]
     pub triggers: TriggerSpec,
     /// What a new commit does to a running build.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
+    #[cfg_attr(feature = "schema", schemars(extend("default" = "Replace")))]
     pub concurrency: Concurrency,
     /// Finished `BuildRun`s to keep. The newest success is always kept. Default 10.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -563,6 +566,19 @@ impl std::fmt::Display for ConditionReason {
 mod tests {
     use super::*;
     use crate::build_run::{Phase, Reason};
+
+    /// A client that sets neither field writes neither, and the definition's defaults fill them in.
+    #[test]
+    fn default_triggers_and_concurrency_are_left_out() {
+        let written = serde_json::json!({
+            "source": {"type": "git", "git": {"url": "https://github.com/acme/api", "ref": "main"}},
+            "builderRef": "railpack",
+        });
+        let spec: BuildSpec = serde_json::from_value(written.clone()).unwrap();
+        assert_eq!(spec.triggers, TriggerSpec::default());
+        assert_eq!(spec.concurrency, Concurrency::Replace);
+        assert_eq!(serde_json::to_value(&spec).unwrap(), written);
+    }
 
     #[test]
     fn a_condition_reason_is_written_as_its_name() {
