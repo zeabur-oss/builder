@@ -1,0 +1,133 @@
+---
+title: 建置沒有 Dockerfile 的儲存庫
+description: 啟用 agent 建置器，讓模型寫出能建置的 Dockerfile，之後的建置會沿用，也可以放進儲存庫。
+---
+
+把 Build 的 `builderRef` 設為 `agent`，Zeabur Builder 就能建置沒有 Dockerfile 的 Git 儲存庫：模型讀取程式碼、寫出 Dockerfile 並試著建置，接著照常建置並推送映像檔。之後的建置會沿用這份 Dockerfile，不必再呼叫模型。
+
+<Steps>
+
+<Step>
+
+### 建立存放模型 API 金鑰的 Secret
+
+向模型供應商取得 API 金鑰，存成 `./model-key`。以下以 Anthropic 為例，在 Build 所在的 `team-a` Namespace 建立 Secret：
+
+```sh
+kubectl -n team-a create secret generic model --from-file=anthropic=./model-key
+```
+
+每個有 Build 使用 `agent` 建置器的 Namespace 都需要這份 Secret。只有建置時的 plan 容器拿得到金鑰。
+
+</Step>
+
+<Step>
+
+### 啟用 agent 建置器
+
+升級 chart，保留原有設定並啟用 `agent`：
+
+```sh
+helm upgrade builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
+  -n builder-system --reuse-values \
+  --set agent.enabled=true --set agent.provider=anthropic --set agent.model=claude-sonnet-5-5 \
+  --set agent.apiKeySecret.name=model --set agent.apiKeySecret.key=anthropic
+```
+
+chart 會安裝名為 `agent` 的 ClusterBuilder。要改用同一個 API 的其他端點，例如代理伺服器，再設定 `agent.baseUrl`。
+
+</Step>
+
+<Step>
+
+### 讓 Build 使用 agent 建置器
+
+把 `spec.builderRef` 設為 `agent`：
+
+```yaml
+apiVersion: builder.zeabur.com/v1alpha1
+kind: Build
+metadata: {name: node-hello, namespace: team-a}
+spec:
+  source: {git: {url: https://github.com/heroku/node-js-getting-started, ref: main}}
+  builderRef: agent
+```
+
+</Step>
+
+</Steps>
+
+## 檢視結果
+
+列出這個 Build 的 BuildRun，再檢視其中一個的 `status.plan`：
+
+```sh
+kubectl -n team-a get buildrun -l builder.zeabur.com/build=node-hello
+kubectl -n team-a get buildrun <run> -o jsonpath='{.status.plan}'
+```
+
+`node-hello` 第一次建置的結果如下：
+
+```json
+{"dockerfile":"agent","inputTokens":10616,"language":"Node.js","modelCalled":true,"outputTokens":704,"port":5006,"runtimeVariables":["PORT"],"version":"24.9"}
+```
+
+| 欄位 | 意思 |
+| --- | --- |
+| `dockerfile` | Dockerfile 從哪裡來：`repository` 是儲存庫自己的，`previous` 是上次成功的那份，`agent` 是模型寫的。 |
+| `modelCalled`、`inputTokens`、`outputTokens` | 有沒有呼叫模型，以及用掉多少 token。 |
+| `language`、`version`、`port`、`buildVariables`、`runtimeVariables` | 模型找到的語言與版本、連接埠，以及建置和應用程式會讀取的變數。 |
+
+plan 步驟會在日誌印出完整的 Dockerfile，最後一行就是上面的結果：
+
+```sh
+kubectl -n team-a logs job/<run> -c plan
+```
+
+模型能讀取哪些內容、有哪些限制，請見[用 AI 寫 Dockerfile](../reference/ai-dockerfile.mdx)。
+
+## 之後的建置
+
+每次寫出新的 Dockerfile 並建置成功後，都會把這次的 plan（Dockerfile 和 agent 回報的內容）推送到 Build 的映像檔旁邊，標籤是 `zeabur-plan-<Build uid>`，Build 也會記在 `status.plan`：
+
+```sh
+kubectl -n team-a get build node-hello -o jsonpath='{.status.plan}'
+```
+
+之後的建置會直接用這份 Dockerfile，不再呼叫模型。這種建置的結果是 `"dockerfile":"previous"`、`"modelCalled":false`，不用任何 token，連接埠、語言和變數也和寫出這份 Dockerfile 的那次一樣。BuildRun 的 status 會顯示 `"planSource":"saved"`，`planDigest` 是這份 plan 的 digest。
+
+如果存下來的 Dockerfile 已經建置不了，例如相依套件改了，這次建置會失敗。要讓模型重寫一份，替 Build 加上 `fresh` annotation：
+
+```sh
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan=fresh
+```
+
+有這個 annotation 時，每次建置都會呼叫模型。建置成功後把它拿掉，之後的建置就會沿用新的 Dockerfile：
+
+```sh
+kubectl -n team-a annotate build node-hello builder.zeabur.com/plan-
+```
+
+## 把 Dockerfile 放進儲存庫
+
+不想再讓模型決定 Dockerfile 的話，用 [oras](https://oras.land) 取回存下的 plan：
+
+```sh
+plan=$(kubectl -n team-a get build node-hello -o jsonpath='{.status.plan.image}')
+layer=$(oras manifest fetch "$plan" | jq -r '.layers[0].digest')
+mkdir plan && oras blob fetch --output - "${plan%@*}@$layer" | tar -xz -C plan
+```
+
+把 `plan/Dockerfile` 和 `plan/Dockerfile.dockerignore` 兩個檔案都放進儲存庫。第二個檔案會排除 agent 刻意略過的檔案，包括憑證；少了它，`COPY . .` 會把這些檔案複製進映像檔。再把 Build 的 `builderRef` 改成 `dockerfile`，之後就像一般檔案一樣自己修改。
+
+## 遇到問題
+
+| 看到的情況 | 接著怎麼做 |
+| --- | --- |
+| run 停在 `ModelKeyMissing` 等待，訊息說找不到 `model` Secret 或 `anthropic` 鍵 | 在 Build 所在的 Namespace 建立 Secret 或補上鍵。補好後 run 會自己開始，等待時不會建立 Job。 |
+| run 以 `PlanFailed` 失敗 | 從 `status.plan.stopped` 看停止原因，從 `status.message` 看要怎麼處理。 |
+| `stopped` 是 `ModelKeyMissing` 或 `ModelFailed` | 檢查金鑰與 `status.message`。金鑰缺少或被拒絕是 `ModelKeyMissing`；模型 API 拒絕要求或要求失敗是 `ModelFailed`。 |
+| `stopped` 是 `SeveralApps` | 在 `spec.source.git.contextDir` 指定應用程式所在的資料夾。 |
+| `stopped` 是 `NeedsBuildVariable` | 試建置拿不到 Build 的變數，所以 agent 寫不完這個 Dockerfile。請自己寫 Dockerfile，用 `RUN --mount=type=secret,id=NAME,env=NAME` 讀變數，放進儲存庫，把 `builderRef` 改成 `dockerfile`，再在 `spec.env` 設定變數。 |
+| `stopped` 是 `NoAppFound`、`NeedsPrivateDependency` 或 `UnsupportedPlatform` | `status.message` 會說明應用程式、私有相依套件或平台需要什麼。 |
+| `stopped` 是 `BudgetSpent` 或 `BuildKeepsFailing` | 檢視 `status.message`。`BudgetSpent` 表示到了上限：模型呼叫次數、建置失敗次數、時間或 token。 |

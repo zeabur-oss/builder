@@ -42,6 +42,7 @@ API 版本是 `v1alpha1`。升級前請先讀[更新紀錄](https://github.com/z
 - [部署建置好的映像檔](builds/rollout.mdx)：tag 和 Keel 通知。
 - [推送到外部 registry](builds/external-registries.mdx)
 - [在建置節點上建置](builds/build-nodes.mdx)
+- [建置沒有 Dockerfile 的儲存庫](builds/no-dockerfile.mdx)：模型寫一份，之後的建置沿用。
 
 ### 管理叢集
 
@@ -53,4 +54,4 @@ API 版本是 `v1alpha1`。升級前請先讀[更新紀錄](https://github.com/z
 
 - [運作方式](reference/how-it-works.mdx)
 - [安全性與信任模型](reference/security.mdx)：buildkitd 以 privileged 模式執行，讓你不信任的人建置前先讀這一頁。
-- [用 AI 寫 Dockerfile](reference/ai-dockerfile.mdx)：給沒有 Dockerfile 的儲存庫使用，目前需要自行執行指令。
+- [用 AI 寫 Dockerfile](reference/ai-dockerfile.mdx)：自行執行 agent，並了解它回報的內容。
