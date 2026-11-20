@@ -59,6 +59,16 @@
                 {
                   "name": "DOCKER_CONFIG",
                   "value": "/etc/zeabur-builder/registry"
+                },
+                {
+                  "name": "ZB_SECRET_NPM_TOKEN",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "token",
+                      "name": "npm",
+                      "optional": false
+                    }
+                  }
                 }
               ],
               "image": "ghcr.io/zeabur-oss/builder-job:v0.0.1",
@@ -185,7 +195,9 @@
                 "--provider",
                 "anthropic",
                 "--model",
-                "claude-opus-5-5"
+                "claude-opus-5-5",
+                "--secret",
+                "NPM_TOKEN"
               ],
               "command": [
                 "sh",
@@ -204,6 +216,16 @@
                     "secretKeyRef": {
                       "key": "anthropic",
                       "name": "model",
+                      "optional": false
+                    }
+                  }
+                },
+                {
+                  "name": "ZB_SECRET_NPM_TOKEN",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "token",
+                      "name": "npm",
                       "optional": false
                     }
                   }
@@ -329,7 +351,9 @@
           "--local",
           "dockerfile=/workspace/plan",
           "--opt",
-          "filename=Dockerfile"
+          "filename=Dockerfile",
+          "--secret",
+          "id=NPM_TOKEN,env=ZB_SECRET_NPM_TOKEN"
         ],
         "metadataFile": "/workspace/out/metadata.json",
         "output": {
