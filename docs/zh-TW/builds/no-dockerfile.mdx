@@ -170,6 +170,6 @@ mkdir plan && oras blob fetch --output - "${plan%@*}@$layer" | tar -xz -C plan
 | run 以 `PlanFailed` 失敗 | 從 `status.plan.stopped` 看停止原因，從 `status.message` 看要怎麼處理。 |
 | `stopped` 是 `ModelKeyMissing` 或 `ModelFailed` | 檢查金鑰或工作負載身分聯合設定，以及 `status.message`。金鑰或服務帳戶權杖缺少或被拒絕是 `ModelKeyMissing`；模型 API 拒絕要求或要求失敗是 `ModelFailed`。 |
 | `stopped` 是 `SeveralApps` | 在 `spec.source.contextDir` 指定應用程式所在的資料夾。 |
-| `stopped` 是 `NeedsBuildVariable` | 試建置拿不到 Build 的變數，所以 agent 寫不完這個 Dockerfile。請自己寫 Dockerfile，用 `RUN --mount=type=secret,id=NAME,env=NAME` 讀變數，放進儲存庫，把 `builderRef` 改成 `dockerfile`，再在 `spec.env` 設定變數。 |
+| `stopped` 是 `NeedsBuildVariable` | 在 `spec.env` 設定 `status.message` 指出的變數。agent 的試建置會以 secret 拿到這個變數，下一次執行就能寫完 Dockerfile。 |
 | `stopped` 是 `NoAppFound`、`NeedsPrivateDependency` 或 `UnsupportedPlatform` | `status.message` 會說明應用程式、私有相依套件或平台需要什麼。 |
 | `stopped` 是 `BudgetSpent` 或 `BuildKeepsFailing` | 檢視 `status.message`。`BudgetSpent` 表示到了上限：模型呼叫次數、建置失敗次數、時間或 token。 |

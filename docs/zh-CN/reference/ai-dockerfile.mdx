@@ -64,6 +64,7 @@ zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
 | `--buildkit` | `buildkitd` 的地址。 |
 | `--tlsdir` | `buildkitd` 启用 mTLS 时，指定包含 `ca.pem`、`cert.pem`、`key.pem` 的目录。 |
 | `--registry` | 允许拉取镜像的镜像仓库（registry）。默认是 `docker.io`、`ghcr.io`、`quay.io`、`gcr.io`；重复传这个参数，就能用自己的列表替换默认值。 |
+| `--secret` | 试构建用 `RUN --mount=type=secret,id=NAME` 读取的构建变量。传入变量名，值放在 `ZB_SECRET_<NAME>`。每个变量各传一次。 |
 | `--out` | 输出目录，默认是 `/workspace/plan`，上面的例子改成了 `./plan`。 |
 
 </Step>
@@ -249,7 +250,7 @@ CMD ["node", "server.js"]
 | `ModelFailed` | 模型 API 拒绝了请求，或调用失败。按 `detail` 里 API 返回的消息检查厂商、模型名称、密钥或额度。 |
 | `NoAppFound` | 目录里没有可构建的应用，例如只有 README。加入应用代码，或把 `--context` 指向应用所在目录。 |
 | `SeveralApps` | 目录里有多个应用，例如 monorepo。把 `--context` 指向其中一个。 |
-| `NeedsBuildVariable` | 构建需要 `detail` 指出的变量。试构建暂时无法传入变量，请在 Dockerfile 里自行加上这个变量，或修改应用代码，让构建不再依赖它。 |
+| `NeedsBuildVariable` | 构建需要 `detail` 指出的变量。用 `--secret` 传入这个变量，再运行一次工具。 |
 | `NeedsPrivateDependency` | 构建需要 `detail` 指出的私有包或仓库。试构建暂时访问不了私有包或私有仓库，需要自行编写 Dockerfile。 |
 | `UnsupportedPlatform` | 应用需要 BuildKit 构建不了的平台，`detail` 会写明是哪个。这类应用需要换一种方式构建。 |
 | `BudgetSpent` | 达到了工具的上限，对照下一节看是哪一项。 |
@@ -280,5 +281,7 @@ CMD ["node", "server.js"]
 - `node_modules`、`.venv`、`vendor`、`target` 等依赖目录
 
 每次试构建也会排除同一组凭据文件：Dockerfile 即使写了 `COPY . .`，这些文件也不会进入构建。
+
+模型能看到构建变量的名称，看不到变量值。试构建的输出里如果出现变量值，工具会先把它换成变量名，再交给模型。
 
 试构建只从允许的镜像仓库（registry）拉取镜像，其他镜像、用 `ADD <url>` 下载的文件、Git 源和 `RUN --network=host` 都会被拒绝。工具会忽略 Dockerfile 里的 `# syntax=`，改用 `buildkitd` 内置的 Dockerfile 前端。试构建不会推送镜像。

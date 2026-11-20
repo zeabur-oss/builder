@@ -58,6 +58,11 @@ pub(crate) enum Attempt {
 pub(crate) trait TrialBuild: Send + Sync {
     /// Builds `dockerfile` with the `.dockerignore` rules `dockerignore`.
     fn build(&self, dockerfile: &str, dockerignore: &str) -> impl Future<Output = Attempt> + Send;
+
+    /// The names of the build variables each build gets as secrets.
+    fn variables(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Trial builds on a buildkitd.
@@ -75,7 +80,20 @@ pub(crate) struct Buildctl {
     pub(crate) registries: Vec<String>,
     /// The longest one build may take.
     pub(crate) timeout: Duration,
+    /// The build variables, passed as secrets.
+    pub(crate) secrets: Vec<Secret>,
 }
+
+/// A build variable, which a build reads with `RUN --mount=type=secret,id=<name>`.
+#[derive(Debug, Clone)]
+pub(crate) struct Secret {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+/// The prefix of the variables that hold the build variables' values, in the Job and for
+/// `buildctl`.
+pub(crate) const SECRET_ENV_PREFIX: &str = "ZB_SECRET_";
 
 impl Buildctl {
     /// The `buildctl` arguments of one attempt.
@@ -106,25 +124,16 @@ impl Buildctl {
             "--source-policy-file".to_owned(),
             self.work.join("policy.json").display().to_string(),
         ]);
+        args.extend(self.secrets.iter().flat_map(|secret| {
+            [
+                "--secret".to_owned(),
+                format!("id={},env={SECRET_ENV_PREFIX}{}", secret.name, secret.name),
+            ]
+        }));
         args
     }
 
-    async fn write(&self, dockerfile: &str, rules: &str) -> std::io::Result<()> {
-        tokio::fs::create_dir_all(&self.work).await?;
-        tokio::fs::write(self.work.join("Dockerfile"), dockerfile).await?;
-        tokio::fs::write(
-            self.work.join("Dockerfile.dockerignore"),
-            dockerignore(rules),
-        )
-        .await?;
-        let policy =
-            serde_json::to_vec(&source_policy(&self.registries)).map_err(std::io::Error::other)?;
-        tokio::fs::write(self.work.join("policy.json"), policy).await
-    }
-}
-
-impl TrialBuild for Buildctl {
-    async fn build(&self, dockerfile: &str, dockerignore: &str) -> Attempt {
+    async fn attempt(&self, dockerfile: &str, dockerignore: &str) -> Attempt {
         if dockerfile.len() > MAX_DOCKERFILE {
             return failed(format!("the Dockerfile is over {MAX_DOCKERFILE} bytes"));
         }
@@ -133,6 +142,11 @@ impl TrialBuild for Buildctl {
         }
         let child = Command::new("buildctl")
             .args(self.args())
+            .envs(
+                self.secrets
+                    .iter()
+                    .map(|secret| (format!("{SECRET_ENV_PREFIX}{}", secret.name), &secret.value)),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -168,6 +182,45 @@ impl TrialBuild for Buildctl {
                 attempt
             }
         }
+    }
+
+    /// `attempt` with every secret value in its output replaced by the secret's name, so the
+    /// model never reads one.
+    fn redact(&self, mut attempt: Attempt) -> Attempt {
+        if let Attempt::Failed { summary, log } = &mut attempt {
+            for secret in self.secrets.iter().filter(|s| !s.value.is_empty()) {
+                let name = format!("[secret {}]", secret.name);
+                *summary = summary.replace(&secret.value, &name);
+                *log = log.replace(&secret.value, &name);
+            }
+        }
+        attempt
+    }
+
+    async fn write(&self, dockerfile: &str, rules: &str) -> std::io::Result<()> {
+        tokio::fs::create_dir_all(&self.work).await?;
+        tokio::fs::write(self.work.join("Dockerfile"), dockerfile).await?;
+        tokio::fs::write(
+            self.work.join("Dockerfile.dockerignore"),
+            dockerignore(rules),
+        )
+        .await?;
+        let policy =
+            serde_json::to_vec(&source_policy(&self.registries)).map_err(std::io::Error::other)?;
+        tokio::fs::write(self.work.join("policy.json"), policy).await
+    }
+}
+
+impl TrialBuild for Buildctl {
+    async fn build(&self, dockerfile: &str, dockerignore: &str) -> Attempt {
+        self.redact(self.attempt(dockerfile, dockerignore).await)
+    }
+
+    fn variables(&self) -> Vec<String> {
+        self.secrets
+            .iter()
+            .map(|secret| secret.name.clone())
+            .collect()
     }
 }
 
@@ -348,6 +401,7 @@ mod tests {
             work: "/workspace/plan".into(),
             registries: vec![],
             timeout: Duration::from_secs(1),
+            secrets: vec![],
         };
         let args = buildctl.args();
         assert!(
@@ -360,6 +414,34 @@ mod tests {
         );
         assert!(!args.iter().any(|a| a.starts_with("--allow")));
         assert!(!args.iter().any(|a| a.starts_with("--output")));
+    }
+
+    #[test]
+    fn passes_build_variables_as_secrets_and_keeps_their_values_from_the_model() {
+        let buildctl = Buildctl {
+            addr: "tcp://buildkitd:1234".to_owned(),
+            tlsdir: None,
+            context: "/workspace/src".into(),
+            work: "/workspace/plan".into(),
+            registries: vec![],
+            timeout: Duration::from_secs(1),
+            secrets: vec![Secret {
+                name: "NPM_TOKEN".to_owned(),
+                value: "npm_s3cret".to_owned(),
+            }],
+        };
+        assert!(
+            buildctl
+                .args()
+                .windows(2)
+                .any(|w| w == ["--secret", "id=NPM_TOKEN,env=ZB_SECRET_NPM_TOKEN"])
+        );
+        assert_eq!(buildctl.variables(), ["NPM_TOKEN"]);
+        let attempt = buildctl.redact(failed("401 for token npm_s3cret".to_owned()));
+        assert_eq!(
+            attempt,
+            failed("401 for token [secret NPM_TOKEN]".to_owned())
+        );
     }
 
     #[test]
@@ -406,6 +488,10 @@ mod tests {
 
     /// Builds `dockerfile` on the buildkitd at `ZB_TEST_BUILDKIT`.
     async fn on_buildkitd(dockerfile: &str) -> Attempt {
+        on_buildkitd_with(dockerfile, vec![]).await
+    }
+
+    async fn on_buildkitd_with(dockerfile: &str, secrets: Vec<Secret>) -> Attempt {
         let addr = std::env::var("ZB_TEST_BUILDKIT").expect("set ZB_TEST_BUILDKIT");
         let context = crate::testing::Dir::new();
         context.write("hello.txt", "hello\n");
@@ -417,6 +503,7 @@ mod tests {
             work: work.path().to_owned(),
             registries: vec!["docker.io".to_owned()],
             timeout: Duration::from_mins(5),
+            secrets,
         };
         buildctl.build(dockerfile, "").await
     }
@@ -443,6 +530,20 @@ mod tests {
     async fn refuses_an_image_from_another_registry() {
         let summary = summary(on_buildkitd("FROM registry.k8s.io/pause:3.10\n").await);
         assert!(summary.contains("denied"), "{summary}");
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a buildkitd at ZB_TEST_BUILDKIT"]
+    async fn a_build_reads_a_variable_and_its_value_stays_hidden() {
+        let secret = Secret {
+            name: "NPM_TOKEN".to_owned(),
+            value: "npm_s3cret".to_owned(),
+        };
+        let dockerfile = "FROM busybox:1.37\n\
+            RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN echo \"token $NPM_TOKEN\" && false\n";
+        let summary = summary(on_buildkitd_with(dockerfile, vec![secret]).await);
+        assert!(summary.contains("token [secret NPM_TOKEN]"), "{summary}");
+        assert!(!summary.contains("npm_s3cret"), "{summary}");
     }
 
     #[tokio::test]

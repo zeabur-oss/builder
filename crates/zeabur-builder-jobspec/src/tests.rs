@@ -273,10 +273,21 @@ fn railpack_with_secrets() {
     golden("railpack", include_str!("../golden/railpack.json"), &job);
 }
 
+/// The plan container gets the build variables too, for the agent's trial builds.
 #[test]
 fn agent_with_a_model_key() {
     let run = build_run();
-    let mut build = build("https://github.com/acme/web", None, Vec::new());
+    let env = vec![BuildEnvVar {
+        name: "NPM_TOKEN".to_owned(),
+        value: None,
+        value_from: Some(EnvVarSource {
+            secret_key_ref: SecretKeyRef {
+                name: "npm".to_owned(),
+                key: "token".to_owned(),
+            },
+        }),
+    }];
+    let mut build = build("https://github.com/acme/web", None, env);
     build.metadata.uid = Some(UID.to_owned());
     let builder = agent();
     let tags = tags();

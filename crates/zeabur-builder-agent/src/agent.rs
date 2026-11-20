@@ -39,8 +39,8 @@ node:24.9-alpine, never a bare major or `latest`. Use a multi-stage build with a
 stage.
 - The app listens on the port in the PORT variable when it reads one; EXPOSE that port.
 - Never copy credentials. A value the build needs is a secret: \
-RUN --mount=type=secret,id=NAME,env=NAME. Trial builds have no values, so a step that cannot run \
-without one is a reason to stop.
+RUN --mount=type=secret,id=NAME,env=NAME. Trial builds have the values of the Build's variables \
+the task names, so a step that needs any other variable is a reason to stop.
 - No `# syntax` line, no RUN --network or --security: the build refuses them.
 
 Call `stop` instead of guessing when the repository has no app, holds several apps (name them), \
@@ -48,8 +48,12 @@ needs a build variable or a private dependency, or needs a platform BuildKit can
 reply calls a tool.";
 
 /// What the agent is asked first.
-fn task(hint: Option<&str>) -> String {
+fn task(hint: Option<&str>, variables: &[String]) -> String {
     let mut task = "Write a Dockerfile for this repository and build it.".to_owned();
+    if !variables.is_empty() {
+        task.push_str("\n\nThe Build's variables, as secrets: ");
+        task.push_str(&variables.join(", "));
+    }
     if let Some(hint) = hint {
         task.push_str("\n\nThe last Dockerfile of this service no longer builds:\n\n");
         task.push_str(hint);
@@ -229,7 +233,7 @@ impl<B: TrialBuild> Agent<B> {
     async fn converse(&self, hint: Option<&str>, spent: &mut Spent) -> Outcome {
         let tools = tools();
         let mut state = State::default();
-        let mut history = vec![Message::user(task(hint))];
+        let mut history = vec![Message::user(task(hint, &self.builder.variables()))];
         loop {
             if let Some(Refusal { reason, message }) = spent.exceeded(&self.limits) {
                 return Outcome::NeedsUser {
