@@ -1,7 +1,8 @@
 name: CI
 
-# Each job runs scripts/ci/<job>.sh in the Nix dev shell, the same as locally. Pull requests and
-# pushes run lint and test. The merge queue runs every job on the commit about to land, and the
+# Each job runs scripts/ci/<job>.sh in the Nix dev shell, the same as locally, except docs, which
+# runs the website's check of docs/ (locally: bun scripts/docs-check.ts <this checkout> in the
+# website). Pull requests and pushes run lint, test and docs. The merge queue runs every job on the commit about to land, and the
 # nightly run keeps main's caches for the merge queue's jobs. Only main saves the kache cache;
 # every other ref restores it.
 on:
@@ -81,11 +82,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  docs:
+    runs-on: instabox-small
+    timeout-minutes: 10
+    steps:
+      - uses: zeabur-oss/website/.github/actions/docs-check@c27d70f71fa537b6f06748a87bdbdc474206319e # main
+
   # The check rulesets require.
   ok:
     name: ci / ok
     if: always()
-    needs: [lint, test, kubernetes]
+    needs: [lint, test, kubernetes, docs]
     runs-on: instabox-small
     timeout-minutes: 5
     steps:
