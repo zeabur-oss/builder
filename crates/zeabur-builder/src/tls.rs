@@ -129,11 +129,11 @@ pub(crate) async fn ensure(
     let (server, client_pair) = generate(service, daemon_namespace)
         .map_err(|e| kube::Error::Service(e.to_string().into()))?;
     let mut pems = server;
-    for (from, to) in [("cert.pem", CLIENT_CERT), ("key.pem", CLIENT_KEY)] {
-        if let Some(pem) = client_pair.get(from) {
-            pems.insert(to.to_owned(), pem.clone());
-        }
-    }
+    pems.extend(
+        [("cert.pem", CLIENT_CERT), ("key.pem", CLIENT_KEY)]
+            .into_iter()
+            .filter_map(|(from, to)| Some((to.to_owned(), client_pair.get(from)?.clone()))),
+    );
     let wanted = Secret {
         metadata: ObjectMeta {
             name: Some(secret.to_owned()),

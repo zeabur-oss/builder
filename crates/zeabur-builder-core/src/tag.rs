@@ -88,17 +88,17 @@ pub fn render(template: &str, inputs: &TagInputs<'_>) -> Result<String, TagError
     let branch: String = branch.chars().take(branch_budget).collect();
     let branch = branch.trim_end_matches(['.', '-']);
 
-    let mut tag = String::new();
-    for part in &parts {
-        match part {
-            Part::Text(text) => tag.push_str(&sanitise(text)),
-            Part::Field(Field::Branch) => tag.push_str(branch),
-            Part::Field(Field::ShortSha) => tag.push_str(&short_sha),
-            Part::Field(Field::Sha) => tag.push_str(inputs.sha),
-            Part::Field(Field::UnixTime) => tag.push_str(&unix_time),
-            Part::Field(Field::BuildRun) => tag.push_str(&sanitise(inputs.build_run)),
-        }
-    }
+    let mut tag: String = parts
+        .iter()
+        .map(|part| match part {
+            Part::Text(text) => sanitise(text),
+            Part::Field(Field::Branch) => branch.to_owned(),
+            Part::Field(Field::ShortSha) => short_sha.clone(),
+            Part::Field(Field::Sha) => inputs.sha.to_owned(),
+            Part::Field(Field::UnixTime) => unix_time.clone(),
+            Part::Field(Field::BuildRun) => sanitise(inputs.build_run),
+        })
+        .collect();
     if tag.starts_with(['.', '-']) {
         tag.insert(0, '_');
     }

@@ -214,17 +214,16 @@ fn source_policy(registries: &[String]) -> Policy {
             match_type,
         },
     };
-    let mut rules = vec![rule(DENY, "*".to_owned(), WILDCARD)];
-    for local in ["context", "dockerfile"] {
-        rules.push(rule(ALLOW, format!("local://{local}"), EXACT));
-    }
-    for registry in registries {
-        rules.push(rule(
-            ALLOW,
-            format!("docker-image://{registry}/*"),
-            WILDCARD,
-        ));
-    }
+    let rules = std::iter::once(rule(DENY, "*".to_owned(), WILDCARD))
+        .chain(
+            ["context", "dockerfile"].map(|local| rule(ALLOW, format!("local://{local}"), EXACT)),
+        )
+        .chain(
+            registries
+                .iter()
+                .map(|registry| rule(ALLOW, format!("docker-image://{registry}/*"), WILDCARD)),
+        )
+        .collect();
     Policy { version: 1, rules }
 }
 

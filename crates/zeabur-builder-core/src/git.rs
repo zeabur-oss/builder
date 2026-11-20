@@ -210,10 +210,8 @@ pub fn parse_advertisement(body: &[u8]) -> Result<Advertisement, GitError> {
     Ok(Advertisement::Refs(refs))
 }
 
-/// Where a version 0 advertisement read from a stream ends.
-///
-/// Its length up to and including the first flush, or `None` while more must be read. Over SSH
-/// the server then waits for the client, so the stream does not end by itself.
+/// Where a version 0 advertisement read from a stream ends: its length up to and including the
+/// first flush, or `None` while more must be read. Over SSH the stream does not end by itself.
 ///
 /// # Errors
 ///
@@ -318,9 +316,8 @@ pub fn parse_ls_refs(body: &[u8]) -> Result<Vec<RemoteRef>, GitError> {
 ///
 /// # Errors
 ///
-/// [`GitError::RefNotFound`] when no candidate name is among `refs`, or
-/// [`GitError::NoDefaultBranch`] when `git_ref` is [`DEFAULT_BRANCH`] and the server sent no
-/// `HEAD`.
+/// [`GitError::RefNotFound`] when no candidate name is among `refs`;
+/// [`GitError::NoDefaultBranch`] for [`DEFAULT_BRANCH`] when the server sent no `HEAD`.
 pub fn resolve(git_ref: &str, refs: &[RemoteRef]) -> Result<Resolved, GitError> {
     let Some(found) = candidates(git_ref)
         .iter()

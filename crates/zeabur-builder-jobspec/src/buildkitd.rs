@@ -63,18 +63,9 @@ const SOCKET: &str = "unix:///run/buildkit/buildkitd.sock";
 const CACHE: &str = "cache";
 
 /// How the container starts buildkitd (`sh -c START buildkitd <args>`): first, the TCP
-/// connections of `RUN` steps get a maximum segment size that fits the Pod's interface.
-///
-/// The steps' bridge and veths have the kernel's default MTU of 1500, and buildkit's `bridge`
-/// network mode has no setting for it (`util/network/cniprovider/bridge.go` in buildkit v0.34.1).
-/// The Pod's interface is often smaller: 1450 under flannel's VXLAN, k3s's default. A step then
-/// announces an MSS of 1460, the server's full-size replies are too large for the Pod's interface,
-/// and unless the ICMP "fragmentation needed" reaches the server the connection hangs once a large
-/// segment comes, such as the TLS certificate. On GitHub's arm64 runners with k3d it did: plain
-/// HTTP and DNS from a step worked, HTTPS hung, `apk add` never ended and `mise install` failed.
-/// Clamping the MSS of forwarded SYNs to the route's MTU (`TCPMSS --clamp-mss-to-pmtu`,
-/// iptables-extensions(8)) keeps every segment within the Pod's MTU. Without the rule buildkitd
-/// still starts, and steps work wherever the Pod's MTU is 1500.
+/// connections of `RUN` steps get a maximum segment size that fits the Pod's interface, since
+/// buildkit's bridge network has an MTU of 1500 and the Pod's is often smaller (1450 under
+/// flannel's VXLAN). Without the rule buildkitd still starts.
 const START: &str = "\
 if iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; then
   echo \"RUN steps: TCP MSS clamped to the route MTU (eth0: $(cat /sys/class/net/eth0/mtu))\"

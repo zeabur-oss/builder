@@ -1485,10 +1485,7 @@ async fn short_of_resources(
         return pending(ctx, run, status, Reason::InsufficientResources, message).await;
     }
     let state = ctx.runs.state();
-    let mut runs = Vec::new();
-    for other in &state {
-        runs.push(other.as_ref());
-    }
+    let runs: Vec<&BuildRun> = state.iter().map(AsRef::as_ref).collect();
     let quiet = ctx.settings.pending_grace;
     {
         // Eviction and admission take turns, so no run is admitted to a daemon being scaled down.
