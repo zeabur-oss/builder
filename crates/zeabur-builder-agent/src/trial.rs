@@ -319,8 +319,8 @@ impl Redactor {
 #[derive(Debug, Default)]
 struct Progress {
     redactor: Redactor,
-    /// Digest → output not yet redacted, since it can still grow into a secret value.
-    pending: BTreeMap<String, Vec<u8>>,
+    /// Digest and stream → output not yet redacted, since it can still grow into a secret value.
+    pending: BTreeMap<(String, u8), Vec<u8>>,
     /// Digest → step name, in the order steps first appeared.
     names: BTreeMap<String, String>,
     /// Digest → output.
@@ -363,7 +363,10 @@ impl Progress {
             let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&log.data) else {
                 continue;
             };
-            let pending = self.pending.entry(log.vertex.clone()).or_default();
+            let pending = self
+                .pending
+                .entry((log.vertex.clone(), log.stream))
+                .or_default();
             pending.extend_from_slice(&data);
             let (text, rest) = self.redactor.redact(pending, true);
             *pending = rest.to_vec();
@@ -385,7 +388,7 @@ impl Progress {
 
     /// The failure: the failing step, its error and the end of its output.
     fn failure(mut self) -> Attempt {
-        for (digest, pending) in std::mem::take(&mut self.pending) {
+        for ((digest, _), pending) in std::mem::take(&mut self.pending) {
             let text = self.redactor.redact(&pending, false).0;
             self.push(digest, &text);
         }
@@ -515,9 +518,15 @@ mod tests {
     #[test]
     fn a_secret_split_across_log_records_stays_hidden() {
         let mut progress = Progress::new(redactor(&[("NPM_TOKEN", "npm_s3cret")]));
-        for part in ["401 for npm_s3", "cret\n", "next line\n"] {
+        // stdout is stream 1 and stderr stream 2.
+        for (stream, part) in [
+            (1, "401 for npm_s3"),
+            (2, "warning\n"),
+            (1, "cret\n"),
+            (1, "next line\n"),
+        ] {
             progress.line(&line(
-                &json!({"logs": [{"vertex": "b", "data": b64(part)}]}),
+                &json!({"logs": [{"vertex": "b", "stream": stream, "data": b64(part)}]}),
             ));
         }
         progress.line(&line(
@@ -531,7 +540,7 @@ mod tests {
         };
         assert_eq!(
             summary,
-            "failed step: RUN npm ci\nerror: exit code: 1 ([secret NPM_TOKEN])\nlast output:\n401 for [secret NPM_TOKEN]\nnext line"
+            "failed step: RUN npm ci\nerror: exit code: 1 ([secret NPM_TOKEN])\nlast output:\n401 for warning\n[secret NPM_TOKEN]\nnext line"
         );
         assert!(log.contains("[secret NPM_TOKEN]"), "{log}");
         assert!(log.contains("npm_s\n"), "{log}");
