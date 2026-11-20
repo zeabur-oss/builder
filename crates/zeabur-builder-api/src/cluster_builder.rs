@@ -1,14 +1,9 @@
 //! `ClusterBuilder`: how to plan a build and which frontend builds it.
 
-#![expect(
-    unreachable_pub,
-    reason = "the KubeSchema derive re-emits these types inside a private module"
-)]
-
 use std::collections::BTreeMap;
 
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use kube::{CustomResource, KubeSchema};
+use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +19,7 @@ pub const MAX_QUANTITY: usize = 64;
 
 /// A way to build. Every builder reduces to the same shape: an optional planner that writes files
 /// into `/workspace/plan`, then a `BuildKit` frontend with options that reads them.
-#[derive(CustomResource, KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[kube(
     group = "builder.zeabur.com",
     version = "v1alpha1",
@@ -46,20 +41,11 @@ pub const MAX_QUANTITY: usize = 64;
     ),
     doc = "How Zeabur Builder plans and builds: Dockerfile, Railpack or the agent."
 )]
-#[x_kube(
-    validation = Rule::new("self.type == 'dockerfile' ? !has(self.planner) : has(self.planner)")
-        .message("planner is required for railpack and agent, and forbidden for dockerfile"),
-    validation = Rule::new("self.type == 'agent' ? has(self.planner) && has(self.planner.model) && self.frontend.type == 'dockerfile.v0' : !has(self.planner) || !has(self.planner.model)")
-        .message("planner.model and the dockerfile.v0 frontend are required for agent, and planner.model is forbidden for the others")
-)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterBuilderSpec {
     /// What the planning step does.
-    #[serde(rename = "type")]
-    pub kind: BuilderType,
-    /// The planner; absent when the builder needs no plan.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub planner: Option<PlannerSpec>,
+    #[serde(flatten)]
+    pub planner: Planner,
     /// The frontend that builds the plan.
     pub frontend: FrontendSpec,
 }
@@ -130,19 +116,26 @@ pub struct BuildCeiling {
     pub memory: Option<Quantity>,
 }
 
-/// The builders.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum BuilderType {
-    /// The repository's own Dockerfile.
+/// The planners.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[schemars(transform = crate::union::tagged)]
+pub enum Planner {
+    /// The repository's own Dockerfile; nothing to plan.
     Dockerfile,
     /// Railpack plans; its gateway frontend builds.
-    Railpack,
-    /// An agent writes a Dockerfile and trial-builds it; the Dockerfile frontend builds it.
-    Agent,
+    Railpack {
+        /// The Railpack planner.
+        railpack: PlannerSpec,
+    },
+    /// An agent writes a Dockerfile and trial-builds it; a Dockerfile frontend builds it.
+    Agent {
+        /// The agent planner.
+        agent: AgentPlanner,
+    },
 }
 
-/// The planning step.
+/// A planner's container.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PlannerSpec {
@@ -156,9 +149,17 @@ pub struct PlannerSpec {
     /// CPU and memory for the plan container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<Resources>,
-    /// The model the `agent` planner calls; only for `agent`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<ModelSpec>,
+}
+
+/// The agent planner and the model it calls.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPlanner {
+    /// The planner's container.
+    #[serde(flatten)]
+    pub planner: PlannerSpec,
+    /// The model.
+    pub model: ModelSpec,
 }
 
 /// The model of the `agent` planner.
@@ -206,20 +207,11 @@ pub struct ResourceList {
 }
 
 /// The `BuildKit` frontend.
-#[derive(KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[x_kube(
-    validation = Rule::new("self.type == 'gateway.v0' ? has(self.source) && self.source != '' : !has(self.source)")
-        .message("source is required for gateway.v0 and forbidden for dockerfile.v0")
-)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 pub struct FrontendSpec {
-    /// `dockerfile.v0` (built into buildkitd) or `gateway.v0` (an image).
-    #[serde(rename = "type")]
-    pub kind: FrontendType,
-    /// The frontend image for `gateway.v0`, such as
-    /// `ghcr.io/railwayapp/railpack-frontend:v0.43.0`. It must match the planner's version.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_IMAGE))]
-    pub source: Option<String>,
+    /// Built into buildkitd, or an image.
+    #[serde(flatten)]
+    pub kind: Frontend,
     /// Frontend options added to every build, as `buildctl --opt key=value`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(extend("maxProperties" = MAX_OPTS, "additionalProperties" = {"type": "string", "maxLength": 4096}))]
@@ -227,12 +219,19 @@ pub struct FrontendSpec {
 }
 
 /// Frontend kinds.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
-pub enum FrontendType {
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "type")]
+#[schemars(transform = crate::union::tagged)]
+pub enum Frontend {
     /// The Dockerfile frontend in buildkitd.
     #[serde(rename = "dockerfile.v0")]
     Dockerfile,
     /// A frontend image.
     #[serde(rename = "gateway.v0")]
-    Gateway,
+    Gateway {
+        /// The frontend image, such as `ghcr.io/railwayapp/railpack-frontend:v0.43.0` for
+        /// `railpack`, whose version must match the planner's, or `docker/dockerfile:1`.
+        #[schemars(length(min = 1, max = MAX_IMAGE))]
+        source: String,
+    },
 }

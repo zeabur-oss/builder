@@ -51,47 +51,8 @@
               "spec": {
                 "description": "A way to build. Every builder reduces to the same shape: an optional planner that writes files\ninto `/workspace/plan`, then a `BuildKit` frontend with options that reads them.",
                 "properties": {
-                  "frontend": {
-                    "description": "The frontend that builds the plan.",
-                    "properties": {
-                      "opts": {
-                        "additionalProperties": {
-                          "maxLength": 4096,
-                          "type": "string"
-                        },
-                        "description": "Frontend options added to every build, as `buildctl --opt key=value`.",
-                        "maxProperties": 32,
-                        "type": "object"
-                      },
-                      "source": {
-                        "description": "The frontend image for `gateway.v0`, such as\n`ghcr.io/railwayapp/railpack-frontend:v0.43.0`. It must match the planner's version.",
-                        "maxLength": 512,
-                        "nullable": true,
-                        "type": "string"
-                      },
-                      "type": {
-                        "description": "`dockerfile.v0` (built into buildkitd) or `gateway.v0` (an image).",
-                        "enum": [
-                          "dockerfile.v0",
-                          "gateway.v0"
-                        ],
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "type"
-                    ],
-                    "type": "object",
-                    "x-kubernetes-validations": [
-                      {
-                        "message": "source is required for gateway.v0 and forbidden for dockerfile.v0",
-                        "rule": "self.type == 'gateway.v0' ? has(self.source) && self.source != '' : !has(self.source)"
-                      }
-                    ]
-                  },
-                  "planner": {
-                    "description": "The planner; absent when the builder needs no plan.",
-                    "nullable": true,
+                  "agent": {
+                    "description": "The agent planner.",
                     "properties": {
                       "image": {
                         "description": "The planner image, pinned by digest in production.",
@@ -100,8 +61,7 @@
                         "type": "string"
                       },
                       "model": {
-                        "description": "The model the `agent` planner calls; only for `agent`.",
-                        "nullable": true,
+                        "description": "The model.",
                         "properties": {
                           "apiKeySecret": {
                             "description": "The Secret key that holds the model API key, in each `Build`'s own namespace. A run\nwaits with `ModelKeyMissing` while it is missing.",
@@ -205,12 +165,118 @@
                       }
                     },
                     "required": [
+                      "image",
+                      "model"
+                    ],
+                    "type": "object"
+                  },
+                  "frontend": {
+                    "description": "The frontend that builds the plan.",
+                    "properties": {
+                      "opts": {
+                        "additionalProperties": {
+                          "maxLength": 4096,
+                          "type": "string"
+                        },
+                        "description": "Frontend options added to every build, as `buildctl --opt key=value`.",
+                        "maxProperties": 32,
+                        "type": "object"
+                      },
+                      "source": {
+                        "description": "The frontend image, such as `ghcr.io/railwayapp/railpack-frontend:v0.43.0` for\n`railpack`, whose version must match the planner's, or `docker/dockerfile:1`.",
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": {
+                        "description": "`dockerfile.v0`: The Dockerfile frontend in buildkitd.\n\n`gateway.v0`: A frontend image.",
+                        "enum": [
+                          "dockerfile.v0",
+                          "gateway.v0"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ],
+                    "type": "object",
+                    "x-kubernetes-validations": [
+                      {
+                        "message": "source is required for type gateway.v0, and only for it",
+                        "rule": "has(self.source) == (self.type == 'gateway.v0')"
+                      }
+                    ]
+                  },
+                  "railpack": {
+                    "description": "The Railpack planner.",
+                    "properties": {
+                      "image": {
+                        "description": "The planner image, pinned by digest in production.",
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "resources": {
+                        "description": "CPU and memory for the plan container.",
+                        "nullable": true,
+                        "properties": {
+                          "limits": {
+                            "description": "Limits.",
+                            "nullable": true,
+                            "properties": {
+                              "cpu": {
+                                "description": "CPU, such as `500m`.",
+                                "maxLength": 32,
+                                "nullable": true,
+                                "type": "string"
+                              },
+                              "memory": {
+                                "description": "Memory, such as `1Gi`.",
+                                "maxLength": 32,
+                                "nullable": true,
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "requests": {
+                            "description": "Requests.",
+                            "nullable": true,
+                            "properties": {
+                              "cpu": {
+                                "description": "CPU, such as `500m`.",
+                                "maxLength": 32,
+                                "nullable": true,
+                                "type": "string"
+                              },
+                              "memory": {
+                                "description": "Memory, such as `1Gi`.",
+                                "maxLength": 32,
+                                "nullable": true,
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "timeout": {
+                        "description": "How long planning may take. Default `10m`.",
+                        "maxLength": 32,
+                        "nullable": true,
+                        "pattern": "^([0-9]{1,6}(\\.[0-9]{1,3})?(ms|s|m|h))+$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
                       "image"
                     ],
                     "type": "object"
                   },
                   "type": {
-                    "description": "What the planning step does.",
+                    "description": "`dockerfile`: The repository's own Dockerfile; nothing to plan.\n\n`railpack`: Railpack plans; its gateway frontend builds.\n\n`agent`: An agent writes a Dockerfile and trial-builds it; a Dockerfile frontend builds it.",
                     "enum": [
                       "dockerfile",
                       "railpack",
@@ -226,12 +292,12 @@
                 "type": "object",
                 "x-kubernetes-validations": [
                   {
-                    "message": "planner is required for railpack and agent, and forbidden for dockerfile",
-                    "rule": "self.type == 'dockerfile' ? !has(self.planner) : has(self.planner)"
+                    "message": "railpack is required for type railpack, and only for it",
+                    "rule": "has(self.railpack) == (self.type == 'railpack')"
                   },
                   {
-                    "message": "planner.model and the dockerfile.v0 frontend are required for agent, and planner.model is forbidden for the others",
-                    "rule": "self.type == 'agent' ? has(self.planner) && has(self.planner.model) && self.frontend.type == 'dockerfile.v0' : !has(self.planner) || !has(self.planner.model)"
+                    "message": "agent is required for type agent, and only for it",
+                    "rule": "has(self.agent) == (self.type == 'agent')"
                   }
                 ]
               },

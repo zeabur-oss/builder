@@ -680,16 +680,14 @@ fn a_ceiling_holds_a_namespace_to_the_cluster_limit_and_says_so() {
 
 fn cluster_builder(generation: i64) -> ClusterBuilder {
     use zeabur_builder_api::cluster_builder::{
-        BuilderType, ClusterBuilderSpec, FrontendSpec, FrontendType,
+        ClusterBuilderSpec, Frontend, FrontendSpec, Planner,
     };
     let mut builder = ClusterBuilder::new(
         "dockerfile",
         ClusterBuilderSpec {
-            kind: BuilderType::Dockerfile,
-            planner: None,
+            planner: Planner::Dockerfile,
             frontend: FrontendSpec {
-                kind: FrontendType::Dockerfile,
-                source: None,
+                kind: Frontend::Dockerfile,
                 opts: BTreeMap::new(),
             },
         },
@@ -1314,23 +1312,27 @@ fn an_agent_run_waits_for_its_model_key() {
 /// calls no model and starts without one.
 #[test]
 fn only_a_run_that_plans_needs_the_model_key() {
-    use zeabur_builder_api::cluster_builder::{ModelSpec, PlannerSpec};
+    use zeabur_builder_api::cluster_builder::{AgentPlanner, ModelSpec, Planner, PlannerSpec};
     let secret_ref = SecretKeyRef {
         name: "model".to_owned(),
         key: "anthropic".to_owned(),
     };
     let mut agent = cluster_builder(1).spec;
-    agent.planner = Some(PlannerSpec {
-        image: "agent".to_owned(),
-        timeout: None,
-        resources: None,
-        model: Some(ModelSpec {
-            provider: "anthropic".to_owned(),
-            model: "claude-opus-5-5".to_owned(),
-            base_url: None,
-            api_key_secret: secret_ref.clone(),
-        }),
-    });
+    agent.planner = Planner::Agent {
+        agent: AgentPlanner {
+            planner: PlannerSpec {
+                image: "agent".to_owned(),
+                timeout: None,
+                resources: None,
+            },
+            model: ModelSpec {
+                provider: "anthropic".to_owned(),
+                model: "claude-opus-5-5".to_owned(),
+                base_url: None,
+                api_key_secret: secret_ref.clone(),
+            },
+        },
+    };
     assert_eq!(model_key_ref(&agent, false), Some(&secret_ref));
     assert_eq!(model_key_ref(&cluster_builder(1).spec, false), None);
     assert_eq!(model_key_ref(&agent, true), None);
