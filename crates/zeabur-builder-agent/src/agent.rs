@@ -520,6 +520,7 @@ mod tests {
     use std::time::Duration;
 
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     use super::*;
     use crate::testing::{Dir, Replay, Script, failed, text, tool_use};
@@ -546,23 +547,20 @@ mod tests {
         tool_use(
             id,
             "build",
-            &format!(
-                r#"{{"dockerfile": {}, "facts": "node 24.9 from .nvmrc"}}"#,
-                serde_json::to_string(dockerfile).unwrap()
-            ),
+            &json!({"dockerfile": dockerfile, "facts": "node 24.9 from .nvmrc"}),
         )
     }
 
     #[tokio::test]
     async fn fixes_a_failed_build_and_finishes_with_the_one_that_built() {
         let replay = Replay::new([
-            tool_use("1", "list", r#"{"path": "."}"#),
+            tool_use("1", "list", &json!({"path": "."})),
             build("2", "FROM node:24.9-alpine\nRUN npm ci\n"),
             build("3", DOCKERFILE),
             tool_use(
                 "4",
                 "finish",
-                r#"{"port": 3000, "language": "node", "version": "24.9"}"#,
+                &json!({"port": 3000, "language": "node", "version": "24.9"}),
             ),
         ]);
         let script = Script::new([
@@ -594,11 +592,11 @@ mod tests {
     #[tokio::test]
     async fn finish_before_a_build_succeeds_is_refused() {
         let replay = Replay::new([
-            tool_use("1", "finish", r#"{"language": "node"}"#),
+            tool_use("1", "finish", &json!({"language": "node"})),
             tool_use(
                 "2",
                 "stop",
-                r#"{"reason": "NeedsBuildVariable", "detail": "set NPM_TOKEN"}"#,
+                &json!({"reason": "NeedsBuildVariable", "detail": "set NPM_TOKEN"}),
             ),
         ]);
         let (_dir, agent) = agent(&replay, Script::default(), Limits::default());
@@ -622,7 +620,7 @@ mod tests {
             tool_use(
                 "2",
                 "stop",
-                r#"{"reason": "NoAppFound", "detail": "empty"}"#,
+                &json!({"reason": "NoAppFound", "detail": "empty"}),
             ),
         ]);
         let (_dir, agent) = agent(&replay, Script::default(), Limits::default());
@@ -647,12 +645,12 @@ mod tests {
             tool_use(
                 "1",
                 "stop",
-                r#"{"reason": "BudgetSpent", "detail": "tired"}"#,
+                &json!({"reason": "BudgetSpent", "detail": "tired"}),
             ),
             tool_use(
                 "2",
                 "stop",
-                r#"{"reason": "NoAppFound", "detail": "no app"}"#,
+                &json!({"reason": "NoAppFound", "detail": "no app"}),
             ),
         ]);
         let (_dir, agent) = agent(&replay, Script::default(), Limits::default());
@@ -671,7 +669,7 @@ mod tests {
     #[tokio::test]
     async fn stops_when_the_turns_are_spent() {
         let replay =
-            Replay::new((0..5).map(|i| tool_use(&i.to_string(), "list", r#"{"path": "."}"#)));
+            Replay::new((0..5).map(|i| tool_use(&i.to_string(), "list", &json!({"path": "."}))));
         let limits = Limits {
             turns: 3,
             ..Limits::default()
@@ -734,7 +732,7 @@ mod tests {
     #[tokio::test]
     async fn stops_when_the_input_tokens_are_spent() {
         let replay =
-            Replay::new((0..5).map(|i| tool_use(&i.to_string(), "list", r#"{"path": "."}"#)));
+            Replay::new((0..5).map(|i| tool_use(&i.to_string(), "list", &json!({"path": "."}))));
         let limits = Limits {
             input_tokens: 2000,
             ..Limits::default()

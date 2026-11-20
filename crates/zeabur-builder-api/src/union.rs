@@ -199,6 +199,7 @@ fn one_of(tags: &[String]) -> String {
 mod tests {
     use schemars::{JsonSchema, SchemaGenerator};
     use serde::{Deserialize, Serialize};
+    use serde_json::json;
 
     /// A pet.
     #[derive(Serialize, Deserialize, JsonSchema)]
@@ -230,45 +231,33 @@ mod tests {
     fn a_union_is_one_object_with_a_rule_per_member() {
         let schema = SchemaGenerator::default().into_root_schema_for::<Pet>();
         assert_eq!(
-            serde_json::to_string_pretty(&schema).unwrap(),
-            r#"{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Pet",
-  "description": "A pet.",
-  "type": "object",
-  "properties": {
-    "collar": {
-      "description": "Its collar.",
-      "type": "string"
-    },
-    "name": {
-      "description": "Its name.",
-      "type": "string"
-    },
-    "type": {
-      "description": "`none`: No pet.\n\n`cat`: A cat.\n\n`dog`: A dog.",
-      "type": "string",
-      "enum": [
-        "none",
-        "cat",
-        "dog"
-      ]
-    }
-  },
-  "required": [
-    "type"
-  ],
-  "x-kubernetes-validations": [
-    {
-      "message": "name is required for type cat or dog, and only for it",
-      "rule": "has(self.name) == (self.type in ['cat', 'dog'])"
-    },
-    {
-      "message": "collar is only for type dog",
-      "rule": "!has(self.collar) || self.type == 'dog'"
-    }
-  ]
-}"#
+            serde_json::to_value(schema).unwrap(),
+            json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "Pet",
+                "description": "A pet.",
+                "type": "object",
+                "properties": {
+                    "collar": {"description": "Its collar.", "type": "string"},
+                    "name": {"description": "Its name.", "type": "string"},
+                    "type": {
+                        "description": "`none`: No pet.\n\n`cat`: A cat.\n\n`dog`: A dog.",
+                        "type": "string",
+                        "enum": ["none", "cat", "dog"],
+                    },
+                },
+                "required": ["type"],
+                "x-kubernetes-validations": [
+                    {
+                        "rule": "has(self.name) == (self.type in ['cat', 'dog'])",
+                        "message": "name is required for type cat or dog, and only for it",
+                    },
+                    {
+                        "rule": "!has(self.collar) || self.type == 'dog'",
+                        "message": "collar is only for type dog",
+                    },
+                ],
+            })
         );
     }
 }

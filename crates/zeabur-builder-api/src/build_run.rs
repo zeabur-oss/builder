@@ -1,4 +1,5 @@
 //! `BuildRun`: one build of one commit or archive.
+
 #![cfg_attr(
     feature = "schema",
     expect(
@@ -475,6 +476,8 @@ impl std::fmt::Display for Reason {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -484,26 +487,29 @@ mod tests {
             reason: Some(Reason::OutOfMemory),
             ..BuildRunStatus::default()
         };
-        let json = serde_json::to_string(&status).unwrap();
-        assert_eq!(json, r#"{"phase":"Failed","reason":"OutOfMemory"}"#);
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json, json!({"phase": "Failed", "reason": "OutOfMemory"}));
         assert_eq!(
-            serde_json::from_str::<BuildRunStatus>(&json).unwrap(),
+            serde_json::from_value::<BuildRunStatus>(json).unwrap(),
             status
         );
     }
 
     #[test]
     fn an_unrecognised_phase_or_reason_decodes_as_unknown() {
-        let status: BuildRunStatus =
-            serde_json::from_str(r#"{"phase": "Paused", "reason": "DiskFull", "message": "kept"}"#)
-                .unwrap();
+        let status: BuildRunStatus = serde_json::from_value(json!({
+            "phase": "Paused",
+            "reason": "DiskFull",
+            "message": "kept",
+        }))
+        .unwrap();
         assert_eq!(status.phase, Some(Phase::Unknown));
         assert_eq!(status.reason, Some(Reason::Unknown));
         assert_eq!(status.message.as_deref(), Some("kept"));
 
         assert_eq!(
-            serde_json::to_string(&status).unwrap(),
-            r#"{"phase":"Unknown","reason":"Unknown","message":"kept"}"#
+            serde_json::to_value(&status).unwrap(),
+            json!({"phase": "Unknown", "reason": "Unknown", "message": "kept"})
         );
     }
 }

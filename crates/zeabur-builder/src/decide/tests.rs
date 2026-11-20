@@ -712,28 +712,32 @@ fn flags() -> Resources {
     }
 }
 
-fn quantities(cpu: Option<&str>, memory: Option<&str>) -> BuildQuantities {
-    BuildQuantities {
-        cpu: cpu.map(|q| Quantity(q.to_owned())),
-        memory: memory.map(|q| Quantity(q.to_owned())),
-    }
+fn assert_status_is(status: &ClusterBuilderStatus, expected: impl Serialize) {
+    let status = ClusterBuilderStatus {
+        conditions: Vec::new(),
+        ..status.clone()
+    };
+    assert_eq!(
+        serde_json::to_value(status).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
 }
 
 #[test]
 fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
     let status =
         cluster_builder_status(&cluster_builder(1), &flags(), &Ceiling::default(), 3, now());
-    assert_eq!(
-        status.build_defaults,
-        Some(BuildDefaults {
-            requests: Some(quantities(Some("100m"), Some("256Mi"))),
-            limits: Some(quantities(Some("1"), Some("1Gi"))),
-        })
-    );
-    assert_eq!(status.default_concurrent_builds, Some(3));
     // No ceiling is a missing field, never a zero.
-    let json = serde_json::to_string(&status).unwrap();
-    assert!(!json.contains("buildCeiling"), "{json}");
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {
+                "requests": {"cpu": "100m", "memory": "256Mi"},
+                "limits": {"cpu": "1", "memory": "1Gi"},
+            },
+            "defaultConcurrentBuilds": 3,
+        }),
+    );
     let ready = &status.conditions[0];
     assert_eq!(
         (ready.kind, ready.status, ready.reason.as_str()),
@@ -746,9 +750,15 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
         ..flags()
     };
     let status = cluster_builder_status(&cluster_builder(1), &unset, &Ceiling::default(), 3, now());
-    assert_eq!(
-        status.build_defaults.and_then(|d| d.limits),
-        Some(quantities(None, Some("1Gi")))
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {
+                "requests": {"cpu": "100m", "memory": "256Mi"},
+                "limits": {"memory": "1Gi"},
+            },
+            "defaultConcurrentBuilds": 3,
+        }),
     );
     let none = Resources {
         cpu_limit: None,
@@ -756,12 +766,12 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
         ..flags()
     };
     let status = cluster_builder_status(&cluster_builder(1), &none, &Ceiling::default(), 3, now());
-    assert_eq!(
-        status.build_defaults,
-        Some(BuildDefaults {
-            requests: Some(quantities(Some("100m"), Some("256Mi"))),
-            limits: None,
-        })
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {"requests": {"cpu": "100m", "memory": "256Mi"}},
+            "defaultConcurrentBuilds": 3,
+        }),
     );
 }
 
@@ -772,12 +782,16 @@ fn a_cluster_builder_status_shows_the_ceiling_namespaces_are_held_to() {
         memory: Some("4Gi".to_owned()),
     };
     let status = cluster_builder_status(&cluster_builder(1), &flags(), &ceiling, 1, now());
-    assert_eq!(
-        status.build_ceiling,
-        Some(BuildCeiling {
-            cpu: None,
-            memory: Some(Quantity("4Gi".to_owned())),
-        })
+    assert_status_is(
+        &status,
+        serde_json::json!({
+            "buildDefaults": {
+                "requests": {"cpu": "100m", "memory": "256Mi"},
+                "limits": {"cpu": "1", "memory": "1Gi"},
+            },
+            "buildCeiling": {"memory": "4Gi"},
+            "defaultConcurrentBuilds": 1,
+        }),
     );
     // A namespace that asks for more gets the ceiling the status shows.
     let annotations = BTreeMap::from([(annotations::BUILD_MEMORY.to_owned(), "16Gi".to_owned())]);
@@ -1028,8 +1042,8 @@ fn keel_gets_the_repository_and_the_template_tag() {
     );
     let payload = keel_payload("registry.local:5000/team-a/api", &run).unwrap();
     assert_eq!(
-        serde_json::to_string(&payload).unwrap(),
-        r#"{"name":"registry.local:5000/team-a/api","tag":"main-1-3e1a9c2"}"#
+        serde_json::to_value(payload).unwrap(),
+        serde_json::json!({"name": "registry.local:5000/team-a/api", "tag": "main-1-3e1a9c2"})
     );
     let untagged = succeeded("api-2", A, "2026-10-22T01:00:00Z", &[]);
     assert_eq!(keel_payload("r/team-a/api", &untagged), None);

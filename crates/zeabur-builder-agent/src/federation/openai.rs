@@ -109,9 +109,15 @@ impl TokenSource for OpenAi {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use std::collections::HashMap;
 
     use pretty_assertions::assert_eq;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -135,12 +141,14 @@ mod tests {
         let body = openai.request("jwt");
         assert_eq!(body.content_type, "application/json");
         assert_eq!(
-            std::str::from_utf8(&body.bytes).unwrap(),
-            concat!(
-                r#"{"grant_type":"urn:ietf:params:oauth:grant-type:token-exchange","#,
-                r#""subject_token_type":"urn:ietf:params:oauth:token-type:jwt","subject_token":"jwt","#,
-                r#""identity_provider_id":"idp_1","service_account_id":"svc_1"}"#
-            )
+            serde_json::from_slice::<Value>(&body.bytes).unwrap(),
+            json!({
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+                "subject_token": "jwt",
+                "identity_provider_id": "idp_1",
+                "service_account_id": "svc_1",
+            })
         );
     }
 

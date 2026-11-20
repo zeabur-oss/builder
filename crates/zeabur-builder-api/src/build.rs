@@ -1,4 +1,5 @@
 //! `Build`: what to build, and the newest image of it.
+
 #![cfg_attr(
     feature = "schema",
     expect(
@@ -560,6 +561,8 @@ impl std::fmt::Display for ConditionReason {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::build_run::{Phase, Reason};
 
@@ -573,10 +576,7 @@ mod tests {
             (ConditionReason::NotBuilt, "NotBuilt"),
         ] {
             assert_eq!(reason.to_string(), written);
-            assert_eq!(
-                serde_json::to_string(&reason).unwrap(),
-                format!("\"{written}\"")
-            );
+            assert_eq!(serde_json::to_value(reason).unwrap(), json!(written));
         }
     }
 

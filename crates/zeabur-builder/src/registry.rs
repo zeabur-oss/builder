@@ -602,8 +602,14 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use aws_lc_rs::rand::SystemRandom;
     use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
+    use serde_json::json;
 
     use super::*;
 
@@ -615,9 +621,9 @@ mod tests {
         .into_bytes()
     }
 
-    fn claims(token: &str) -> String {
+    fn claims(token: &str) -> serde_json::Value {
         let claims = token.split('.').nth(1).unwrap();
-        String::from_utf8(URL_SAFE_NO_PAD.decode(claims).unwrap()).unwrap()
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(claims).unwrap()).unwrap()
     }
 
     #[test]
@@ -644,11 +650,16 @@ mod tests {
         let skew = i64::try_from(CLOCK_SKEW.as_secs()).unwrap();
         assert_eq!(
             claims(&token),
-            format!(
-                r#"{{"iss":"zeabur-builder","iat":{t},"nbf":{},"exp":{},"access":[{{"type":"repository","name":"team-a/api","actions":["pull","push"]}},{{"type":"repository","name":"team-a/api/source","actions":["pull"]}}]}}"#,
-                t - skew,
-                t + 600
-            )
+            json!({
+                "iss": "zeabur-builder",
+                "iat": t,
+                "nbf": t - skew,
+                "exp": t + 600,
+                "access": [
+                    {"type": "repository", "name": "team-a/api", "actions": ["pull", "push"]},
+                    {"type": "repository", "name": "team-a/api/source", "actions": ["pull"]},
+                ],
+            })
         );
     }
 
@@ -669,13 +680,20 @@ mod tests {
         let config = br#"{"auths":{
             "https://zot.zot.svc:5000":{"auth":"dTpw"},
             "ghcr.io":{"auth":"Z2g6cA=="}}}"#;
+        let config: serde_json::Value =
+            serde_json::from_slice(&with_token(config, "zot.zot.svc:5000", "t").unwrap()).unwrap();
         assert_eq!(
-            with_token(config, "zot.zot.svc:5000", "t").unwrap(),
-            br#"{"auths":{"ghcr.io":{"auth":"Z2g6cA=="},"zot.zot.svc:5000":{"registrytoken":"t"}}}"#
+            config,
+            json!({"auths": {
+                "ghcr.io": {"auth": "Z2g6cA=="},
+                "zot.zot.svc:5000": {"registrytoken": "t"},
+            }})
         );
+        let config: serde_json::Value =
+            serde_json::from_slice(&docker_config("zot.zot.svc:5000", "t")).unwrap();
         assert_eq!(
-            docker_config("zot.zot.svc:5000", "t"),
-            br#"{"auths":{"zot.zot.svc:5000":{"registrytoken":"t"}}}"#
+            config,
+            json!({"auths": {"zot.zot.svc:5000": {"registrytoken": "t"}}})
         );
     }
 

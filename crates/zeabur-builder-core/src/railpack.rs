@@ -147,11 +147,12 @@ USER {uid}:{uid}
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn plan() -> Plan {
-        serde_json::from_str(
-            r#"{
+        serde_json::from_value(json!({
             "steps": [
                 {"name": "packages:mise", "inputs": [{"image": "railpack-builder"}],
                  "commands": [{"cmd": "mise install"}]},
@@ -171,8 +172,7 @@ mod tests {
                     {"image": "caddy", "include": ["/usr/bin/caddy"]}
                 ]
             }
-        }"#,
-        )
+        }))
         .unwrap()
     }
 
@@ -215,14 +215,15 @@ mod tests {
 
     #[test]
     fn a_plan_without_deploy_inputs_is_left_alone() {
-        for json in ["{}", r#"{"deploy":{"startCmd":"x"}}"#] {
-            let mut plan: Plan = serde_json::from_str(json).unwrap();
+        for json in [json!({}), json!({"deploy": {"startCmd": "x"}})] {
+            let mut plan: Plan = serde_json::from_value(json.clone()).unwrap();
             assert_eq!(own_deploy_layers(&mut plan), Vec::<String>::new());
-            assert_eq!(serde_json::to_string(&plan).unwrap(), json);
+            assert_eq!(serde_json::to_value(&plan).unwrap(), json);
         }
-        let mut no_commands: Plan = serde_json::from_str(
-            r#"{"steps": [{"name": "build"}], "deploy": {"inputs": [{"step": "build", "include": ["."]}]}}"#,
-        )
+        let mut no_commands: Plan = serde_json::from_value(json!({
+            "steps": [{"name": "build"}],
+            "deploy": {"inputs": [{"step": "build", "include": ["."]}]}
+        }))
         .unwrap();
         assert_eq!(own_deploy_layers(&mut no_commands), ["build"]);
         assert_eq!(commands(&no_commands, "build"), [OWN_COMMAND]);
@@ -230,14 +231,15 @@ mod tests {
 
     #[test]
     fn fields_the_plan_does_not_read_are_written_back() {
-        let json = concat!(
-            r#"{"steps":[{"name":"build","commands":[{"path":"/x"}],"inputs":[{"image":"b"}]}],"#,
-            r#""deploy":{"inputs":[{"local":true,"include":["."]}],"startCmd":"node ."},"#,
-            r#""caches":{"npm":{"directory":"/root/.npm","type":"shared"}},"secrets":["NPM_TOKEN"]}"#,
-        );
-        let mut plan: Plan = serde_json::from_str(json).unwrap();
+        let json = json!({
+            "steps": [{"name": "build", "commands": [{"path": "/x"}], "inputs": [{"image": "b"}]}],
+            "deploy": {"inputs": [{"local": true, "include": ["."]}], "startCmd": "node ."},
+            "caches": {"npm": {"directory": "/root/.npm", "type": "shared"}},
+            "secrets": ["NPM_TOKEN"],
+        });
+        let mut plan: Plan = serde_json::from_value(json.clone()).unwrap();
         own_deploy_layers(&mut plan);
-        assert_eq!(serde_json::to_string(&plan).unwrap(), json);
+        assert_eq!(serde_json::to_value(&plan).unwrap(), json);
     }
 
     #[test]

@@ -267,6 +267,7 @@ mod tests {
     use std::path::PathBuf;
 
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     use super::*;
 
@@ -290,11 +291,7 @@ mod tests {
         }
 
         fn request(&self, jwt: &str) -> Body {
-            #[derive(serde::Serialize)]
-            struct Assertion<'a> {
-                assertion: &'a str,
-            }
-            Body::json(&Assertion { assertion: jwt })
+            Body::json(&json!({"assertion": jwt}))
         }
 
         fn check(&self) -> &'static str {
@@ -328,10 +325,14 @@ mod tests {
 
     #[test]
     fn reads_the_access_token() {
-        let reply = r#"{"access_token": "sk-ant-oat01-abc", "token_type": "Bearer",
-            "expires_in": 600, "scope": "workspace:inference"}"#;
+        let reply = json!({
+            "access_token": "sk-ant-oat01-abc",
+            "token_type": "Bearer",
+            "expires_in": 600,
+            "scope": "workspace:inference",
+        });
         assert_eq!(
-            access_token(&vendor(), StatusCode::OK, reply.as_bytes()),
+            access_token(&vendor(), StatusCode::OK, reply.to_string().as_bytes()),
             Ok(Token {
                 access_token: "sk-ant-oat01-abc".to_owned(),
                 expires_in: 600,

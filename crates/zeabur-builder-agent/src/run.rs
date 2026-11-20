@@ -325,7 +325,13 @@ async fn report(out: &Path, outcome: Outcome, spent: Option<&Spent>) -> Result<b
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     use super::*;
     use crate::testing::{Dir, Replay, Script, failed, tool_use};
@@ -392,7 +398,7 @@ mod tests {
         let replay = Replay::new([tool_use(
             "1",
             "stop",
-            r#"{"reason": "NoAppFound", "detail": "empty"}"#,
+            &json!({"reason": "NoAppFound", "detail": "empty"}),
         )]);
         let script = Script::new([failed("manifest unknown")]);
 
@@ -509,9 +515,10 @@ mod tests {
         let read = |name: &str| std::fs::read_to_string(out.path().join(name)).unwrap();
         assert_eq!(read("Dockerfile"), "FROM busybox\n");
         assert_eq!(read("Dockerfile.dockerignore"), dockerignore("dist"));
+        let info: serde_json::Value = serde_json::from_str(&read("info.json")).unwrap();
         assert_eq!(
-            read("info.json"),
-            r#"{"source":"previous","modelCalled":false,"inputTokens":0,"outputTokens":0}"#
+            info,
+            json!({"source": "previous", "modelCalled": false, "inputTokens": 0, "outputTokens": 0})
         );
     }
 }

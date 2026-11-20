@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use http::HeaderValue;
+use serde_json::json;
 use zeabur_builder_api::build::{
     BuildSpec, Concurrency, GitHubAppSource, GitSource, SourceKind, SourceSpec, TriggerSpec,
     WebhookTrigger,
@@ -192,10 +193,16 @@ fn sign_hex(key: &[u8], body: &[u8]) -> String {
 }
 
 fn github_push(git_ref: &str) -> Vec<u8> {
-    format!(
-        r#"{{"ref":"{git_ref}","after":"3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c","repository":{{"clone_url":"https://github.com/acme/api.git","ssh_url":"git@github.com:acme/api.git","html_url":"https://github.com/acme/api"}}}}"#
-    )
-    .into_bytes()
+    serde_json::to_vec(&json!({
+        "ref": git_ref,
+        "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+        "repository": {
+            "clone_url": "https://github.com/acme/api.git",
+            "ssh_url": "git@github.com:acme/api.git",
+            "html_url": "https://github.com/acme/api"
+        }
+    }))
+    .unwrap()
 }
 
 fn github_headers(key: &[u8], body: &[u8], delivery: &str, event: &str) -> HeaderMap {
@@ -305,9 +312,10 @@ async fn bad_signatures_are_refused() {
 #[tokio::test]
 async fn unknown_repositories_look_like_bad_signatures() {
     let w = world();
-    let body =
-        br#"{"ref":"refs/heads/main","repository":{"clone_url":"https://github.com/acme/secret.git"}}"#
-            .to_vec();
+    let body = serde_json::to_vec(
+        &json!({"ref": "refs/heads/main", "repository": {"clone_url": "https://github.com/acme/secret.git"}}),
+    )
+    .unwrap();
     let unknown = post(
         &w,
         Provider::GitHub,
@@ -378,7 +386,9 @@ async fn replays_are_dropped() {
 #[tokio::test]
 async fn deliveries_without_a_push_wake_nothing() {
     let w = world();
-    let ping = br#"{"zen":"Design for failure.","hook_id":1,"repository":{"clone_url":"https://github.com/acme/api.git"}}"#.to_vec();
+    let ping = serde_json::to_vec(&json!({"zen": "Design for failure.", "hook_id": 1,
+        "repository": {"clone_url": "https://github.com/acme/api.git"}}))
+    .unwrap();
     assert_eq!(
         post(
             &w,
@@ -389,7 +399,10 @@ async fn deliveries_without_a_push_wake_nothing() {
         .await,
         (StatusCode::ACCEPTED, "ignored".to_owned())
     );
-    let deleted = br#"{"ref":"refs/heads/main","deleted":true,"after":"0000000000000000000000000000000000000000","repository":{"clone_url":"https://github.com/acme/api.git"}}"#.to_vec();
+    let deleted = serde_json::to_vec(&json!({"ref": "refs/heads/main", "deleted": true,
+        "after": "0000000000000000000000000000000000000000",
+        "repository": {"clone_url": "https://github.com/acme/api.git"}}))
+    .unwrap();
     assert_eq!(
         post(
             &w,
@@ -481,7 +494,11 @@ async fn the_app_wakes_its_builds_with_its_own_secret() {
 }
 
 fn gitlab_body() -> Vec<u8> {
-    br#"{"ref":"refs/heads/main","after":"3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c","project":{"git_http_url":"https://gitlab.example.com/Group/App.git"}}"#.to_vec()
+    serde_json::to_vec(
+        &json!({"ref": "refs/heads/main", "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+        "project": {"git_http_url": "https://gitlab.example.com/Group/App.git"}}),
+    )
+    .unwrap()
 }
 
 fn standard_headers(key: &[u8], id: &str, at: i64, body: &[u8]) -> HeaderMap {
@@ -559,7 +576,10 @@ async fn gitlab_tokens_and_signing_tokens() {
 #[tokio::test]
 async fn gitea_and_forgejo_signatures() {
     let w = world();
-    let gitea = br#"{"ref":"refs/heads/main","after":"3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c","repository":{"clone_url":"https://git.example.com/team/app.git"}}"#.to_vec();
+    let gitea = serde_json::to_vec(&json!({"ref": "refs/heads/main",
+        "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+        "repository": {"clone_url": "https://git.example.com/team/app.git"}}))
+    .unwrap();
     let mut h = HeaderMap::new();
     h.insert("x-gitea-event", HeaderValue::from_static("push"));
     h.insert("x-gitea-delivery", HeaderValue::from_static("g1"));
@@ -584,7 +604,9 @@ async fn gitea_and_forgejo_signatures() {
 #[tokio::test]
 async fn bitbucket_signature() {
     let w = world();
-    let bucket = br#"{"repository":{"full_name":"team/app"},"push":{"changes":[{"new":{"type":"branch","name":"main"}}]}}"#.to_vec();
+    let bucket = serde_json::to_vec(&json!({"repository": {"full_name": "team/app"},
+        "push": {"changes": [{"new": {"type": "branch", "name": "main"}}]}}))
+    .unwrap();
     let mut h = HeaderMap::new();
     h.insert("x-event-key", HeaderValue::from_static("repo:push"));
     h.insert("x-request-uuid", HeaderValue::from_static("b1"));

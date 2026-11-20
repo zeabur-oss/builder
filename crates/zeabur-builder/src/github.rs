@@ -619,12 +619,18 @@ fn github_message(answer: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_types,
+        reason = "test fixtures are JSON of any shape"
+    )]
+
     use std::collections::BTreeMap;
 
     use aws_lc_rs::encoding::AsDer as _;
     use aws_lc_rs::rsa::KeySize;
     use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey};
     use k8s_openapi::ByteString;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -670,17 +676,15 @@ mod tests {
         let jwt = app.jwt(now).unwrap();
         let parts: Vec<&str> = jwt.split('.').collect();
         assert_eq!(parts.len(), 3);
-        let header = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
-        assert_eq!(header, br#"{"alg":"RS256","typ":"JWT"}"#);
-        let claims = String::from_utf8(URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        let header: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0]).unwrap()).unwrap();
+        assert_eq!(header, json!({"alg": "RS256", "typ": "JWT"}));
+        let claims: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
         let t = now.as_second();
         assert_eq!(
             claims,
-            format!(
-                r#"{{"iat":{},"exp":{},"iss":"Iv23liexample"}}"#,
-                t - 60,
-                t + 540
-            )
+            json!({"iat": t - 60, "exp": t + 540, "iss": "Iv23liexample"})
         );
         let signature = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
         UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, public)
@@ -789,11 +793,11 @@ mod tests {
 
     #[test]
     fn token_permissions() {
-        let written = |access: Access| serde_json::to_string(&access.permissions()).unwrap();
-        assert_eq!(written(Access::Fetch), r#"{"contents":"read"}"#);
+        let written = |access: Access| serde_json::to_value(access.permissions()).unwrap();
+        assert_eq!(written(Access::Fetch), json!({"contents": "read"}));
         assert_eq!(
             written(Access::Controller),
-            r#"{"contents":"read","statuses":"write"}"#
+            json!({"contents": "read", "statuses": "write"})
         );
     }
 
