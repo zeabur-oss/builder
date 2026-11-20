@@ -98,15 +98,10 @@ where
         + Sync,
 {
     let api: Api<K> = Api::namespaced(client.clone(), namespace);
-    let mut body = serde_json::to_value(object).map_err(kube::Error::SerdeError)?;
-    if let Some(map) = body.as_object_mut() {
-        map.insert("apiVersion".to_owned(), K::api_version(&()).into());
-        map.insert("kind".to_owned(), K::kind(&()).into());
-    }
     api.patch(
         &object.name_any(),
         &PatchParams::apply(MANAGER).force(),
-        &Patch::Apply(body),
+        &Patch::Apply(object),
     )
     .await
 }

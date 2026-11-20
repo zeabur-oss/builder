@@ -27,7 +27,7 @@
 //! [Bitbucket payloads]: https://support.atlassian.com/bitbucket-cloud/docs/event-payloads/
 //! [Standard Webhooks]: https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md
 
-use serde_json::Value;
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::git::{DEFAULT_BRANCH, candidates};
@@ -121,8 +121,8 @@ pub struct Delivery {
 /// Why a delivery is not understood.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum HookError {
-    /// The body is not JSON.
-    #[error("the body is not JSON")]
+    /// The body is not JSON of the provider's shape.
+    #[error("the body is not the provider's JSON")]
     Json,
     /// A push without a ref the controller can read.
     #[error("the push names no valid ref")]
@@ -133,9 +133,8 @@ pub enum HookError {
 ///
 /// # Errors
 ///
-/// When the body is not JSON, or a push names a ref that is not a ref.
+/// When the body is not JSON of the provider's shape, or a push names a ref that is not a ref.
 pub fn parse(provider: Provider, event: Option<&str>, body: &[u8]) -> Result<Delivery, HookError> {
-    let json: Value = serde_json::from_slice(body).map_err(|_error| HookError::Json)?;
     let kind = match (provider, event.unwrap_or_default()) {
         (Provider::GitHub | Provider::GitHubApp | Provider::Gitea, "push")
         | (Provider::GitLab, "Push Hook" | "Tag Push Hook")
@@ -144,42 +143,17 @@ pub fn parse(provider: Provider, event: Option<&str>, body: &[u8]) -> Result<Del
         (Provider::GitHub | Provider::GitHubApp, "ping") => Event::Ping,
         _ => Event::Other,
     };
-    let text = |pointer: &str| json.pointer(pointer).and_then(Value::as_str);
-    let urls: Vec<String> = match provider {
-        Provider::GitHub | Provider::GitHubApp | Provider::Gitea => [
-            "/repository/clone_url",
-            "/repository/ssh_url",
-            "/repository/html_url",
-        ]
+    let repositories = repository_urls(provider, body)?
         .iter()
-        .filter_map(|p| text(p).map(str::to_owned))
-        .collect(),
-        Provider::GitLab => [
-            "/project/git_http_url",
-            "/project/git_ssh_url",
-            "/project/web_url",
-        ]
-        .iter()
-        .filter_map(|p| text(p).map(str::to_owned))
-        .collect(),
-        Provider::Bitbucket => text("/repository/links/html/href")
-            .map(str::to_owned)
-            .into_iter()
-            .chain(text("/repository/full_name").map(|n| format!("https://bitbucket.org/{n}")))
-            .collect(),
-        Provider::Generic => text("/repository").map(str::to_owned).into_iter().collect(),
-    };
-    let repositories = urls.iter().filter_map(|u| RepoKey::parse(u).ok()).fold(
-        Vec::<RepoKey>::new(),
-        |mut keys, key| {
+        .filter_map(|u| RepoKey::parse(u).ok())
+        .fold(Vec::<RepoKey>::new(), |mut keys, key| {
             if !keys.contains(&key) {
                 keys.push(key);
             }
             keys
-        },
-    );
+        });
     let refs = if kind == Event::Push {
-        pushed_refs(provider, &json)?
+        pushed_refs(provider, body)?
     } else {
         Vec::new()
     };
@@ -190,51 +164,176 @@ pub fn parse(provider: Provider, event: Option<&str>, body: &[u8]) -> Result<Del
     })
 }
 
-fn pushed_refs(provider: Provider, json: &Value) -> Result<Vec<String>, HookError> {
-    let refs: Vec<String> = match provider {
-        Provider::Bitbucket => json
-            .pointer("/push/changes")
-            .and_then(Value::as_array)
+/// GitHub, Gitea and Forgejo: the repository of any event.
+#[derive(Deserialize)]
+struct GitHubEvent {
+    repository: Option<GitHubRepository>,
+}
+
+#[derive(Deserialize)]
+struct GitHubRepository {
+    #[serde(rename = "clone_url")]
+    clone: Option<String>,
+    #[serde(rename = "ssh_url")]
+    ssh: Option<String>,
+    #[serde(rename = "html_url")]
+    html: Option<String>,
+}
+
+/// GitLab: the project of any event.
+#[derive(Deserialize)]
+struct GitLabEvent {
+    project: Option<GitLabProject>,
+}
+
+#[derive(Deserialize)]
+struct GitLabProject {
+    #[serde(rename = "git_http_url")]
+    http: Option<String>,
+    #[serde(rename = "git_ssh_url")]
+    ssh: Option<String>,
+    #[serde(rename = "web_url")]
+    web: Option<String>,
+}
+
+/// Bitbucket Cloud: the repository and, on `repo:push`, its changes.
+#[derive(Deserialize)]
+struct BitbucketEvent {
+    repository: Option<BitbucketRepository>,
+    push: Option<BitbucketPush>,
+}
+
+#[derive(Deserialize)]
+struct BitbucketRepository {
+    full_name: Option<String>,
+    links: Option<BitbucketLinks>,
+}
+
+#[derive(Deserialize)]
+struct BitbucketLinks {
+    html: Option<BitbucketLink>,
+}
+
+#[derive(Deserialize)]
+struct BitbucketLink {
+    href: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BitbucketPush {
+    #[serde(default)]
+    changes: Vec<BitbucketChange>,
+}
+
+#[derive(Deserialize)]
+struct BitbucketChange {
+    /// The ref after the push; `null` when it was deleted.
+    new: Option<BitbucketRef>,
+}
+
+#[derive(Deserialize)]
+struct BitbucketRef {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    name: Option<String>,
+}
+
+/// The generic form: a repository URL and a ref or branch name.
+#[derive(Deserialize)]
+struct GenericEvent {
+    repository: Option<String>,
+    #[serde(rename = "ref")]
+    git_ref: Option<String>,
+}
+
+/// A push on GitHub, Gitea, Forgejo and GitLab.
+#[derive(Deserialize)]
+struct RefPush {
+    #[serde(rename = "ref")]
+    git_ref: Option<String>,
+    #[serde(default)]
+    deleted: bool,
+    /// The new commit; all zeros when the ref was deleted.
+    #[serde(default)]
+    after: String,
+}
+
+fn read<'a, T: Deserialize<'a>>(body: &'a [u8]) -> Result<T, HookError> {
+    serde_json::from_slice(body).map_err(|_error| HookError::Json)
+}
+
+/// A push whose fields have another type names no valid ref.
+fn push_of<'a, T: Deserialize<'a>>(body: &'a [u8]) -> Result<T, HookError> {
+    serde_json::from_slice(body).map_err(|_error| HookError::Ref)
+}
+
+/// The repository URLs the payload names, in the order the provider's fields are tried.
+fn repository_urls(provider: Provider, body: &[u8]) -> Result<Vec<String>, HookError> {
+    Ok(match provider {
+        Provider::GitHub | Provider::GitHubApp | Provider::Gitea => read::<GitHubEvent>(body)?
+            .repository
+            .map(|r| [r.clone, r.ssh, r.html])
             .into_iter()
             .flatten()
-            .take(MAX_REFS)
-            .filter_map(|change| {
-                let new = change.get("new").filter(|n| !n.is_null())?;
-                let name = new.get("name")?.as_str()?;
-                let prefix = match new.get("type")?.as_str()? {
-                    "branch" => "refs/heads/",
-                    "tag" => "refs/tags/",
-                    _ => return None,
-                };
-                Some(format!("{prefix}{name}"))
-            })
+            .flatten()
             .collect(),
+        Provider::GitLab => read::<GitLabEvent>(body)?
+            .project
+            .map(|p| [p.http, p.ssh, p.web])
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect(),
+        Provider::Bitbucket => {
+            let repository = read::<BitbucketEvent>(body)?.repository;
+            let html = repository
+                .as_ref()
+                .and_then(|r| r.links.as_ref()?.html.as_ref()?.href.clone());
+            let named = repository
+                .and_then(|r| r.full_name)
+                .map(|name| format!("https://bitbucket.org/{name}"));
+            html.into_iter().chain(named).collect()
+        }
+        Provider::Generic => read::<GenericEvent>(body)?.repository.into_iter().collect(),
+    })
+}
+
+/// The refs a push names.
+fn pushed_refs(provider: Provider, body: &[u8]) -> Result<Vec<String>, HookError> {
+    let refs: Vec<String> = match provider {
+        Provider::Bitbucket => {
+            let event: BitbucketEvent = push_of(body)?;
+            event
+                .push
+                .into_iter()
+                .flat_map(|p| p.changes)
+                .take(MAX_REFS)
+                .filter_map(|change| {
+                    let new = change.new?;
+                    let prefix = match new.kind.as_deref()? {
+                        "branch" => "refs/heads/",
+                        "tag" => "refs/tags/",
+                        _ => return None,
+                    };
+                    Some(format!("{prefix}{}", new.name?))
+                })
+                .collect()
+        }
         Provider::Generic => {
-            let name = json
-                .get("ref")
-                .and_then(Value::as_str)
-                .ok_or(HookError::Ref)?;
+            let event: GenericEvent = push_of(body)?;
+            let name = event.git_ref.ok_or(HookError::Ref)?;
             vec![if name.starts_with("refs/") {
-                name.to_owned()
+                name
             } else {
                 format!("refs/heads/{name}")
             }]
         }
         Provider::GitHub | Provider::GitHubApp | Provider::GitLab | Provider::Gitea => {
-            let name = json
-                .get("ref")
-                .and_then(Value::as_str)
-                .ok_or(HookError::Ref)?;
-            let deleted = json.get("deleted").and_then(Value::as_bool) == Some(true)
-                || json
-                    .get("after")
-                    .and_then(Value::as_str)
-                    .is_some_and(|a| !a.is_empty() && a.bytes().all(|b| b == b'0'));
-            if deleted {
-                Vec::new()
-            } else {
-                vec![name.to_owned()]
-            }
+            let event: RefPush = push_of(body)?;
+            let name = event.git_ref.ok_or(HookError::Ref)?;
+            let deleted = event.deleted
+                || (!event.after.is_empty() && event.after.bytes().all(|b| b == b'0'));
+            if deleted { Vec::new() } else { vec![name] }
         }
     };
     if refs.iter().all(|r| valid_ref(r)) {

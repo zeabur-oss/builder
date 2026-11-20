@@ -726,7 +726,10 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
     );
     assert_eq!(json["defaultConcurrentBuilds"], 3);
     // No ceiling is a missing field, never a zero.
-    assert!(json.get("buildCeiling").is_none(), "{json}");
+    assert!(
+        !json.as_object().unwrap().contains_key("buildCeiling"),
+        "{json}"
+    );
     let ready = &status.conditions[0];
     assert_eq!(
         (ready.kind, ready.status, ready.reason.as_str()),
@@ -763,7 +766,10 @@ fn a_cluster_builder_status_shows_the_flags_and_no_ceiling_when_none_is_set() {
         now(),
     ))
     .unwrap();
-    assert!(json["buildDefaults"].get("limits").is_none(), "{json}");
+    assert_eq!(
+        json["buildDefaults"],
+        serde_json::json!({"requests": {"cpu": "100m", "memory": "256Mi"}})
+    );
 }
 
 #[test]

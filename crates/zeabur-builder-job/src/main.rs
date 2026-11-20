@@ -256,7 +256,7 @@ fn open_repository(repository: &str, plain_http: bool) -> Result<registry::Repos
 fn prepare_non_root(plan: &str, out: &str) -> Result<(), StepError> {
     let path = format!("{plan}/railpack-plan.json");
     let text = std::fs::read_to_string(&path).map_err(StepError::read(&path))?;
-    let mut value: serde_json::Value =
+    let mut value: railpack::Plan =
         serde_json::from_str(&text).map_err(|source| StepError::ParsePlan {
             path: path.clone(),
             source,

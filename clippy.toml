@@ -9,3 +9,14 @@ avoid-breaking-exported-api = false
 
 # Proper nouns that doc_markdown would otherwise ask to wrap in backticks.
 doc-valid-idents = ["BuildKit", "GitHub", "GitOps", "OpenAI", "OpenAPI", "OpenRouter", "Railpack", ".."]
+
+# Read and build a known shape through a typed struct: a `k8s_openapi` type, or a local struct with
+# `#[derive(Deserialize)]`. Only data of any shape is read through `serde_json::Value`.
+disallowed-methods = [
+  { path = "serde_json::Value::get", reason = "deserialize into a typed struct" },
+  { path = "serde_json::Value::get_mut", reason = "deserialize into a typed struct" },
+  { path = "serde_json::Value::pointer", reason = "deserialize into a typed struct" },
+  { path = "serde_json::Value::pointer_mut", reason = "deserialize into a typed struct" },
+  { path = "serde_json::Value::as_object_mut", reason = "build a typed struct and serialize it" },
+  { path = "serde_json::Value::as_array_mut", reason = "build a typed struct and serialize it" },
+]

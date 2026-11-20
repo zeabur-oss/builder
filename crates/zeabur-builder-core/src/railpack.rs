@@ -19,7 +19,49 @@
 //! [`convert.go`]: https://github.com/railwayapp/railpack/blob/v0.43.0/buildkit/convert.go
 //! [`backend_unix.go`]: https://github.com/moby/buildkit/blob/v0.33.1/solver/llbsolver/file/backend_unix.go
 
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+
+/// A Railpack build plan ([`plan.go`]), with the fields this crate reads. The rest stays as it is.
+///
+/// [`plan.go`]: https://github.com/railwayapp/railpack/blob/v0.43.0/core/plan/plan.go
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Plan {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    steps: Vec<Step>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deploy: Option<Deploy>,
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+struct Step {
+    name: String,
+    /// Railpack's commands are a union this crate does not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commands: Option<Vec<Value>>,
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+struct Deploy {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    inputs: Vec<Layer>,
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+struct Layer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    step: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    local: bool,
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
 
 /// The user and group a Railpack image runs as.
 pub const IMAGE_UID: u32 = 1000;
@@ -35,48 +77,28 @@ pub const OWN_COMMAND: &str = "sh -c 'command -v find >/dev/null || exit 0; for 
 const OWN_NAME: &str = "give /app and /root to uid 1000";
 
 /// Appends [`OWN_COMMAND`] to every step a deploy layer copies from, once; returns their names.
-/// A plan without steps or deploy inputs is left as it is.
-pub fn own_deploy_layers(plan: &mut Value) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for layer in plan
-        .pointer("/deploy/inputs")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if layer.get("local").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        if let Some(step) = layer.get("step").and_then(Value::as_str)
-            && !names.iter().any(|n| n == step)
+pub fn own_deploy_layers(plan: &mut Plan) -> Vec<String> {
+    let mut names: Vec<&str> = Vec::new();
+    for layer in plan.deploy.iter().flat_map(|d| &d.inputs) {
+        if let Some(step) = layer.step.as_deref()
+            && !layer.local
+            && !names.contains(&step)
         {
-            names.push(step.to_owned());
+            names.push(step);
         }
     }
-    let Some(steps) = plan.get_mut("steps").and_then(Value::as_array_mut) else {
-        return Vec::new();
-    };
+    let names: Vec<String> = names.into_iter().map(str::to_owned).collect();
     let own = json!({"cmd": OWN_COMMAND, "customName": OWN_NAME});
     let mut owned = Vec::new();
-    for step in steps {
-        let Some(name) = step.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        if !names.iter().any(|n| n == name) {
+    for step in &mut plan.steps {
+        if !names.contains(&step.name) {
             continue;
         }
-        let name = name.to_owned();
-        let Some(step) = step.as_object_mut() else {
-            continue;
-        };
-        let commands = step.entry("commands").or_insert_with(|| json!([]));
-        let Some(commands) = commands.as_array_mut() else {
-            continue;
-        };
+        let commands = step.commands.get_or_insert_default();
         if commands.last() != Some(&own) {
             commands.push(own.clone());
         }
-        owned.push(name);
+        owned.push(step.name.clone());
     }
     owned
 }
@@ -103,8 +125,8 @@ USER {uid}:{uid}
 mod tests {
     use super::*;
 
-    fn plan() -> Value {
-        json!({
+    fn plan() -> Plan {
+        serde_json::from_value(json!({
             "steps": [
                 {"name": "packages:mise", "inputs": [{"image": "railpack-builder"}],
                  "commands": [{"cmd": "mise install"}]},
@@ -124,23 +146,17 @@ mod tests {
                     {"image": "caddy", "include": ["/usr/bin/caddy"]}
                 ]
             }
-        })
+        }))
+        .unwrap()
     }
 
-    fn commands(plan: &Value, step: &str) -> Vec<String> {
-        plan["steps"]
-            .as_array()
-            .unwrap()
+    fn commands(plan: &Plan, step: &str) -> Vec<String> {
+        let step = plan.steps.iter().find(|s| s.name == step).unwrap();
+        step.commands
             .iter()
-            .find(|s| s["name"] == step)
-            .unwrap()
-            .get("commands")
-            .and_then(Value::as_array)
-            .map_or_default(|c| {
-                c.iter()
-                    .map(|c| c["cmd"].as_str().unwrap().to_owned())
-                    .collect()
-            })
+            .flatten()
+            .map(|c| c["cmd"].as_str().unwrap().to_owned())
+            .collect()
     }
 
     #[test]
@@ -170,21 +186,31 @@ mod tests {
 
     #[test]
     fn a_plan_without_deploy_inputs_is_left_alone() {
-        for mut plan in [
-            json!({}),
-            json!({"steps": []}),
-            json!({"deploy": {"inputs": "x"}}),
-        ] {
-            let before = plan.clone();
+        for json in [json!({}), json!({"deploy": {"startCmd": "x"}})] {
+            let mut plan: Plan = serde_json::from_value(json.clone()).unwrap();
             assert_eq!(own_deploy_layers(&mut plan), Vec::<String>::new());
-            assert_eq!(plan, before);
+            assert_eq!(serde_json::to_value(&plan).unwrap(), json);
         }
-        let mut no_commands = json!({
+        let mut no_commands: Plan = serde_json::from_value(json!({
             "steps": [{"name": "build"}],
             "deploy": {"inputs": [{"step": "build", "include": ["."]}]}
-        });
+        }))
+        .unwrap();
         assert_eq!(own_deploy_layers(&mut no_commands), ["build"]);
         assert_eq!(commands(&no_commands, "build"), [OWN_COMMAND]);
+    }
+
+    #[test]
+    fn fields_the_plan_does_not_read_are_written_back() {
+        let json = json!({
+            "caches": {"npm": {"directory": "/root/.npm", "type": "shared"}},
+            "secrets": ["NPM_TOKEN"],
+            "steps": [{"name": "build", "inputs": [{"image": "b"}], "commands": [{"path": "/x"}]}],
+            "deploy": {"startCmd": "node .", "inputs": [{"local": true, "include": ["."]}]}
+        });
+        let mut plan: Plan = serde_json::from_value(json.clone()).unwrap();
+        own_deploy_layers(&mut plan);
+        assert_eq!(serde_json::to_value(&plan).unwrap(), json);
     }
 
     #[test]
