@@ -3,8 +3,7 @@
 //! ```text
 //! zeabur-builder-job fetch archive [--plain-http] <repository> <digest> <dir>
 //! zeabur-builder-job plan restore [--plain-http] <repository> <digest> <dir>
-//! zeabur-builder-job build [--plain-http] [--secrets-hash-env NAME]… [--non-root PLAN OUT]
-//!                          [--save-plan <repository>:<tag>] --build buildctl … [--build buildctl …]
+//! zeabur-builder-job build <plan JSON>
 //! ```
 //!
 //! `fetch archive` is the `fetch` container of an archive source: it pulls the archive
@@ -16,29 +15,28 @@
 //! the agent's `info.json`, it writes it to `/dev/termination-log` as reused. An error fails the
 //! run.
 //!
-//! `build` is the `build` container. It runs each `--build` command (built by
-//! `zeabur-builder-jobspec`) in order, prints their `rawjson` progress for people, counts cached
-//! steps, records the steps, reads each digest from its `--metadata-file`, and writes the result to
-//! `/dev/termination-log`, where the controller reads it from the Pod's status
+//! `build` is the `build` container. Its one argument is a [`BuildPlan`] as JSON, written by
+//! `zeabur-builder-jobspec`. It runs each build in order, prints their `rawjson` progress for
+//! people, counts cached steps, records the steps, reads each digest from its metadata file, and
+//! writes the result to `/dev/termination-log`, where the controller reads it from the Pod's status
 //! ([`zeabur_builder_core::result`]). The same JSON is the last line on stdout. The image is the
-//! last command's digest and tags; `{digest}` in a command stands for the digest of the one before
-//! it.
+//! last build's digest and tags.
 //!
-//! After a success it reads the pushed image's config from the registry (`--plain-http` if the
-//! registry speaks http) and reports its `ExposedPorts`; failing to read them does not fail the
+//! After a success it reads the pushed image's config from the registry (over HTTP when the plan
+//! says `plainHttp`) and reports its `ExposedPorts`; failing to read them does not fail the
 //! build.
 //!
-//! `--secrets-hash-env` names variables whose values are hashed into
-//! `--opt build-arg:secrets-hash=…` on the first command, so Railpack's frontend invalidates the
+//! `secretsHashEnv` names variables whose values are hashed into
+//! `--opt build-arg:secrets-hash=…` on the first build, so Railpack's frontend invalidates the
 //! steps that use a secret when its value changes, without the value entering the cache key.
 //!
-//! `--non-root PLAN OUT` makes a Railpack image run as a non-root user
-//! ([`zeabur_builder_core::railpack`]): it writes `PLAN/railpack-plan.json`, rewritten, and the
-//! second build's `Dockerfile` into `OUT`, and leaves the plan folder as the planner wrote it. The
-//! second `--build` builds on the first.
+//! `nonRoot` makes a Railpack image run as a non-root user ([`zeabur_builder_core::railpack`]):
+//! it writes the plan folder's `railpack-plan.json`, rewritten, and the second build's
+//! `Dockerfile` into `out`, and leaves the plan folder as the planner wrote it. The second build
+//! builds on the first.
 //!
-//! `--save-plan` pushes the planner's folder, `/workspace/plan`, after a success, as the plan
-//! artifact ([`zeabur_builder_core::plan`]) tagged `<tag>`, and the result reports its digest as
+//! `savePlan` pushes the planner's folder, `/workspace/plan`, after a success, as the plan
+//! artifact ([`zeabur_builder_core::plan`]), and the result reports its digest as
 //! `planDigest`. Failing to push it does not fail the build; the `Build` keeps the plan it saved
 //! before.
 
@@ -54,6 +52,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncBufReadExt as _;
 use zeabur_builder_core::archive::{self, MAX_UNPACKED_BYTES};
+use zeabur_builder_core::build_plan::{Build, BuildPlan, Image};
 use zeabur_builder_core::plan::{self, Info, Source};
 use zeabur_builder_core::progress::StepLog;
 use zeabur_builder_core::railpack;
@@ -69,8 +68,6 @@ const OUT: &str = "/workspace/out";
 const PLAN: &str = "/workspace/plan";
 /// The registry's CA, PEM (`zeabur_builder_jobspec::REGISTRY_CA_ENV`).
 const REGISTRY_CA_ENV: &str = "ZB_REGISTRY_CA";
-/// In a `--build` command after the first, the digest of the one before it.
-const DIGEST: &str = "{digest}";
 
 /// A command line the job cannot use.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -79,18 +76,12 @@ enum UsageError {
     Job,
     #[error("usage: fetch archive|plan restore [--plain-http] <repository> <digest> <dir>")]
     Fetch,
-    #[error("--secrets-hash-env needs a name")]
-    SecretsHashEnv,
-    #[error("--non-root needs the plan folder and an output folder")]
-    NonRoot,
-    #[error("--save-plan needs <repository>:<tag>")]
-    SavePlan,
-    #[error("unexpected argument `{0}`")]
-    Unexpected(String),
-    #[error("missing `--build buildctl …`")]
+    #[error("usage: build <plan JSON>")]
+    Build,
+    #[error("cannot read the build plan: {0}")]
+    Plan(String),
+    #[error("the build plan has no build")]
     NoBuild,
-    #[error("missing a command after `--build`")]
-    EmptyBuild,
 }
 
 /// Why a step of the job stopped. `fetch` and `plan restore` print the message to stderr, and
@@ -123,8 +114,6 @@ enum StepError {
     },
     #[error("cannot open {path}: {source}")]
     Open { path: String, source: io::Error },
-    #[error("`{0}` is not <repository>:<tag>")]
-    PlanName(String),
     #[error("cannot pack {dir}: {source}")]
     Pack { dir: String, source: io::Error },
     #[error("{dir} packs to {size} bytes; the limit is {limit}")]
@@ -161,59 +150,17 @@ impl StepError {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct Args {
-    plain_http: bool,
-    secrets_hash_env: Vec<String>,
-    non_root: Option<(String, String)>,
-    save_plan: Option<String>,
-    commands: Vec<Vec<String>>,
-}
-
-/// Parses the arguments of `build`.
-fn parse_args(args: &[String]) -> Result<Args, UsageError> {
-    let mut secrets_hash_env = Vec::new();
-    let mut non_root = None;
-    let mut plain_http = false;
-    let mut save_plan = None;
-    let mut rest = args.iter();
-    loop {
-        match rest.next().map(String::as_str) {
-            Some("--secrets-hash-env") => {
-                let name = rest.next().ok_or(UsageError::SecretsHashEnv)?;
-                secrets_hash_env.push(name.clone());
-            }
-            Some("--non-root") => {
-                let (Some(plan), Some(out)) = (rest.next(), rest.next()) else {
-                    return Err(UsageError::NonRoot);
-                };
-                non_root = Some((plan.clone(), out.clone()));
-            }
-            Some("--plain-http") => plain_http = true,
-            Some("--save-plan") => {
-                let name = rest.next().ok_or(UsageError::SavePlan)?;
-                save_plan = Some(name.clone());
-            }
-            Some("--build") => break,
-            Some(other) => return Err(UsageError::Unexpected(other.to_owned())),
-            None => return Err(UsageError::NoBuild),
-        }
+/// Reads the argument of `build`.
+fn parse_plan(args: &[String]) -> Result<BuildPlan, UsageError> {
+    let [plan] = args else {
+        return Err(UsageError::Build);
+    };
+    let plan: BuildPlan =
+        serde_json::from_str(plan).map_err(|e| UsageError::Plan(e.to_string()))?;
+    if plan.builds.is_empty() {
+        return Err(UsageError::NoBuild);
     }
-    let rest: Vec<String> = rest.cloned().collect();
-    let commands: Vec<Vec<String>> = rest
-        .split(|arg| arg == "--build")
-        .map(<[String]>::to_vec)
-        .collect();
-    if commands.iter().any(Vec::is_empty) {
-        return Err(UsageError::EmptyBuild);
-    }
-    Ok(Args {
-        plain_http,
-        secrets_hash_env,
-        non_root,
-        save_plan,
-        commands,
-    })
+    Ok(plan)
 }
 
 /// SHA-256 over `name NUL value NUL` of each variable, in the order given.
@@ -226,15 +173,6 @@ fn secrets_hash(vars: &[(String, String)]) -> String {
         hasher.update([0]);
     }
     archive::hex(&hasher.finalize())
-}
-
-/// The value after `flag` in a command line.
-fn flag_value<'a>(command: &'a [String], flag: &str) -> Option<&'a str> {
-    command
-        .iter()
-        .position(|arg| arg == flag)
-        .and_then(|i| command.get(i + 1))
-        .map(String::as_str)
 }
 
 /// The seconds `fetch` and `plan` recorded in `/workspace/out/<phase>.json`.
@@ -256,60 +194,9 @@ struct BuildMetadata {
     digest: Option<String>,
 }
 
-fn digest(metadata_file: Option<&str>) -> Option<String> {
-    let text = std::fs::read_to_string(metadata_file?).ok()?;
+fn digest(metadata_file: &str) -> Option<String> {
+    let text = std::fs::read_to_string(metadata_file).ok()?;
     serde_json::from_str::<BuildMetadata>(&text).ok()?.digest
-}
-
-/// Splits a CSV record as `buildctl` reads `--output` (`encoding/csv`).
-fn csv_fields(record: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut field = String::new();
-    let mut quoted = false;
-    let mut chars = record.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' if quoted && chars.peek() == Some(&'"') => {
-                chars.next();
-                field.push('"');
-            }
-            '"' => quoted = !quoted,
-            ',' if !quoted => fields.push(std::mem::take(&mut field)),
-            c => field.push(c),
-        }
-    }
-    fields.push(field);
-    fields
-}
-
-/// The tags in `--output type=image,"name=<image>:<tag>,…"`.
-fn tags(command: &[String]) -> Vec<String> {
-    let Some(output) = flag_value(command, "--output") else {
-        return Vec::new();
-    };
-    csv_fields(output)
-        .iter()
-        .filter_map(|field| field.strip_prefix("name="))
-        .flat_map(|names| names.split(','))
-        .filter_map(|name| name.rsplit_once(':').map(|(_, tag)| tag.to_owned()))
-        .filter(|tag| !tag.contains('/'))
-        .collect()
-}
-
-/// The repository (`<host>/<name>`) of the first image name in `--output`.
-fn pushed_repository(command: &[String]) -> Option<String> {
-    let output = flag_value(command, "--output")?;
-    let name = csv_fields(output)
-        .iter()
-        .find_map(|field| field.strip_prefix("name=").map(str::to_owned))?
-        .split(',')
-        .next()?
-        .to_owned();
-    let repository = match name.rsplit_once(':') {
-        Some((repository, tag)) if !tag.contains('/') => repository,
-        _ => &name,
-    };
-    Some(repository.to_owned())
 }
 
 /// How long reading the pushed image's ports may take; the ports are only a hint.
@@ -376,12 +263,15 @@ fn prepare_non_root(plan: &str, out: &str) -> Result<(), StepError> {
     std::fs::write(&dockerfile, railpack::dockerfile()).map_err(StepError::write(&dockerfile))
 }
 
-/// Runs one `buildctl` command and returns the digest it reports.
+/// Runs one build and returns the digest it reports. `previous` is the digest of the build
+/// before.
 async fn build(
-    command: &[String],
+    build: &Build,
+    previous: Option<&str>,
     renderer: &mut progress::Renderer,
     steps: &mut StepLog,
 ) -> Result<String, Refusal<FailureReason>> {
+    let command = build.args(previous);
     let Some((program, rest)) = command.split_first() else {
         return Err(Refusal::new(FailureReason::BuildFailed, "no command"));
     };
@@ -419,7 +309,7 @@ async fn build(
             .unwrap_or_else(|| format!("buildctl failed: {status:?}"));
         return Err(Refusal::new(FailureReason::BuildFailed, message));
     }
-    digest(flag_value(command, "--metadata-file")).ok_or_else(|| {
+    digest(&build.metadata_file).ok_or_else(|| {
         Refusal::new(
             FailureReason::BuildFailed,
             "buildctl succeeded but reported no image digest",
@@ -427,18 +317,20 @@ async fn build(
     })
 }
 
-async fn run(args: &Args) -> BuildResult {
-    let mut commands = args.commands.clone();
-    if !args.secrets_hash_env.is_empty()
-        && let Some(first) = commands.first_mut()
+async fn run(plan: &BuildPlan) -> BuildResult {
+    let mut builds = plan.builds.clone();
+    if !plan.secrets_hash_env.is_empty()
+        && let Some(first) = builds.first_mut()
     {
-        let vars: Vec<(String, String)> = args
+        let vars: Vec<(String, String)> = plan
             .secrets_hash_env
             .iter()
             .map(|name| (name.clone(), std::env::var(name).unwrap_or_default()))
             .collect();
-        first.push("--opt".to_owned());
-        first.push(format!("build-arg:secrets-hash={}", secrets_hash(&vars)));
+        first.command.push("--opt".to_owned());
+        first
+            .command
+            .push(format!("build-arg:secrets-hash={}", secrets_hash(&vars)));
     }
     let mut result = BuildResult {
         plan_source: Some(PlanSource::None),
@@ -448,8 +340,8 @@ async fn run(args: &Args) -> BuildResult {
     if result.phases.contains_key("plan") {
         result.plan_source = Some(PlanSource::Generated);
     }
-    if let Some((plan, out)) = &args.non_root
-        && let Err(message) = prepare_non_root(plan, out)
+    if let Some(non_root) = &plan.non_root
+        && let Err(message) = prepare_non_root(&non_root.plan, &non_root.out)
     {
         result.reason = Some(FailureReason::BuildFailed);
         result.message = message.to_string();
@@ -461,9 +353,8 @@ async fn run(args: &Args) -> BuildResult {
     let mut steps = StepLog::default();
     let mut built: Option<String> = None;
     let mut outcome = Ok(());
-    for command in &commands {
-        let command = with_digest(command, built.as_deref());
-        match build(&command, &mut renderer, &mut steps).await {
+    for each in &builds {
+        match build(each, built.as_deref(), &mut renderer, &mut steps).await {
             Ok(digest) => built = Some(digest),
             Err(failure) => {
                 outcome = Err(failure);
@@ -480,9 +371,9 @@ async fn run(args: &Args) -> BuildResult {
         (Ok(()), Some(digest)) => {
             result.result = Outcome::Succeeded;
             result.digest = Some(digest.clone());
-            result.tags = commands.last().map_or_default(|c| tags(c));
-            if let Some(repository) = commands.last().and_then(|c| pushed_repository(c)) {
-                match image_ports(&repository, args.plain_http, &digest).await {
+            if let Some(last) = builds.last() {
+                result.tags.clone_from(&last.output.tags);
+                match image_ports(&last.output.repository, plan.plain_http, &digest).await {
                     Ok(ports) => result.exposed_ports = ports,
                     Err(e) => drop(writeln!(
                         io::stderr().lock(),
@@ -490,8 +381,8 @@ async fn run(args: &Args) -> BuildResult {
                     )),
                 }
             }
-            if let Some(name) = &args.save_plan {
-                match tokio::time::timeout(SAVE_PLAN_TIMEOUT, save_plan(name, args.plain_http))
+            if let Some(image) = &plan.save_plan {
+                match tokio::time::timeout(SAVE_PLAN_TIMEOUT, save_plan(image, plan.plain_http))
                     .await
                 {
                     Ok(Ok(digest)) => result.plan_digest = Some(digest),
@@ -516,17 +407,12 @@ async fn run(args: &Args) -> BuildResult {
     result
 }
 
-/// Pushes the planner's folder as the plan artifact `name` (`<repository>:<tag>`) and returns
-/// its digest.
-async fn save_plan(name: &str, plain_http: bool) -> Result<String, StepError> {
-    let (repository, tag) = name
-        .rsplit_once(':')
-        .filter(|(_, tag)| !tag.contains('/'))
-        .ok_or_else(|| StepError::PlanName(name.to_owned()))?;
+/// Pushes the planner's folder as the plan artifact `image` and returns its digest.
+async fn save_plan(image: &Image, plain_http: bool) -> Result<String, StepError> {
     let layer = pack(PLAN)?;
-    let mut repository = open_repository(repository, plain_http)?;
+    let mut repository = open_repository(&image.repository, plain_http)?;
     Ok(repository
-        .push_artifact(tag, plan::ARTIFACT_TYPE, layer.into())
+        .push_artifact(&image.tag, plan::ARTIFACT_TYPE, layer.into())
         .await?)
 }
 
@@ -553,19 +439,6 @@ fn pack(dir: &str) -> Result<Vec<u8>, StepError> {
         });
     }
     Ok(packed)
-}
-
-/// `command` with [`DIGEST`] replaced by the previous command's digest.
-fn with_digest(command: &[String], previous: Option<&str>) -> Vec<String> {
-    previous.map_or_else(
-        || command.to_vec(),
-        |digest| {
-            command
-                .iter()
-                .map(|arg| arg.replace(DIGEST, digest))
-                .collect()
-        },
-    )
 }
 
 /// The arguments of `fetch archive` and `plan restore`.
@@ -702,8 +575,8 @@ async fn main() -> ExitCode {
             }
         };
     }
-    let result = match parse_args(raw.get(1..).unwrap_or_default()) {
-        Ok(args) => run(&args).await,
+    let result = match parse_plan(raw.get(1..).unwrap_or_default()) {
+        Ok(plan) => run(&plan).await,
         Err(usage) => BuildResult {
             reason: Some(FailureReason::BuildFailed),
             message: format!("zeabur-builder-job: {usage}"),
@@ -730,65 +603,22 @@ mod tests {
     }
 
     #[test]
-    fn arguments() {
+    fn reads_the_plan() {
+        let plan = parse_plan(&strings(&[
+            r#"{"plainHttp":true,"builds":[{"command":["buildctl","build"],"metadataFile":"/m.json","output":{"repository":"r/a"}}]}"#,
+        ]))
+        .unwrap();
+        assert!(plan.plain_http);
+        assert_eq!(plan.builds[0].command, strings(&["buildctl", "build"]));
         assert_eq!(
-            parse_args(&strings(&[
-                "--secrets-hash-env",
-                "ZB_SECRET_A",
-                "--build",
-                "buildctl",
-                "build"
-            ])),
-            Ok(Args {
-                plain_http: false,
-                secrets_hash_env: strings(&["ZB_SECRET_A"]),
-                non_root: None,
-                save_plan: None,
-                commands: vec![strings(&["buildctl", "build"])],
-            })
+            parse_plan(&strings(&[r#"{"builds":[]}"#])),
+            Err(UsageError::NoBuild)
         );
-        assert_eq!(
-            parse_args(&strings(&[
-                "--non-root",
-                "/workspace/plan",
-                "/workspace/out/non-root",
-                "--save-plan",
-                "r/a:zeabur-plan-1",
-                "--build",
-                "buildctl",
-                "build",
-                "--build",
-                "buildctl",
-                "build",
-                "--opt",
-                "context:app=docker-image://r/a@{digest}",
-            ])),
-            Ok(Args {
-                plain_http: false,
-                secrets_hash_env: Vec::new(),
-                non_root: Some((
-                    "/workspace/plan".to_owned(),
-                    "/workspace/out/non-root".to_owned()
-                )),
-                save_plan: Some("r/a:zeabur-plan-1".to_owned()),
-                commands: vec![
-                    strings(&["buildctl", "build"]),
-                    strings(&[
-                        "buildctl",
-                        "build",
-                        "--opt",
-                        "context:app=docker-image://r/a@{digest}"
-                    ]),
-                ],
-            })
-        );
-        assert!(parse_args(&strings(&["buildctl"])).is_err());
-        assert!(parse_args(&strings(&["--build"])).is_err());
-        assert!(parse_args(&strings(&["--save-plan"])).is_err());
-        assert!(parse_args(&strings(&["--secrets-hash-env"])).is_err());
-        assert!(parse_args(&strings(&["--non-root"])).is_err());
-        assert!(parse_args(&strings(&["--build", "buildctl", "--build"])).is_err());
-        assert!(parse_args(&strings(&["--build", "--build", "buildctl"])).is_err());
+        assert_eq!(parse_plan(&[]), Err(UsageError::Build));
+        assert!(matches!(
+            parse_plan(&strings(&[r#"{"builds":[],"commands":[]}"#])),
+            Err(UsageError::Plan(_))
+        ));
     }
 
     #[test]
@@ -827,16 +657,6 @@ mod tests {
         );
         assert!(parse_fetch(&strings(&["r/a/b/source", "sha256:00"])).is_err());
         assert!(parse_fetch(&strings(&["--plain-http"])).is_err());
-    }
-
-    #[test]
-    fn a_later_command_names_the_image_the_one_before_built() {
-        let command = strings(&["--opt", "context:app=docker-image://r/a@{digest}"]);
-        assert_eq!(with_digest(&command, None), command);
-        assert_eq!(
-            with_digest(&command, Some("sha256:abc")),
-            strings(&["--opt", "context:app=docker-image://r/a@sha256:abc"])
-        );
     }
 
     #[test]
@@ -886,44 +706,5 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert_ne!(a, b);
         assert_ne!(a, c);
-    }
-
-    #[test]
-    fn tags_from_the_output() {
-        let quoted = strings(&[
-            "--output",
-            "type=image,\"name=r.local:5000/a/api:main-1-abc,r.local:5000/a/api:latest\",push=true",
-        ]);
-        assert_eq!(tags(&quoted), ["main-1-abc", "latest"]);
-        let single = strings(&[
-            "--output",
-            "type=image,name=r.local:5000/a/api:v1,push=true",
-        ]);
-        assert_eq!(tags(&single), ["v1"]);
-        assert_eq!(tags(&strings(&["build"])), Vec::<String>::new());
-    }
-
-    #[test]
-    fn pushed_repository_from_the_output() {
-        let quoted = strings(&[
-            "--output",
-            "type=image,\"name=r.local:5000/a/api:main-1-abc,r.local:5000/a/api:latest\",push=true",
-        ]);
-        assert_eq!(
-            pushed_repository(&quoted).as_deref(),
-            Some("r.local:5000/a/api")
-        );
-        let untagged = strings(&["--output", "type=image,name=r.local:5000/a/api,push=true"]);
-        assert_eq!(
-            pushed_repository(&untagged).as_deref(),
-            Some("r.local:5000/a/api")
-        );
-        assert_eq!(pushed_repository(&strings(&["build"])), None);
-    }
-
-    #[test]
-    fn plain_http_flag() {
-        let args = parse_args(&strings(&["--plain-http", "--build", "buildctl"])).unwrap();
-        assert!(args.plain_http);
     }
 }

@@ -191,14 +191,25 @@ static MEMORY: std::sync::LazyLock<JobMemory> = std::sync::LazyLock::new(|| JobM
     limit: "512Mi".to_owned(),
 });
 
+/// Compares `job` with `golden/<name>.json`, with the build plan shown as JSON, not as a string.
 fn golden(name: &str, expected: &str, job: &Job) {
-    let actual = serde_json::to_string_pretty(job).unwrap() + "\n";
+    let mut job = serde_json::to_value(job).unwrap();
+    let plan = &mut job["spec"]["template"]["spec"]["containers"][0]["command"][2];
+    *plan = serde_json::from_str(plan.as_str().unwrap()).unwrap();
+    let actual = serde_json::to_string_pretty(&job).unwrap() + "\n";
     if std::env::var_os("ZEABUR_BUILDER_BLESS").is_some() {
         let path = format!("{}/golden/{name}.json", env!("CARGO_MANIFEST_DIR"));
         std::fs::write(path, &actual).unwrap();
         return;
     }
     assert_eq!(expected, actual, "golden/{name}.json is stale");
+}
+
+/// The plan the build container runs, with the kubelet's `$$` read back as `$`.
+fn build_plan_of(spec: &PodSpec) -> BuildPlan {
+    let command = spec.containers[0].command.as_ref().unwrap();
+    assert_eq!(command[..2], ["zeabur-builder-job", "build"]);
+    serde_json::from_str(&command[2].replace("$$", "$")).unwrap()
 }
 
 fn tags() -> Vec<String> {
@@ -348,14 +359,10 @@ fn a_reused_plan_is_restored_from_the_build_s_own_repository_instead_of_planning
             .any(|m| m.name == "registry-auth")
     };
     let saves = |spec: &PodSpec| {
-        spec.containers
-            .iter()
-            .flat_map(|c| c.command.iter().flatten())
-            .collect::<Vec<_>>()
-            .windows(2)
-            .any(|w| {
-                w[0] == "--save-plan"
-                    && *w[1] == format!("registry.internal/team-a/api:zeabur-plan-{UID}")
+        build_plan_of(spec).save_plan
+            == Some(Image {
+                repository: "registry.internal/team-a/api".to_owned(),
+                tag: format!("zeabur-plan-{UID}"),
             })
     };
 
@@ -413,11 +420,9 @@ fn every_builder_with_a_planner_saves_its_plan() {
             GitAuth::Anonymous,
         ))
         .unwrap();
-        let spec = job.spec.unwrap().template.spec.unwrap();
-        spec.containers
-            .iter()
-            .flat_map(|c| c.command.iter().flatten())
-            .any(|a| a == "--save-plan")
+        build_plan_of(&job.spec.unwrap().template.spec.unwrap())
+            .save_plan
+            .is_some()
     };
 
     assert!(saves("agent", &agent()));
@@ -479,7 +484,7 @@ fn an_archive_is_read_only_from_the_runs_own_namespace() {
         ))
         .unwrap();
         let pod = job.spec.unwrap().template.spec.unwrap();
-        let fetch = &pod.init_containers.unwrap()[0];
+        let fetch = &pod.init_containers.as_ref().unwrap()[0];
         let command = fetch.command.as_ref().unwrap();
         assert_eq!(
             command[3..],
@@ -565,10 +570,7 @@ fn a_dockerfile_frontend_image_reads_the_dockerfile_the_builder_names() {
             GitAuth::Anonymous,
         ))
         .unwrap();
-        let command = job.spec.unwrap().template.spec.unwrap().containers[0]
-            .command
-            .clone()
-            .unwrap();
+        let command = &build_plan_of(&job.spec.unwrap().template.spec.unwrap()).builds[0].command;
         for expected in [
             "gateway.v0".to_owned(),
             "source=docker/dockerfile:1".to_owned(),
@@ -666,21 +668,17 @@ fn user_values_never_enter_scripts() {
     ))
     .unwrap();
     let pod = job.spec.unwrap().template.spec.unwrap();
-    let fetch = &pod.init_containers.unwrap()[0];
+    let fetch = &pod.init_containers.as_ref().unwrap()[0];
     assert_eq!(fetch.command.as_ref().unwrap()[2], FETCH_SCRIPT);
     // Kubernetes expands `$(VAR)` in command and args; `$$` keeps a literal `$`.
     assert_eq!(
         fetch.args.as_ref().unwrap()[0],
         "https://github.com/acme/a$$(id)b"
     );
-    let build = &pod.containers[0];
-    assert!(
-        build
-            .command
-            .as_ref()
-            .unwrap()
-            .iter()
-            .any(|arg| arg.contains("source=https://github.com/acme/a$$(id)b"))
+    assert!(pod.containers[0].command.as_ref().unwrap()[2].contains("acme/a$$(id)b"));
+    assert_eq!(
+        build_plan_of(&pod).builds[0].output.annotations["org.opencontainers.image.source"],
+        "https://github.com/acme/a$(id)b"
     );
 }
 

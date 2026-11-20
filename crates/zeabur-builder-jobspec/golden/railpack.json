@@ -48,61 +48,84 @@
             "command": [
               "zeabur-builder-job",
               "build",
-              "--secrets-hash-env",
-              "ZB_SECRET_NODE_ENV",
-              "--secrets-hash-env",
-              "ZB_SECRET_NPM_TOKEN",
-              "--non-root",
-              "/workspace/plan",
-              "/workspace/out/non-root",
-              "--build",
-              "buildctl",
-              "--addr",
-              "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
-              "--tlsdir",
-              "/etc/zeabur-builder/buildkit",
-              "build",
-              "--progress",
-              "rawjson",
-              "--metadata-file",
-              "/workspace/out/railpack-metadata.json",
-              "--local",
-              "context=/workspace/src",
-              "--frontend",
-              "gateway.v0",
-              "--opt",
-              "source=ghcr.io/railwayapp/railpack-frontend:v0.43.0",
-              "--local",
-              "dockerfile=/workspace/out/non-root",
-              "--opt",
-              "build-arg:cache-key=team-a/api",
-              "--secret",
-              "id=NODE_ENV,env=ZB_SECRET_NODE_ENV",
-              "--secret",
-              "id=NPM_TOKEN,env=ZB_SECRET_NPM_TOKEN",
-              "--output",
-              "type=image,name=registry.internal/team-a/api,push=true,push-by-digest=true,oci-mediatypes=true,annotation.org.opencontainers.image.source=https://github.com/acme/web,annotation.org.opencontainers.image.revision=3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-              "--build",
-              "buildctl",
-              "--addr",
-              "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
-              "--tlsdir",
-              "/etc/zeabur-builder/buildkit",
-              "build",
-              "--progress",
-              "rawjson",
-              "--metadata-file",
-              "/workspace/out/metadata.json",
-              "--frontend",
-              "dockerfile.v0",
-              "--local",
-              "context=/workspace/out/non-root",
-              "--local",
-              "dockerfile=/workspace/out/non-root",
-              "--opt",
-              "context:app=docker-image://registry.internal/team-a/api@{digest}",
-              "--output",
-              "type=image,\"name=registry.internal/team-a/api:main-1761058800-3e1a9c2,registry.internal/team-a/api:latest\",push=true,oci-mediatypes=true,annotation.org.opencontainers.image.source=https://github.com/acme/web,annotation.org.opencontainers.image.revision=3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
+              {
+                "builds": [
+                  {
+                    "command": [
+                      "buildctl",
+                      "--addr",
+                      "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
+                      "--tlsdir",
+                      "/etc/zeabur-builder/buildkit",
+                      "build",
+                      "--progress",
+                      "rawjson",
+                      "--local",
+                      "context=/workspace/src",
+                      "--frontend",
+                      "gateway.v0",
+                      "--opt",
+                      "source=ghcr.io/railwayapp/railpack-frontend:v0.43.0",
+                      "--local",
+                      "dockerfile=/workspace/out/non-root",
+                      "--opt",
+                      "build-arg:cache-key=team-a/api",
+                      "--secret",
+                      "id=NODE_ENV,env=ZB_SECRET_NODE_ENV",
+                      "--secret",
+                      "id=NPM_TOKEN,env=ZB_SECRET_NPM_TOKEN"
+                    ],
+                    "metadataFile": "/workspace/out/railpack-metadata.json",
+                    "output": {
+                      "annotations": {
+                        "org.opencontainers.image.revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+                        "org.opencontainers.image.source": "https://github.com/acme/web"
+                      },
+                      "repository": "registry.internal/team-a/api"
+                    }
+                  },
+                  {
+                    "command": [
+                      "buildctl",
+                      "--addr",
+                      "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
+                      "--tlsdir",
+                      "/etc/zeabur-builder/buildkit",
+                      "build",
+                      "--progress",
+                      "rawjson",
+                      "--frontend",
+                      "dockerfile.v0",
+                      "--local",
+                      "context=/workspace/out/non-root",
+                      "--local",
+                      "dockerfile=/workspace/out/non-root",
+                      "--opt",
+                      "context:app=docker-image://registry.internal/team-a/api@{digest}"
+                    ],
+                    "metadataFile": "/workspace/out/metadata.json",
+                    "output": {
+                      "annotations": {
+                        "org.opencontainers.image.revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+                        "org.opencontainers.image.source": "https://github.com/acme/web"
+                      },
+                      "repository": "registry.internal/team-a/api",
+                      "tags": [
+                        "main-1761058800-3e1a9c2",
+                        "latest"
+                      ]
+                    }
+                  }
+                ],
+                "nonRoot": {
+                  "out": "/workspace/out/non-root",
+                  "plan": "/workspace/plan"
+                },
+                "secretsHashEnv": [
+                  "ZB_SECRET_NODE_ENV",
+                  "ZB_SECRET_NPM_TOKEN"
+                ]
+              }
             ],
             "env": [
               {
