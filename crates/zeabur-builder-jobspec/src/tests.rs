@@ -11,7 +11,8 @@ use zeabur_builder_api::build::{
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{
-    AgentPlanner, Frontend, FrontendSpec, ModelSpec, Planner, PlannerSpec,
+    AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, ModelAuth, ModelSpec, Planner,
+    PlannerSpec,
 };
 use zeabur_builder_api::common::SecretKeyRef;
 
@@ -133,9 +134,11 @@ fn agent() -> ClusterBuilderSpec {
                     provider: "anthropic".to_owned(),
                     model: "claude-opus-5-5".to_owned(),
                     base_url: None,
-                    api_key_secret: SecretKeyRef {
-                        name: "model".to_owned(),
-                        key: "anthropic".to_owned(),
+                    auth: ModelAuth::ApiKey {
+                        api_key: SecretKeyRef {
+                            name: "model".to_owned(),
+                            key: "anthropic".to_owned(),
+                        },
                     },
                 },
             },
@@ -276,6 +279,42 @@ fn agent_with_a_model_key() {
     ))
     .unwrap();
     golden("agent", include_str!("../golden/agent.json"), &job);
+}
+
+/// A federated run runs as the service account the builder names, and only the plan container
+/// mounts its token, for Anthropic's audience.
+#[test]
+fn agent_with_anthropic_federation() {
+    let run = build_run();
+    let mut build = build("https://github.com/acme/web", None, Vec::new());
+    build.metadata.uid = Some(UID.to_owned());
+    let mut builder = agent();
+    if let Planner::Agent { agent } = &mut builder.planner {
+        agent.model.auth = ModelAuth::AnthropicFederation {
+            anthropic_federation: AnthropicFederation {
+                service_account_name: "builder-agent".to_owned(),
+                federation_rule_id: "fdrl_1".to_owned(),
+                organization_id: "org".to_owned(),
+                workspace_id: Some("wrkspc_1".to_owned()),
+                service_account_id: None,
+            },
+        };
+    }
+    let tags = tags();
+    let job = job(&inputs(
+        &run,
+        &build,
+        "agent",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    ))
+    .unwrap();
+    golden(
+        "agent-federation",
+        include_str!("../golden/agent-federation.json"),
+        &job,
+    );
 }
 
 #[test]

@@ -63,12 +63,18 @@ if grep -q 'name: agent$' <<<"$plain"; then
 fi
 agent=$(helm template builder "$chart" "${base[@]}" --set agent.enabled=true \
   --set agent.provider=anthropic --set agent.model=claude-opus-5-5 \
-  --set agent.apiKeySecret.name=model --set agent.apiKeySecret.key=anthropic)
+  --set agent.auth.type=apiKey --set agent.auth.apiKey.name=model \
+  --set agent.auth.apiKey.key=anthropic)
 require "$agent" "agent builder" 'name: agent$' 'type: agent$' 'timeout: 25m$' \
   "image: \"ghcr.io/zeabur-oss/builder-job:$version\"\$" 'provider: "anthropic"$' \
-  'model: "claude-opus-5-5"$' 'name: "model"$' 'key: "anthropic"$'
+  'model: "claude-opus-5-5"$' 'type: apiKey$' 'name: model$' 'key: anthropic$'
 if helm template builder "$chart" "${base[@]}" --set agent.enabled=true >/dev/null 2>&1; then
   echo "agent builder: the chart installs it without a model" >&2
+  exit 1
+fi
+if helm template builder "$chart" "${base[@]}" --set agent.enabled=true \
+  --set agent.provider=anthropic --set agent.model=claude-opus-5-5 >/dev/null 2>&1; then
+  echo "agent builder: the chart installs it without auth" >&2
   exit 1
 fi
 

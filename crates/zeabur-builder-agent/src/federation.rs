@@ -1,24 +1,16 @@
 //! Workload identity federation: the run exchanges a service account token, such as the build
 //! Job's projected token, for a short-lived access token, so no long-lived model key is stored.
 //!
-//! Only Anthropic and OpenAI have it. Each reads the variables its own SDKs read, and an API key
-//! in the vendor's key variable comes first.
-//!
-//! - Anthropic: `POST https://api.anthropic.com/v1/oauth/token` with the RFC 7523 `jwt-bearer`
-//!   grant. The access token goes in `Authorization: Bearer`, not `x-api-key` ([guide],
-//!   [reference]).
-//! - OpenAI: `POST https://auth.openai.com/oauth/token` with the RFC 8693 token exchange grant
-//!   ([OpenAI guide], [OpenAI reference]). The access token takes the API key's place.
-//!
-//! An access token can last less than a run, so [`Federated`] exchanges the service account token
-//! again once three quarters of the access token's lifetime have passed.
-//!
-//! [guide]: https://platform.claude.com/docs/en/manage-claude/workload-identity-federation
-//! [reference]: https://platform.claude.com/docs/en/manage-claude/wif-reference
-//! [OpenAI guide]: https://developers.openai.com/api/docs/guides/workload-identity-federation
-//! [OpenAI reference]: https://developers.openai.com/api/reference/workload-identity-federation
+//! Each vendor is one file with a [`TokenSource`] that reads the variables its own SDKs read; an
+//! API key in the vendor's key variable comes first. An access token can last less than a run,
+//! so [`Renewing`] exchanges the service account token again once three quarters of the access
+//! token's lifetime have passed.
 
-use std::path::PathBuf;
+mod anthropic;
+mod openai;
+
+use std::fmt::Debug;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,275 +23,153 @@ use rig_core::http_client::{
     StreamingResponse,
 };
 use rig_core::operation::Completion;
-use rig_core::providers::anthropic::wire::{ANTHROPIC, AnthropicConfig, Auth};
-use rig_core::providers::registry::{ConnectOptions, ProviderConfig};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use zeabur_builder_core::refusal::Refusal;
 
-use crate::http::HyperClient;
+use crate::http::{Body, HyperClient};
 use crate::plan::Reason;
 
-const ANTHROPIC_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
-const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 /// The most of an error reply a detail keeps.
 const MAX_DETAIL: usize = 1024;
 /// The longest one exchange may take.
 const EXCHANGE_TIME: Duration = Duration::from_secs(30);
 
-/// How a run gets its access token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Federation {
-    /// Anthropic's `ANTHROPIC_*` variables.
-    Anthropic {
-        /// `ANTHROPIC_FEDERATION_RULE_ID`, `fdrl_…`.
-        rule: String,
-        /// `ANTHROPIC_ORGANIZATION_ID`.
-        organization: String,
-        /// `ANTHROPIC_WORKSPACE_ID`, `wrkspc_…`, needed when the rule has several workspaces.
-        workspace: Option<String>,
-        /// `ANTHROPIC_SERVICE_ACCOUNT_ID`, `svac_…`; the rule names one already.
-        service_account: Option<String>,
-        /// `ANTHROPIC_IDENTITY_TOKEN_FILE`.
-        token_file: PathBuf,
-    },
-    /// OpenAI's `OPENAI_*` variables.
-    OpenAi {
-        /// `OPENAI_IDENTITY_PROVIDER_ID`.
-        provider: String,
-        /// `OPENAI_SERVICE_ACCOUNT_ID`.
-        service_account: String,
-        /// `OPENAI_IDENTITY_TOKEN_FILE`.
-        token_file: PathBuf,
-    },
-}
+/// A lookup of non-empty variables.
+type Vars<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
-impl Federation {
-    /// The federation `vendor`'s variables set up, from the process environment.
-    pub(crate) fn from_env(vendor: &str) -> Result<Option<Self>, Refusal<Reason>> {
-        Self::from_vars(vendor, |name| std::env::var(name).ok())
-    }
+/// Reads a vendor's variables: `None` when its API key is set or its federation is not.
+type Read = fn(&Vars<'_>) -> Result<Option<Arc<dyn TokenSource>>, Refusal<Reason>>;
 
-    /// The federation `vendor`'s variables set up, or `None` when its API key is set or its
-    /// first federation variable is not.
-    fn from_vars(
-        vendor: &str,
-        var: impl Fn(&str) -> Option<String>,
-    ) -> Result<Option<Self>, Refusal<Reason>> {
-        let var = |name: &str| var(name).filter(|value| !value.is_empty());
-        let required = |name: &str| {
-            var(name).ok_or_else(|| Refusal::new(Reason::ModelKeyMissing, format!("set {name}")))
-        };
-        match vendor {
-            "anthropic" if var("ANTHROPIC_API_KEY").is_none() => {
-                let Some(rule) = var("ANTHROPIC_FEDERATION_RULE_ID") else {
-                    return Ok(None);
-                };
-                Ok(Some(Self::Anthropic {
-                    rule,
-                    organization: required("ANTHROPIC_ORGANIZATION_ID")?,
-                    workspace: var("ANTHROPIC_WORKSPACE_ID"),
-                    service_account: var("ANTHROPIC_SERVICE_ACCOUNT_ID"),
-                    token_file: required("ANTHROPIC_IDENTITY_TOKEN_FILE")?.into(),
-                }))
-            }
-            "openai" if var("OPENAI_API_KEY").is_none() => {
-                let Some(provider) = var("OPENAI_IDENTITY_PROVIDER_ID") else {
-                    return Ok(None);
-                };
-                Ok(Some(Self::OpenAi {
-                    provider,
-                    service_account: required("OPENAI_SERVICE_ACCOUNT_ID")?,
-                    token_file: required("OPENAI_IDENTITY_TOKEN_FILE")?.into(),
-                }))
-            }
-            _ => Ok(None),
-        }
-    }
+/// The vendors with federation, by Rig's vendor name.
+const SOURCES: [(&str, Read); 2] = [("anthropic", anthropic::read), ("openai", openai::read)];
 
-    /// The model `spec` names, with an access token exchanged for the service account token.
-    pub(crate) async fn connect(
-        &self,
-        catalog: &Catalog,
-        spec: &ModelSpec,
-        http: HyperClient,
-        base_url: Option<&str>,
-    ) -> Result<DynModel<Completion>, Refusal<Reason>> {
-        let access = self.exchange(&http, token_url(self), EXCHANGE_TIME).await?;
-        let token = access.token.clone();
-        let client = Federated {
-            federation: Arc::new(self.clone()),
-            http,
-            access: Arc::new(Mutex::new(access)),
-        };
-        self.model(token, catalog, spec, client, base_url)
-    }
-
-    /// An access token for the service account token, from the token endpoint at `url`, in at
-    /// most `limit`.
-    async fn exchange(
-        &self,
-        http: &HyperClient,
-        url: &str,
-        limit: Duration,
-    ) -> Result<Access, Refusal<Reason>> {
-        let token_file = match self {
-            Self::Anthropic { token_file, .. } | Self::OpenAi { token_file, .. } => token_file,
-        };
-        let jwt = tokio::fs::read_to_string(token_file).await.map_err(|e| {
-            Refusal::new(
-                Reason::ModelKeyMissing,
-                format!(
-                    "cannot read the service account token {}: {e}",
-                    token_file.display()
-                ),
-            )
-        })?;
-        let started = Instant::now();
-        let reply = tokio::time::timeout(limit, http.post_json(url, self.request(jwt.trim())))
-            .await
-            .map_err(|_elapsed| {
-                Refusal::new(
-                    Reason::ModelFailed,
-                    format!("{url} did not answer in {} s", limit.as_secs()),
-                )
-            })?;
-        let (status, reply) =
-            reply.map_err(|e| Refusal::new(Reason::ModelFailed, format!("{url}: {e}")))?;
-        let token = self.access_token(status, &reply)?;
-        Ok(Access {
-            renew_at: started + Duration::from_secs(token.expires_in.saturating_mul(3) / 4),
-            token: token.access_token,
-        })
-    }
-
-    /// The model `spec` names, sending `token` as the credential.
+/// A vendor's token endpoint and the model it unlocks.
+pub(crate) trait TokenSource: Debug + Send + Sync {
+    /// The vendor, for messages.
+    fn name(&self) -> &'static str;
+    /// The token endpoint.
+    fn url(&self) -> &'static str;
+    /// The service account token.
+    fn token_file(&self) -> &Path;
+    /// The request that exchanges `jwt`.
+    fn request(&self, jwt: &str) -> Body;
+    /// What the user checks when the vendor refuses the service account token.
+    fn check(&self) -> &'static str;
+    /// The model `spec` names, sending `token` through `http`.
     fn model(
         &self,
         token: String,
         catalog: &Catalog,
         spec: &ModelSpec,
-        http: impl HttpClientExt + 'static,
+        http: DynHttpClient,
         base_url: Option<&str>,
-    ) -> Result<DynModel<Completion>, Refusal<Reason>> {
-        match self {
-            Self::Anthropic { .. } => {
-                // Rig's Anthropic dialect sends its key as `x-api-key`; an access token is a
-                // bearer token.
-                let mut dialect = ANTHROPIC;
-                dialect.quirks.auth = Auth::OptionalBearer;
-                let mut config =
-                    ProviderConfig::Anthropic(AnthropicConfig::with_key(&dialect, token));
-                if let Some(base_url) = base_url {
-                    config = config.with_base_url(base_url);
-                }
-                let facts = catalog.facts(spec.provider, &spec.id);
-                Ok(config.completion_model(&spec.id, DynHttpClient::new(http), facts))
-            }
-            Self::OpenAi { .. } => {
-                let mut options = ConnectOptions::new().http(http).api_key(token);
-                if let Some(base_url) = base_url {
-                    options = options.base_url(base_url);
-                }
-                catalog
-                    .connect_with(spec, options)
-                    .map_err(|e| Refusal::new(Reason::ModelFailed, e.to_string()))
-            }
-        }
-    }
-
-    /// The JSON body that exchanges `jwt`.
-    fn request(&self, jwt: &str) -> Vec<u8> {
-        let body = match self {
-            Self::Anthropic {
-                rule,
-                organization,
-                workspace,
-                service_account,
-                ..
-            } => serde_json::to_vec(&JwtBearer {
-                grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                assertion: jwt,
-                federation_rule_id: rule,
-                organization_id: organization,
-                workspace_id: workspace.as_deref(),
-                service_account_id: service_account.as_deref(),
-            }),
-            Self::OpenAi {
-                provider,
-                service_account,
-                ..
-            } => serde_json::to_vec(&TokenExchange {
-                grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
-                subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
-                subject_token: jwt,
-                identity_provider_id: provider,
-                service_account_id: service_account,
-            }),
-        };
-        // Strings only, so serialization cannot fail.
-        body.unwrap_or_default()
-    }
-
-    /// The access token in a reply, or what the user checks.
-    fn access_token(&self, status: StatusCode, reply: &[u8]) -> Result<Token, Refusal<Reason>> {
-        let (vendor, check) = match self {
-            Self::Anthropic { .. } => (
-                "Anthropic",
-                "check the federation rule, its audience and the issuer's keys; the Console's \
-                 authentication history has the reason",
-            ),
-            Self::OpenAi { .. } => (
-                "OpenAI",
-                "check the identity provider, its audience, its uploaded keys and the service \
-                 account's mapping",
-            ),
-        };
-        if status.is_success() {
-            return serde_json::from_slice::<Token>(reply).map_err(|e| {
-                Refusal::new(Reason::ModelFailed, format!("{vendor}'s token reply: {e}"))
-            });
-        }
-        let text = String::from_utf8_lossy(reply);
-        let end = text
-            .char_indices()
-            .nth(MAX_DETAIL)
-            .map_or(text.len(), |(i, _)| i);
-        let text = text.get(..end).unwrap_or_default().trim();
-        let detail = format!("{vendor} refused the service account token ({status}): {text}");
-        if status.is_client_error() {
-            Err(Refusal::new(
-                Reason::ModelKeyMissing,
-                format!("{detail}; {check}"),
-            ))
-        } else {
-            Err(Refusal::new(Reason::ModelFailed, detail))
-        }
-    }
+    ) -> Result<DynModel<Completion>, Refusal<Reason>>;
 }
 
-/// Anthropic's RFC 7523 request.
-#[derive(Debug, Serialize)]
-struct JwtBearer<'a> {
-    grant_type: &'static str,
-    assertion: &'a str,
-    federation_rule_id: &'a str,
-    organization_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    workspace_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    service_account_id: Option<&'a str>,
+/// The federation `vendor`'s variables set up, from the process environment.
+pub(crate) fn from_env(vendor: &str) -> Result<Option<Arc<dyn TokenSource>>, Refusal<Reason>> {
+    from_vars(vendor, |name| std::env::var(name).ok())
 }
 
-/// OpenAI's RFC 8693 request.
-#[derive(Debug, Serialize)]
-struct TokenExchange<'a> {
-    grant_type: &'static str,
-    subject_token_type: &'static str,
-    subject_token: &'a str,
-    identity_provider_id: &'a str,
-    service_account_id: &'a str,
+fn from_vars(
+    vendor: &str,
+    var: impl Fn(&str) -> Option<String>,
+) -> Result<Option<Arc<dyn TokenSource>>, Refusal<Reason>> {
+    let var = |name: &str| var(name).filter(|value| !value.is_empty());
+    SOURCES
+        .iter()
+        .find(|(name, _)| *name == vendor)
+        .map_or(Ok(None), |(_, read)| read(&var))
+}
+
+/// A variable a vendor's federation needs once it is set up.
+fn required(var: &Vars<'_>, name: &str) -> Result<String, Refusal<Reason>> {
+    var(name).ok_or_else(|| Refusal::new(Reason::ModelKeyMissing, format!("set {name}")))
+}
+
+/// The model `spec` names, with an access token exchanged for the service account token.
+pub(crate) async fn connect(
+    source: Arc<dyn TokenSource>,
+    catalog: &Catalog,
+    spec: &ModelSpec,
+    http: HyperClient,
+    base_url: Option<&str>,
+) -> Result<DynModel<Completion>, Refusal<Reason>> {
+    let access = exchange(source.as_ref(), &http, source.url(), EXCHANGE_TIME).await?;
+    let token = access.token.clone();
+    let renewing = Renewing {
+        source: Arc::clone(&source),
+        http,
+        access: Arc::new(Mutex::new(access)),
+    };
+    source.model(token, catalog, spec, DynHttpClient::new(renewing), base_url)
+}
+
+/// An access token for the service account token, from the token endpoint at `url`, in at most
+/// `limit`.
+async fn exchange(
+    source: &dyn TokenSource,
+    http: &HyperClient,
+    url: &str,
+    limit: Duration,
+) -> Result<Access, Refusal<Reason>> {
+    let token_file = source.token_file();
+    let jwt = tokio::fs::read_to_string(token_file).await.map_err(|e| {
+        Refusal::new(
+            Reason::ModelKeyMissing,
+            format!(
+                "cannot read the service account token {}: {e}",
+                token_file.display()
+            ),
+        )
+    })?;
+    let started = Instant::now();
+    let reply = tokio::time::timeout(limit, http.post(url, source.request(jwt.trim())))
+        .await
+        .map_err(|_elapsed| {
+            Refusal::new(
+                Reason::ModelFailed,
+                format!("{url} did not answer in {} s", limit.as_secs()),
+            )
+        })?;
+    let (status, reply) =
+        reply.map_err(|e| Refusal::new(Reason::ModelFailed, format!("{url}: {e}")))?;
+    let token = access_token(source, status, &reply)?;
+    Ok(Access {
+        renew_at: started + Duration::from_secs(token.expires_in.saturating_mul(3) / 4),
+        token: token.access_token,
+    })
+}
+
+/// The access token in a reply, or what the user checks.
+fn access_token(
+    source: &dyn TokenSource,
+    status: StatusCode,
+    reply: &[u8],
+) -> Result<Token, Refusal<Reason>> {
+    let vendor = source.name();
+    if status.is_success() {
+        return serde_json::from_slice::<Token>(reply).map_err(|e| {
+            Refusal::new(Reason::ModelFailed, format!("{vendor}'s token reply: {e}"))
+        });
+    }
+    let text = String::from_utf8_lossy(reply);
+    let end = text
+        .char_indices()
+        .nth(MAX_DETAIL)
+        .map_or(text.len(), |(i, _)| i);
+    let text = text.get(..end).unwrap_or_default().trim();
+    let detail = format!("{vendor} refused the service account token ({status}): {text}");
+    if status.is_client_error() {
+        Err(Refusal::new(
+            Reason::ModelKeyMissing,
+            format!("{detail}; {}", source.check()),
+        ))
+    } else {
+        Err(Refusal::new(Reason::ModelFailed, detail))
+    }
 }
 
 /// The part of an RFC 6749 token reply the run uses.
@@ -319,13 +189,13 @@ struct Access {
 
 /// Sends model requests with an access token that it renews before it expires.
 #[derive(Debug, Clone)]
-struct Federated {
-    federation: Arc<Federation>,
+struct Renewing {
+    source: Arc<dyn TokenSource>,
     http: HyperClient,
     access: Arc<Mutex<Access>>,
 }
 
-impl Federated {
+impl Renewing {
     /// `req` with the current access token as its bearer token.
     #[expect(
         clippy::result_large_err,
@@ -335,12 +205,14 @@ impl Federated {
         let token = {
             let mut access = self.access.lock().await;
             if Instant::now() >= access.renew_at {
-                let url = token_url(&self.federation);
-                *access = self
-                    .federation
-                    .exchange(&self.http, url, EXCHANGE_TIME)
-                    .await
-                    .map_err(Error::instance)?;
+                *access = exchange(
+                    self.source.as_ref(),
+                    &self.http,
+                    self.source.url(),
+                    EXCHANGE_TIME,
+                )
+                .await
+                .map_err(Error::instance)?;
             }
             access.token.clone()
         };
@@ -352,15 +224,7 @@ impl Federated {
     }
 }
 
-/// The token endpoint of `federation`.
-const fn token_url(federation: &Federation) -> &'static str {
-    match federation {
-        Federation::Anthropic { .. } => ANTHROPIC_TOKEN_URL,
-        Federation::OpenAi { .. } => OPENAI_TOKEN_URL,
-    }
-}
-
-impl HttpClientExt for Federated {
+impl HttpClientExt for Renewing {
     fn send<T, U>(
         &self,
         req: Request<T>,
@@ -400,120 +264,63 @@ impl HttpClientExt for Federated {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     use pretty_assertions::assert_eq;
-    use rig_core::completion::CompletionRequest;
-    use rig_core::message::Message;
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     use super::*;
-    use crate::testing::{Replay, text};
 
-    fn from(vendor: &str, vars: &[(&str, &str)]) -> Result<Option<Federation>, Refusal<Reason>> {
-        let vars: HashMap<_, _> = vars.iter().copied().collect();
-        Federation::from_vars(vendor, |name| vars.get(name).map(|v| (*v).to_owned()))
+    /// A vendor whose service account token is `token_file`.
+    #[derive(Debug)]
+    struct Vendor {
+        token_file: PathBuf,
     }
 
-    fn anthropic() -> Federation {
-        from(
-            "anthropic",
-            &[
-                ("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_1"),
-                ("ANTHROPIC_ORGANIZATION_ID", "org"),
-                ("ANTHROPIC_WORKSPACE_ID", "wrkspc_1"),
-                (
-                    "ANTHROPIC_IDENTITY_TOKEN_FILE",
-                    "/var/run/secrets/anthropic.com/token",
-                ),
-            ],
-        )
-        .unwrap()
-        .unwrap()
+    impl TokenSource for Vendor {
+        fn name(&self) -> &'static str {
+            "Vendor"
+        }
+
+        fn url(&self) -> &'static str {
+            "https://vendor.example/token"
+        }
+
+        fn token_file(&self) -> &Path {
+            &self.token_file
+        }
+
+        fn request(&self, jwt: &str) -> Body {
+            Body::json(&json!({"assertion": jwt}))
+        }
+
+        fn check(&self) -> &'static str {
+            "check the vendor's rule"
+        }
+
+        fn model(
+            &self,
+            _token: String,
+            _catalog: &Catalog,
+            _spec: &ModelSpec,
+            _http: DynHttpClient,
+            _base_url: Option<&str>,
+        ) -> Result<DynModel<Completion>, Refusal<Reason>> {
+            Err(Refusal::new(Reason::ModelFailed, "no model"))
+        }
     }
 
-    fn openai() -> Federation {
-        from(
-            "openai",
-            &[
-                ("OPENAI_IDENTITY_PROVIDER_ID", "idp_1"),
-                ("OPENAI_SERVICE_ACCOUNT_ID", "svc_1"),
-                (
-                    "OPENAI_IDENTITY_TOKEN_FILE",
-                    "/var/run/secrets/tokens/token",
-                ),
-            ],
-        )
-        .unwrap()
-        .unwrap()
-    }
-
-    fn body(federation: &Federation) -> (&'static str, Value) {
-        let body = federation.request("jwt");
-        (
-            token_url(federation),
-            serde_json::from_slice(&body).unwrap(),
-        )
-    }
-
-    #[test]
-    fn anthropic_takes_a_jwt_bearer_grant() {
-        assert_eq!(
-            body(&anthropic()),
-            (
-                ANTHROPIC_TOKEN_URL,
-                json!({
-                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                    "assertion": "jwt",
-                    "federation_rule_id": "fdrl_1",
-                    "organization_id": "org",
-                    "workspace_id": "wrkspc_1",
-                })
-            )
-        );
+    fn vendor() -> Vendor {
+        Vendor {
+            token_file: concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/token").into(),
+        }
     }
 
     #[test]
-    fn openai_takes_a_token_exchange() {
-        assert_eq!(
-            body(&openai()),
-            (
-                OPENAI_TOKEN_URL,
-                json!({
-                    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                    "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
-                    "subject_token": "jwt",
-                    "identity_provider_id": "idp_1",
-                    "service_account_id": "svc_1",
-                })
-            )
-        );
-    }
-
-    #[test]
-    fn an_api_key_comes_first() {
-        let vars = [
-            ("ANTHROPIC_API_KEY", "sk-ant"),
-            ("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_1"),
-        ];
-        assert_eq!(from("anthropic", &vars), Ok(None));
-        assert_eq!(from("gcp.gemini", &vars), Ok(None));
-        assert_eq!(from("openai", &[]), Ok(None));
-    }
-
-    #[test]
-    fn a_missing_variable_is_named() {
-        let vars = [
-            ("OPENAI_IDENTITY_PROVIDER_ID", "idp_1"),
-            ("OPENAI_SERVICE_ACCOUNT_ID", "svc_1"),
-        ];
-        assert_eq!(
-            from("openai", &vars),
-            Err(Refusal::new(
-                Reason::ModelKeyMissing,
-                "set OPENAI_IDENTITY_TOKEN_FILE"
-            ))
-        );
+    fn a_vendor_without_federation_has_no_token_source() {
+        let vars = |_: &str| Some("set".to_owned());
+        assert!(matches!(from_vars("gcp.gemini", vars), Ok(None)));
+        assert!(matches!(from_vars("anthropic", |_| None), Ok(None)));
     }
 
     #[test]
@@ -525,56 +332,17 @@ mod tests {
             "scope": "workspace:inference",
         });
         assert_eq!(
-            anthropic().access_token(StatusCode::OK, reply.to_string().as_bytes()),
+            access_token(&vendor(), StatusCode::OK, reply.to_string().as_bytes()),
             Ok(Token {
                 access_token: "sk-ant-oat01-abc".to_owned(),
                 expires_in: 600,
             })
         );
-        let reply = json!({
-            "access_token": "eyJ",
-            "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "expires_at": 1_800_000_000,
-        });
-        assert_eq!(
-            openai().access_token(StatusCode::OK, reply.to_string().as_bytes()),
-            Ok(Token {
-                access_token: "eyJ".to_owned(),
-                expires_in: 3600,
-            })
-        );
     }
 
-    #[tokio::test]
-    async fn anthropic_sends_the_access_token_as_a_bearer_token() {
-        let replay = Replay::new([text("1", "hi")]);
-        let catalog = Catalog::builtin();
-        let spec = catalog.resolve("anthropic/claude-opus-5-5").unwrap().spec;
-        let model = anthropic()
-            .model(
-                "sk-ant-oat01-abc".to_owned(),
-                catalog,
-                spec,
-                replay.clone(),
-                None,
-            )
-            .unwrap();
-
-        model
-            .call(CompletionRequest::from(vec![Message::user("hi")]))
-            .await
-            .unwrap();
-
-        let headers = replay.headers.lock().unwrap().clone();
-        assert_eq!(headers[0]["authorization"], "Bearer sk-ant-oat01-abc");
-        assert!(headers[0].get("x-api-key").is_none());
-    }
-
-    fn federated(renew_at: Instant) -> Federated {
-        Federated {
-            federation: Arc::new(anthropic()),
+    fn renewing(source: Vendor, renew_at: Instant) -> Renewing {
+        Renewing {
+            source: Arc::new(source),
             http: HyperClient::new().unwrap(),
             access: Arc::new(Mutex::new(Access {
                 token: "sk-ant-oat01-abc".to_owned(),
@@ -589,9 +357,9 @@ mod tests {
             .header("x-api-key", "placeholder")
             .body(Bytes::new())
             .unwrap();
-        let federated = federated(Instant::now() + Duration::from_secs(60));
+        let renewing = renewing(vendor(), Instant::now() + Duration::from_secs(60));
 
-        let req = federated.authorize(req).await.unwrap();
+        let req = renewing.authorize(req).await.unwrap();
 
         assert_eq!(req.headers()["authorization"], "Bearer sk-ant-oat01-abc");
         assert!(req.headers().get("x-api-key").is_none());
@@ -602,10 +370,12 @@ mod tests {
         let req = Request::post("https://api.anthropic.com/v1/messages")
             .body(Bytes::new())
             .unwrap();
-        let federated = federated(Instant::now());
+        let missing = Vendor {
+            token_file: "/nonexistent/token".into(),
+        };
+        let renewing = renewing(missing, Instant::now());
 
-        // The token file does not exist here, so the renewal fails while reading it.
-        let error = federated.authorize(req).await.unwrap_err();
+        let error = renewing.authorize(req).await.unwrap_err();
 
         assert!(
             error
@@ -619,19 +389,14 @@ mod tests {
     async fn a_silent_token_endpoint_ends_the_exchange() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/token", listener.local_addr().unwrap());
-        let federation = Federation::OpenAi {
-            provider: "idp_1".to_owned(),
-            service_account: "svc_1".to_owned(),
-            token_file: concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/token").into(),
-        };
 
-        let result = federation
-            .exchange(
-                &HyperClient::new().unwrap(),
-                &url,
-                Duration::from_millis(200),
-            )
-            .await;
+        let result = exchange(
+            &vendor(),
+            &HyperClient::new().unwrap(),
+            &url,
+            Duration::from_millis(200),
+        )
+        .await;
         drop(listener);
 
         let Err(Refusal {
@@ -650,16 +415,20 @@ mod tests {
         let Err(Refusal {
             reason,
             message: detail,
-        }) = anthropic().access_token(StatusCode::UNAUTHORIZED, b"Authentication failed")
+        }) = access_token(
+            &vendor(),
+            StatusCode::UNAUTHORIZED,
+            b"Authentication failed",
+        )
         else {
             panic!("accepted");
         };
         assert_eq!(reason, Reason::ModelKeyMissing);
         assert!(detail.contains("401 Unauthorized"), "{detail}");
         assert!(detail.contains("Authentication failed"), "{detail}");
-        assert!(detail.contains("authentication history"), "{detail}");
+        assert!(detail.contains("the vendor's rule"), "{detail}");
 
-        let Err(Refusal { reason, .. }) = openai().access_token(StatusCode::BAD_GATEWAY, b"")
+        let Err(Refusal { reason, .. }) = access_token(&vendor(), StatusCode::BAD_GATEWAY, b"")
         else {
             panic!("accepted");
         };

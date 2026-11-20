@@ -61,8 +61,18 @@ job "$a" | jq '.spec.template.spec.volumes += [{name: "host", hostPath: {path: "
   check fail "a Job with a hostPath volume"
 job "$a" | jq '.spec.template.spec.hostNetwork = true' | check fail "a Job on the host network"
 job "$a" | jq '.spec.template.spec.hostPID = true' | check fail "a Job in the host PID namespace"
-job "$a" | jq '.spec.template.spec.serviceAccountName = "admin"' |
-  check fail "a Job with another ServiceAccount"
+token() { # $1 = a projected volume source
+  jq --argjson source "$1" '.spec.template.spec.volumes += [{name: "token", projected: {sources: [$source]}}]'
+}
+model='{serviceAccountToken: {audience: "https://api.anthropic.com", path: "token"}}'
+job "$a" | jq '.spec.template.spec.serviceAccountName = "builder-agent"' | token "$(jq -n "$model")" |
+  check pass "a Job with a model provider's token"
+job "$a" | token '{"serviceAccountToken": {"path": "token"}}' |
+  check fail "a Job with an API server token"
+job "$a" | token '{"serviceAccountToken": {"audience": "https://kubernetes.default.svc", "path": "token"}}' |
+  check fail "a Job with a token for another audience"
+job "$a" | token '{"configMap": {"name": "kube-root-ca.crt"}}' |
+  check fail "a Job with another projected source"
 job "$a" | jq '.spec.template.spec.automountServiceAccountToken = true' |
   check fail "a Job with a ServiceAccount token"
 job "$a" | jq "$privileged" | check pass "an admin's privileged Job is not the policy's concern" admin

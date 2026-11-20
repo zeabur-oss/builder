@@ -288,8 +288,8 @@ pub enum Reason {
     /// The Secret of `spec.output.pushSecretRef` is missing or unusable, or the registry token
     /// key cannot be read.
     RegistryCredentialsMissing,
-    /// The Secret key the `agent` builder's `planner.model.apiKeySecret` names is missing from
-    /// the `Build`'s namespace.
+    /// The Secret key or the service account the `agent` builder's `agent.model.auth` names is
+    /// missing from the `Build`'s namespace.
     ModelKeyMissing,
     /// Clone, checkout or the archive download failed.
     SourceFailed,
@@ -390,7 +390,7 @@ pub enum DockerfileSource {
 /// Why the `agent` planner stopped without a Dockerfile.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
 pub enum PlanStop {
-    /// The model API key was missing or refused.
+    /// The model API key or service account token was missing or refused.
     ModelKeyMissing,
     /// The model API refused or failed a request.
     ModelFailed,

@@ -3,9 +3,11 @@
 {{- $registry := .Values.registry }}
 {{- $denied := concat (list .Release.Namespace $registry.tokenKey.namespace $registry.caFrom.namespace $registry.inCluster.namespace) .Values.admissionPolicy.extraDeniedNamespaces | compact | uniq }}
 {{- $user := printf "system:serviceaccount:%s:zeabur-builder" .Release.Namespace }}
+{{- $audiences := list "https://api.anthropic.com" "https://api.openai.com/v1" }}
 # The controller can create Jobs in every namespace. A Job it creates must be a build Job: the
-# chart's images, no privilege, no host namespace, port or path, the default ServiceAccount
-# without a token, and not in a system namespace or one that holds the registry's keys.
+# chart's images, no privilege, no host namespace, port or path, no API server token (only a
+# token for a model provider's audience), and not in a system namespace or one that holds the
+# registry's keys.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -55,13 +57,16 @@ spec:
         variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))
       message: a build Job uses no host network, PID, IPC or port
     - expression: >-
-        !has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir) || has(v.secret))
-      message: a build Job mounts only emptyDir and Secret volumes
+        !has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir) || has(v.secret) ||
+        (has(v.projected) && v.projected.sources.all(s, has(s.serviceAccountToken) &&
+        has(s.serviceAccountToken.audience) &&
+        s.serviceAccountToken.audience in {{ include "builder.celList" $audiences }})))
+      message: >-
+        a build Job mounts only emptyDir and Secret volumes, and service account tokens for a
+        model provider
     - expression: >-
-        (!has(variables.pod.serviceAccountName) || variables.pod.serviceAccountName == 'default') &&
-        (!has(variables.pod.serviceAccount) || variables.pod.serviceAccount == 'default') &&
         has(variables.pod.automountServiceAccountToken) && !variables.pod.automountServiceAccountToken
-      message: a build Job runs as the default ServiceAccount without its token
+      message: a build Job runs without its ServiceAccount's API server token
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

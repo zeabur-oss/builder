@@ -63,27 +63,131 @@
                       "model": {
                         "description": "The model.",
                         "properties": {
-                          "apiKeySecret": {
-                            "description": "The Secret key that holds the model API key, in each `Build`'s own namespace. A run\nwaits with `ModelKeyMissing` while it is missing.",
+                          "auth": {
+                            "description": "How the run signs in to the model API.",
                             "properties": {
-                              "key": {
-                                "description": "The key.",
-                                "maxLength": 253,
-                                "minLength": 1,
-                                "type": "string"
+                              "anthropicFederation": {
+                                "description": "The federation rule, and the service account whose token the run exchanges.",
+                                "properties": {
+                                  "federationRuleId": {
+                                    "description": "The federation rule, `fdrl_…`.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "organizationId": {
+                                    "description": "The organization.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "serviceAccountId": {
+                                    "description": "Anthropic's service account, `svac_…`, when the rule does not name one.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "nullable": true,
+                                    "type": "string"
+                                  },
+                                  "serviceAccountName": {
+                                    "description": "The Kubernetes service account, in each `Build`'s own namespace, whose token the run\nexchanges.",
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "workspaceId": {
+                                    "description": "The workspace, `wrkspc_…`, needed when the rule has several.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "nullable": true,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "federationRuleId",
+                                  "organizationId",
+                                  "serviceAccountName"
+                                ],
+                                "type": "object"
                               },
-                              "name": {
-                                "description": "The Secret's name.",
-                                "maxLength": 253,
-                                "minLength": 1,
+                              "apiKey": {
+                                "description": "The Secret key that holds the model API key, in each `Build`'s own namespace.",
+                                "properties": {
+                                  "key": {
+                                    "description": "The key.",
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "description": "The Secret's name.",
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "key",
+                                  "name"
+                                ],
+                                "type": "object"
+                              },
+                              "openaiFederation": {
+                                "description": "The identity provider, and the service account whose token the run exchanges.",
+                                "properties": {
+                                  "identityProviderId": {
+                                    "description": "The workload identity provider.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "serviceAccountId": {
+                                    "description": "OpenAI's service account the token maps to.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "serviceAccountName": {
+                                    "description": "The Kubernetes service account, in each `Build`'s own namespace, whose token the run\nexchanges.",
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "identityProviderId",
+                                  "serviceAccountId",
+                                  "serviceAccountName"
+                                ],
+                                "type": "object"
+                              },
+                              "type": {
+                                "description": "`apiKey`: An API key in a Secret.\n\n`anthropicFederation`: Anthropic's workload identity federation: a service account token for a short-lived\naccess token.\n\n`openaiFederation`: OpenAI's workload identity federation: a service account token for a short-lived access\ntoken.",
+                                "enum": [
+                                  "apiKey",
+                                  "anthropicFederation",
+                                  "openaiFederation"
+                                ],
                                 "type": "string"
                               }
                             },
                             "required": [
-                              "key",
-                              "name"
+                              "type"
                             ],
-                            "type": "object"
+                            "type": "object",
+                            "x-kubernetes-validations": [
+                              {
+                                "message": "apiKey is required for type apiKey, and only for it",
+                                "rule": "has(self.apiKey) == (self.type == 'apiKey')"
+                              },
+                              {
+                                "message": "anthropicFederation is required for type anthropicFederation, and only for it",
+                                "rule": "has(self.anthropicFederation) == (self.type == 'anthropicFederation')"
+                              },
+                              {
+                                "message": "openaiFederation is required for type openaiFederation, and only for it",
+                                "rule": "has(self.openaiFederation) == (self.type == 'openaiFederation')"
+                              }
+                            ]
                           },
                           "baseUrl": {
                             "description": "The model API's base URL, for a proxy or a self-hosted endpoint.",
@@ -105,11 +209,21 @@
                           }
                         },
                         "required": [
-                          "apiKeySecret",
+                          "auth",
                           "model",
                           "provider"
                         ],
-                        "type": "object"
+                        "type": "object",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "anthropicFederation needs provider anthropic",
+                            "rule": "self.auth.type != 'anthropicFederation' || self.provider == 'anthropic'"
+                          },
+                          {
+                            "message": "openaiFederation needs provider openai",
+                            "rule": "self.auth.type != 'openaiFederation' || self.provider == 'openai'"
+                          }
+                        ]
                       },
                       "resources": {
                         "description": "CPU and memory for the plan container.",

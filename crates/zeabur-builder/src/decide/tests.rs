@@ -1308,14 +1308,18 @@ fn an_agent_run_waits_for_its_model_key() {
     );
 }
 
-/// An `agent` run checks for its model key only when it plans; a run that restores a saved plan
-/// calls no model and starts without one.
+/// An `agent` run checks how it signs in only when it plans; a run that restores a saved plan
+/// calls no model and starts without a key.
 #[test]
 fn only_a_run_that_plans_needs_the_model_key() {
-    use zeabur_builder_api::cluster_builder::{AgentPlanner, ModelSpec, Planner, PlannerSpec};
-    let secret_ref = SecretKeyRef {
-        name: "model".to_owned(),
-        key: "anthropic".to_owned(),
+    use zeabur_builder_api::cluster_builder::{
+        AgentPlanner, ModelAuth, ModelSpec, Planner, PlannerSpec,
+    };
+    let auth = ModelAuth::ApiKey {
+        api_key: SecretKeyRef {
+            name: "model".to_owned(),
+            key: "anthropic".to_owned(),
+        },
     };
     let mut agent = cluster_builder(1).spec;
     agent.planner = Planner::Agent {
@@ -1329,13 +1333,28 @@ fn only_a_run_that_plans_needs_the_model_key() {
                 provider: "anthropic".to_owned(),
                 model: "claude-opus-5-5".to_owned(),
                 base_url: None,
-                api_key_secret: secret_ref.clone(),
+                auth: auth.clone(),
             },
         },
     };
-    assert_eq!(model_key_ref(&agent, false), Some(&secret_ref));
-    assert_eq!(model_key_ref(&cluster_builder(1).spec, false), None);
-    assert_eq!(model_key_ref(&agent, true), None);
+    assert_eq!(model_auth(&agent, false), Some(&auth));
+    assert_eq!(model_auth(&cluster_builder(1).spec, false), None);
+    assert_eq!(model_auth(&agent, true), None);
+}
+
+#[test]
+fn a_federated_run_waits_for_its_service_account() {
+    assert_eq!(
+        model_service_account("builder-agent", "team-a", true),
+        Ok(())
+    );
+    assert_eq!(
+        model_service_account("builder-agent", "team-a", false),
+        Err(Refusal::new(
+            Reason::ModelKeyMissing,
+            "no ServiceAccount `builder-agent` in `team-a` for the model token"
+        ))
+    );
 }
 
 /// A run whose Job restored a saved plan reports that plan as its own, with `planSource: saved`.

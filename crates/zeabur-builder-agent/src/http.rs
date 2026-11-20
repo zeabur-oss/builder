@@ -43,6 +43,24 @@ pub(crate) enum ClientError {
     Body(#[from] Error),
 }
 
+/// A request body and its media type.
+#[derive(Debug)]
+pub(crate) struct Body {
+    pub(crate) content_type: &'static str,
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl Body {
+    /// `value` as JSON.
+    pub(crate) fn json(value: &impl serde::Serialize) -> Self {
+        Self {
+            content_type: "application/json",
+            // A token request holds only strings, so serialization cannot fail.
+            bytes: serde_json::to_vec(value).unwrap_or_default(),
+        }
+    }
+}
+
 /// An HTTPS client for model APIs.
 #[derive(Debug, Clone)]
 pub(crate) struct HyperClient {
@@ -77,15 +95,15 @@ impl HyperClient {
         })
     }
 
-    /// Posts `body` as JSON to `url` and returns the status and the reply, whatever the status.
-    pub(crate) async fn post_json(
+    /// Posts `body` to `url` and returns the status and the reply, whatever the status.
+    pub(crate) async fn post(
         &self,
         url: &str,
-        body: Vec<u8>,
+        body: Body,
     ) -> std::result::Result<(http::StatusCode, Bytes), ClientError> {
         let req = Request::post(url)
-            .header(http::header::CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(body)))?;
+            .header(http::header::CONTENT_TYPE, body.content_type)
+            .body(Full::new(Bytes::from(body.bytes)))?;
         let response = self.client.request(req).await?;
         let status = response.status();
         let reply = read(response.into_body()).await?;

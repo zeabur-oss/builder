@@ -28,7 +28,8 @@ railpackImage:
 railpackFrontend: ghcr.io/railwayapp/railpack-frontend:v0.43.0
 
 # The `agent` ClusterBuilder: a model writes the Dockerfile for a repository that has none. Its
-# planner runs from jobImage. Each Build's namespace needs the Secret apiKeySecret names.
+# planner runs from jobImage. Each Build's namespace needs the Secret or the ServiceAccount auth
+# names.
 agent:
   enabled: false
   # A provider name of the Rig library, such as anthropic or openai.
@@ -37,10 +38,11 @@ agent:
   model: ""
   # Another endpoint of the same API, such as a proxy. Empty: the provider's own.
   baseUrl: ""
-  # The Secret, in each Build's namespace, with the model API key.
-  apiKeySecret:
-    name: ""
-    key: ""
+  # How runs sign in to the model API, as the ClusterBuilder's spec.agent.model.auth. An API key:
+  #   {type: apiKey, apiKey: {name: model, key: anthropic}}
+  # Workload identity federation: {type: anthropicFederation, anthropicFederation: {...}} or
+  # {type: openaiFederation, openaiFederation: {...}}.
+  auth: {}
 
 # Each namespace's buildkitd, rootful. The admission policy below allows only this image.
 buildkitdImage: docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe

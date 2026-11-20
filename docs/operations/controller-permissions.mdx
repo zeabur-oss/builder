@@ -11,6 +11,7 @@ The controller's ServiceAccount has the following permissions:
 
 - Create Jobs in all Namespaces.
 - Read and write Secrets in all Namespaces.
+- Read ServiceAccounts in all Namespaces.
 - Create StatefulSets in its own Namespace (`builder-system` in the install guide), whose Pods can run in privileged mode.
 
 Anyone who gains control of the controller or its token can perform these operations.
@@ -26,8 +27,8 @@ The Helm chart provides two ValidatingAdmissionPolicies that restrict which reso
 - Images are limited to `jobImage`, `railpackImage`, and `admissionPolicy.extraImages`.
 - Privileged mode, extra capabilities, and use of the host's network, PID, IPC, ports, or paths are prohibited.
 - Containers must run as non-root, without privilege escalation.
-- Jobs can mount only emptyDir and Secret volumes.
-- Jobs must use the Namespace's `default` ServiceAccount without a token.
+- Jobs can mount only emptyDir and Secret volumes, and service account tokens for the audience of a model provider (Anthropic or OpenAI).
+- Jobs get no token for the Kubernetes API. Only an `agent` builder that signs in with federation runs Jobs as another ServiceAccount.
 - Jobs cannot be created in `kube-*` Namespaces, the controller's Namespace, the image registry's Namespace, or any Namespace in `admissionPolicy.extraDeniedNamespaces`.
 
 ### StatefulSet policy
