@@ -6,13 +6,13 @@ use std::collections::BTreeMap;
 
 use pretty_assertions::assert_eq;
 use zeabur_builder_api::build::{
-    ArchiveSource, BuildSpec, Concurrency, EnvVarSource, GitSource, SourceKind, SourceSpec,
-    TriggerSpec,
+    ArchiveSource, BuildSpec, Concurrency, EnvVarSource, GitSource, MAX_ENV, MAX_EXTRA_TAGS,
+    MAX_PATH, MAX_URL, SourceKind, SourceSpec, TriggerSpec,
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{
-    AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, MAX_OPTS, ModelAuth, ModelSpec,
-    Planner, PlannerSpec,
+    AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, MAX_IMAGE, MAX_OPT_KEY,
+    MAX_OPT_VALUE, MAX_OPTS, ModelAuth, ModelSpec, Planner, PlannerSpec,
 };
 use zeabur_builder_api::common::SecretKeyRef;
 
@@ -749,28 +749,71 @@ fn a_memory_request_never_exceeds_the_limit() {
 }
 
 #[test]
-fn the_largest_plan_passes_no_argument_over_the_kernel_limit() {
-    // Linux refuses `exec` when one argument passes 32 pages (128 KiB on 4 KiB pages).
+fn the_largest_build_fits_its_pod() {
+    // A 4-byte character stays 4 bytes in JSON, a quote or a backslash becomes 2, and a control
+    // character becomes 6 (`\u0001`).
+    for filler in ["\u{1d54f}", "\"", "\\", "\u{1}"] {
+        fits_its_pod(filler);
+    }
+}
+
+fn fits_its_pod(filler: &str) {
+    // A Pod's annotations hold at most 256 KiB, and Linux refuses `exec` when one argument passes
+    // 32 pages (128 KiB on 4 KiB pages).
+    const MAX_ANNOTATIONS: usize = 256 * 1024;
     const MAX_ARG: usize = 128 * 1024;
+    let wide = |chars: usize| filler.repeat(chars);
     let run = build_run();
-    let build = build("https://github.com/acme/web", None, Vec::new());
-    let mut builder = dockerfile();
-    builder.frontend.opts = (0..MAX_OPTS)
-        .map(|i| (format!("build-arg:A{i}"), "x".repeat(4096)))
+    let env = (0..MAX_ENV)
+        .map(|i| BuildEnvVar {
+            name: format!("{i:0>128}").replace('0', "A"),
+            value: Some(String::new()),
+            value_from: None,
+        })
         .collect();
-    let tags = tags();
-    let job = job(&inputs(
-        &run,
-        &build,
-        "dockerfile",
-        &builder,
-        &tags,
-        GitAuth::Anonymous,
-    ))
+    let url = format!("https://github.com/acme/{}", "a".repeat(MAX_URL - 30));
+    let context = "c".repeat(MAX_PATH);
+    let build = build(&url, Some(&context), env);
+    let mut builder = railpack();
+    builder.frontend.opts = (0..MAX_OPTS)
+        .map(|i| {
+            (
+                format!("{i:0>3}{}", wide(MAX_OPT_KEY - 3)),
+                wide(MAX_OPT_VALUE),
+            )
+        })
+        .collect();
+    let tags: Vec<String> = (0..=MAX_EXTRA_TAGS)
+        .map(|i| format!("{i}{}", "t".repeat(127)))
+        .collect();
+    let image = format!("registry.internal/{}", "i".repeat(MAX_IMAGE - 18));
+    let job = job(&JobInputs {
+        image: &image,
+        ..inputs(
+            &run,
+            &build,
+            "railpack",
+            &builder,
+            &tags,
+            GitAuth::Anonymous,
+        )
+    })
     .unwrap();
-    let last = format!("build-arg:A{}={}", MAX_OPTS - 1, "x".repeat(4096));
-    assert!(build_plan_of(&job).builds[0].command.contains(&last));
-    let pod = job.spec.unwrap().template.spec.unwrap();
+    let plan = build_plan_of(&job);
+    assert!(
+        plan.builds[0]
+            .command
+            .iter()
+            .any(|arg| arg.ends_with(&wide(MAX_OPT_VALUE)))
+    );
+    let template = job.spec.unwrap().template;
+    let annotations = template.metadata.unwrap().annotations.unwrap();
+    let size: usize = annotations.iter().map(|(k, v)| k.len() + v.len()).sum();
+    assert!(
+        size < MAX_ANNOTATIONS,
+        "with {filler:?}, the Pod's annotations hold {size} bytes"
+    );
+    let pod = template.spec.unwrap();
     for container in pod.init_containers.unwrap().iter().chain(&pod.containers) {
         for arg in container.command.iter().chain(&container.args).flatten() {
             assert!(
