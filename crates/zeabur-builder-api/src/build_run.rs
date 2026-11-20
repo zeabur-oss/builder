@@ -485,29 +485,26 @@ mod tests {
             reason: Some(Reason::OutOfMemory),
             ..BuildRunStatus::default()
         };
-        let json = serde_json::to_value(&status).unwrap();
-        assert_eq!(json["phase"], "Failed");
-        assert_eq!(json["reason"], "OutOfMemory");
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, r#"{"phase":"Failed","reason":"OutOfMemory"}"#);
         assert_eq!(
-            serde_json::from_value::<BuildRunStatus>(json).unwrap(),
+            serde_json::from_str::<BuildRunStatus>(&json).unwrap(),
             status
         );
     }
 
     #[test]
     fn an_unrecognised_phase_or_reason_decodes_as_unknown() {
-        let status: BuildRunStatus = serde_json::from_value(serde_json::json!({
-            "phase": "Paused",
-            "reason": "DiskFull",
-            "message": "kept",
-        }))
-        .unwrap();
+        let status: BuildRunStatus =
+            serde_json::from_str(r#"{"phase": "Paused", "reason": "DiskFull", "message": "kept"}"#)
+                .unwrap();
         assert_eq!(status.phase, Some(Phase::Unknown));
         assert_eq!(status.reason, Some(Reason::Unknown));
         assert_eq!(status.message.as_deref(), Some("kept"));
 
-        let json = serde_json::to_value(&status).unwrap();
-        assert_eq!(json["phase"], "Unknown");
-        assert_eq!(json["reason"], "Unknown");
+        assert_eq!(
+            serde_json::to_string(&status).unwrap(),
+            r#"{"phase":"Unknown","reason":"Unknown","message":"kept"}"#
+        );
     }
 }

@@ -4,7 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use http::HeaderValue;
-use serde_json::json;
+use zeabur_builder_api::build::{
+    BuildSpec, Concurrency, GitHubAppSource, GitSource, SourceKind, SourceSpec, TriggerSpec,
+    WebhookTrigger,
+};
+use zeabur_builder_api::common::SecretKeyRef;
 
 use super::*;
 
@@ -53,38 +57,42 @@ impl Lookup for Fake {
     }
 }
 
-fn build(
-    namespace: &str,
-    name: &str,
-    url: &str,
-    git_ref: &str,
-    source: &serde_json::Value,
-) -> Arc<Build> {
-    let mut spec = json!({
-        "source": {"type": "git", "git": {"url": url, "ref": git_ref}},
-        "builderRef": "dockerfile",
-        "triggers": {"webhook": {"secretRef": {"name": "hook", "key": "secret"}}},
-    });
-    if let Some(extra) = source.as_object() {
-        for (k, v) in extra {
-            match k.as_str() {
-                "githubApp" => {
-                    spec["source"]["git"]["githubApp"] = v.clone();
-                    spec["triggers"] = json!({});
-                }
-                _ => spec[k] = v.clone(),
-            }
-        }
-    }
-    Arc::new(
-        serde_json::from_value(json!({
-            "apiVersion": "builder.zeabur.com/v1alpha1",
-            "kind": "Build",
-            "metadata": {"name": name, "namespace": namespace},
-            "spec": spec,
-        }))
-        .unwrap(),
-    )
+fn build(namespace: &str, name: &str, url: &str, git_ref: &str) -> Build {
+    let mut build = Build::new(
+        name,
+        BuildSpec {
+            source: SourceSpec {
+                kind: SourceKind::Git {
+                    git: GitSource {
+                        url: url.to_owned(),
+                        git_ref: git_ref.to_owned(),
+                        credentials_ref: None,
+                        github_app: None,
+                    },
+                },
+                context_dir: None,
+                dockerfile: None,
+            },
+            builder_ref: "dockerfile".to_owned(),
+            output: None,
+            env: Vec::new(),
+            triggers: TriggerSpec {
+                webhook: Some(WebhookTrigger {
+                    secret_ref: SecretKeyRef {
+                        name: "hook".to_owned(),
+                        key: "secret".to_owned(),
+                    },
+                }),
+                poll_interval: None,
+            },
+            concurrency: Concurrency::default(),
+            history_limit: None,
+            notify: Vec::new(),
+            suspend: false,
+        },
+    );
+    build.metadata.namespace = Some(namespace.to_owned());
+    build
 }
 
 fn settings(max_body: usize, burst: u32) -> Settings {
@@ -103,71 +111,42 @@ struct World {
 }
 
 fn world_with(max_body: usize, burst: u32) -> World {
-    let builds = vec![
-        build(
-            "team-a",
-            "api",
-            "https://github.com/acme/api.git",
-            "main",
-            &json!({}),
-        ),
-        build(
-            "team-b",
-            "api",
-            "git@github.com:Acme/API.git",
-            "main",
-            &json!({}),
-        ),
-        build(
-            "team-a",
-            "docs",
-            "https://github.com/acme/api",
-            "gh-pages",
-            &json!({}),
-        ),
-        build(
-            "team-a",
-            "head",
-            "https://github.com/acme/api",
-            "HEAD",
-            &json!({}),
-        ),
-        build(
-            "team-a",
-            "paused",
-            "https://github.com/acme/api",
-            "main",
-            &json!({"suspend": true}),
-        ),
-        build(
-            "team-c",
-            "via-app",
-            "https://github.com/acme/api",
-            "main",
-            &json!({"githubApp": {"installationId": 7}}),
-        ),
+    let mut paused = build("team-a", "paused", "https://github.com/acme/api", "main");
+    paused.spec.suspend = true;
+    let mut via_app = build("team-c", "via-app", "https://github.com/acme/api", "main");
+    via_app.spec.triggers = TriggerSpec::default();
+    if let SourceKind::Git { git } = &mut via_app.spec.source.kind {
+        git.github_app = Some(GitHubAppSource { installation_id: 7 });
+    }
+    let builds = [
+        build("team-a", "api", "https://github.com/acme/api.git", "main"),
+        build("team-b", "api", "git@github.com:Acme/API.git", "main"),
+        build("team-a", "docs", "https://github.com/acme/api", "gh-pages"),
+        build("team-a", "head", "https://github.com/acme/api", "HEAD"),
+        paused,
+        via_app,
         build(
             "team-a",
             "lab",
             "https://gitlab.example.com/Group/App.git",
             "main",
-            &json!({}),
         ),
         build(
             "team-a",
             "tea",
             "https://git.example.com/team/app.git",
             "main",
-            &json!({}),
         ),
         build(
             "team-a",
             "bucket",
             "https://bitbucket.org/team/app.git",
             "main",
-            &json!({}),
         ),
-    ];
+    ]
+    .into_iter()
+    .map(Arc::new)
+    .collect();
     let mut secrets = HashMap::new();
     for (namespace, value) in [("team-a", SECRET), ("team-b", OTHER)] {
         secrets.insert(
@@ -213,16 +192,9 @@ fn sign_hex(key: &[u8], body: &[u8]) -> String {
 }
 
 fn github_push(git_ref: &str) -> Vec<u8> {
-    json!({
-        "ref": git_ref,
-        "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-        "repository": {
-            "clone_url": "https://github.com/acme/api.git",
-            "ssh_url": "git@github.com:acme/api.git",
-            "html_url": "https://github.com/acme/api"
-        }
-    })
-    .to_string()
+    format!(
+        r#"{{"ref":"{git_ref}","after":"3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c","repository":{{"clone_url":"https://github.com/acme/api.git","ssh_url":"git@github.com:acme/api.git","html_url":"https://github.com/acme/api"}}}}"#
+    )
     .into_bytes()
 }
 
@@ -333,9 +305,9 @@ async fn bad_signatures_are_refused() {
 #[tokio::test]
 async fn unknown_repositories_look_like_bad_signatures() {
     let w = world();
-    let body = json!({"ref": "refs/heads/main", "repository": {"clone_url": "https://github.com/acme/secret.git"}})
-        .to_string()
-        .into_bytes();
+    let body =
+        br#"{"ref":"refs/heads/main","repository":{"clone_url":"https://github.com/acme/secret.git"}}"#
+            .to_vec();
     let unknown = post(
         &w,
         Provider::GitHub,
@@ -406,10 +378,7 @@ async fn replays_are_dropped() {
 #[tokio::test]
 async fn deliveries_without_a_push_wake_nothing() {
     let w = world();
-    let ping = json!({"zen": "Design for failure.", "hook_id": 1,
-        "repository": {"clone_url": "https://github.com/acme/api.git"}})
-    .to_string()
-    .into_bytes();
+    let ping = br#"{"zen":"Design for failure.","hook_id":1,"repository":{"clone_url":"https://github.com/acme/api.git"}}"#.to_vec();
     assert_eq!(
         post(
             &w,
@@ -420,11 +389,7 @@ async fn deliveries_without_a_push_wake_nothing() {
         .await,
         (StatusCode::ACCEPTED, "ignored".to_owned())
     );
-    let deleted = json!({"ref": "refs/heads/main", "deleted": true,
-        "after": "0000000000000000000000000000000000000000",
-        "repository": {"clone_url": "https://github.com/acme/api.git"}})
-    .to_string()
-    .into_bytes();
+    let deleted = br#"{"ref":"refs/heads/main","deleted":true,"after":"0000000000000000000000000000000000000000","repository":{"clone_url":"https://github.com/acme/api.git"}}"#.to_vec();
     assert_eq!(
         post(
             &w,
@@ -516,10 +481,7 @@ async fn the_app_wakes_its_builds_with_its_own_secret() {
 }
 
 fn gitlab_body() -> Vec<u8> {
-    json!({"ref": "refs/heads/main", "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-        "project": {"git_http_url": "https://gitlab.example.com/Group/App.git"}})
-    .to_string()
-    .into_bytes()
+    br#"{"ref":"refs/heads/main","after":"3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c","project":{"git_http_url":"https://gitlab.example.com/Group/App.git"}}"#.to_vec()
 }
 
 fn standard_headers(key: &[u8], id: &str, at: i64, body: &[u8]) -> HeaderMap {
@@ -597,11 +559,7 @@ async fn gitlab_tokens_and_signing_tokens() {
 #[tokio::test]
 async fn gitea_and_forgejo_signatures() {
     let w = world();
-    let gitea =
-        json!({"ref": "refs/heads/main", "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-        "repository": {"clone_url": "https://git.example.com/team/app.git"}})
-        .to_string()
-        .into_bytes();
+    let gitea = br#"{"ref":"refs/heads/main","after":"3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c","repository":{"clone_url":"https://git.example.com/team/app.git"}}"#.to_vec();
     let mut h = HeaderMap::new();
     h.insert("x-gitea-event", HeaderValue::from_static("push"));
     h.insert("x-gitea-delivery", HeaderValue::from_static("g1"));
@@ -626,10 +584,7 @@ async fn gitea_and_forgejo_signatures() {
 #[tokio::test]
 async fn bitbucket_signature() {
     let w = world();
-    let bucket = json!({"repository": {"full_name": "team/app"},
-        "push": {"changes": [{"new": {"type": "branch", "name": "main"}}]}})
-    .to_string()
-    .into_bytes();
+    let bucket = br#"{"repository":{"full_name":"team/app"},"push":{"changes":[{"new":{"type":"branch","name":"main"}}]}}"#.to_vec();
     let mut h = HeaderMap::new();
     h.insert("x-event-key", HeaderValue::from_static("repo:push"));
     h.insert("x-request-uuid", HeaderValue::from_static("b1"));
@@ -673,13 +628,12 @@ fn crowd(count: usize, own_secrets: bool) -> (Receiver, Arc<Mutex<Vec<String>>>,
         } else {
             "team-a".to_owned()
         };
-        builds.push(build(
+        builds.push(Arc::new(build(
             &namespace,
             &format!("api-{i}"),
             "https://github.com/acme/api",
             "main",
-            &json!({}),
-        ));
+        )));
         secrets.insert(
             (namespace, "hook".to_owned(), "secret".to_owned()),
             SECRET.to_vec(),

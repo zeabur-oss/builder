@@ -574,7 +574,10 @@ mod tests {
             (ConditionReason::NotBuilt, "NotBuilt"),
         ] {
             assert_eq!(reason.to_string(), written);
-            assert_eq!(serde_json::to_value(reason).unwrap(), written);
+            assert_eq!(
+                serde_json::to_string(&reason).unwrap(),
+                format!("\"{written}\"")
+            );
         }
     }
 

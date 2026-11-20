@@ -674,23 +674,20 @@ mod tests {
     fn non_root_rewrites_the_plan_and_writes_the_dockerfile() {
         let dir = std::env::temp_dir().join(format!("zeabur-builder-job-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let plan = serde_json::json!({
-            "steps": [{"name": "build", "commands": [{"cmd": "npm ci"}]}],
-            "deploy": {"inputs": [{"step": "build", "include": ["."]}]}
-        });
-        std::fs::write(dir.join("railpack-plan.json"), plan.to_string()).unwrap();
+        let plan = r#"{"steps": [{"name": "build", "commands": [{"cmd": "npm ci"}]}],
+            "deploy": {"inputs": [{"step": "build", "include": ["."]}]}}"#;
+        std::fs::write(dir.join("railpack-plan.json"), plan).unwrap();
         let out = dir.join("out");
         let (plan_dir, out_dir) = (dir.to_str().unwrap(), out.to_str().unwrap());
         prepare_non_root(plan_dir, out_dir).unwrap();
         let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap();
-        let written: serde_json::Value =
+        let mut owned: railpack::Plan = serde_json::from_str(plan).unwrap();
+        railpack::own_deploy_layers(&mut owned);
+        let written: railpack::Plan =
             serde_json::from_str(&read(out.join("railpack-plan.json"))).unwrap();
-        assert_eq!(
-            written["steps"][0]["commands"][1]["cmd"],
-            railpack::OWN_COMMAND
-        );
+        assert_eq!(written, owned);
         assert_eq!(read(out.join("Dockerfile")), railpack::dockerfile());
-        assert_eq!(read(dir.join("railpack-plan.json")), plan.to_string());
+        assert_eq!(read(dir.join("railpack-plan.json")), plan);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(prepare_non_root(plan_dir, out_dir).is_err());
     }

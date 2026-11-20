@@ -506,11 +506,11 @@ mod tests {
             memory_limit: Some("1Gi".to_owned()),
         };
         let daemon = daemon(&inputs(&resources));
-        let actual = serde_json::to_string_pretty(&serde_json::json!([
+        let actual = serde_json::to_string_pretty(&(
             daemon.service,
             daemon.stateful_set,
             daemon.network_policy,
-        ]))
+        ))
         .unwrap()
             + "\n";
         if std::env::var_os("ZEABUR_BUILDER_BLESS").is_some() {

@@ -782,13 +782,15 @@ struct ImageConfig {
 }
 
 #[derive(Deserialize)]
+#[expect(clippy::zero_sized_map_values, reason = "only the keys are read")]
 struct ContainerConfig {
     #[serde(rename = "ExposedPorts", default)]
-    exposed_ports: Option<BTreeMap<String, serde_json::Value>>,
+    exposed_ports: Option<BTreeMap<String, serde::de::IgnoredAny>>,
 }
 
 /// The `ExposedPorts` keys of an image config, sorted, without keys that are not `<port>/<proto>`
 /// or `<low>-<high>/<proto>`.
+#[expect(clippy::zero_sized_map_values, reason = "only the keys are read")]
 fn exposed_ports(config: &[u8]) -> Result<Vec<String>, RegistryError> {
     let config: ImageConfig =
         serde_json::from_slice(config).map_err(RegistryError::ReadImageConfig)?;

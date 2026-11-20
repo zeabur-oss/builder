@@ -135,34 +135,33 @@ impl HttpClientExt for Replay {
     }
 }
 
-/// A Messages API reply that calls `tool` with `input`.
-pub(crate) fn tool_use(id: &str, tool: &str, input: &serde_json::Value) -> String {
-    serde_json::json!({
-        "id": format!("msg_{id}"),
-        "type": "message",
-        "role": "assistant",
-        "model": "claude-opus-5-5",
-        "content": [{"type": "tool_use", "id": format!("toolu_{id}"), "name": tool, "input": input}],
-        "stop_reason": "tool_use",
-        "stop_sequence": null,
-        "usage": {"input_tokens": 1000, "output_tokens": 100}
-    })
-    .to_string()
+/// A Messages API reply that calls `tool` with `input`, a JSON object.
+pub(crate) fn tool_use(id: &str, tool: &str, input: &str) -> String {
+    reply(
+        id,
+        &format!(
+            r#"{{"type": "tool_use", "id": "toolu_{id}", "name": "{tool}", "input": {input}}}"#
+        ),
+        "tool_use",
+    )
 }
 
 /// A Messages API reply with only text.
 pub(crate) fn text(id: &str, text: &str) -> String {
-    serde_json::json!({
-        "id": format!("msg_{id}"),
-        "type": "message",
-        "role": "assistant",
-        "model": "claude-opus-5-5",
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": "end_turn",
-        "stop_sequence": null,
-        "usage": {"input_tokens": 1000, "output_tokens": 100}
-    })
-    .to_string()
+    let text = serde_json::to_string(text).unwrap_or_default();
+    reply(
+        id,
+        &format!(r#"{{"type": "text", "text": {text}}}"#),
+        "end_turn",
+    )
+}
+
+fn reply(id: &str, content: &str, stop_reason: &str) -> String {
+    format!(
+        r#"{{"id": "msg_{id}", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{content}], "stop_reason": "{stop_reason}", "stop_sequence": null,
+            "usage": {{"input_tokens": 1000, "output_tokens": 100}}}}"#
+    )
 }
 
 /// A trial builder that answers with prepared attempts, in order, and keeps the Dockerfiles. With

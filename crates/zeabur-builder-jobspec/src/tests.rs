@@ -193,10 +193,17 @@ static MEMORY: std::sync::LazyLock<JobMemory> = std::sync::LazyLock::new(|| JobM
 
 /// Compares `job` with `golden/<name>.json`, with the build plan shown as JSON, not as a string.
 fn golden(name: &str, expected: &str, job: &Job) {
-    let mut job = serde_json::to_value(job).unwrap();
-    let plan = &mut job["spec"]["template"]["metadata"]["annotations"][annotations::BUILD_PLAN];
-    *plan = serde_json::from_str(plan.as_str().unwrap()).unwrap();
-    let actual = serde_json::to_string_pretty(&job).unwrap() + "\n";
+    let build_plan = build_plan_of(job);
+    let mut job = job.clone();
+    if let Some(annotations) = job
+        .spec
+        .as_mut()
+        .and_then(|spec| spec.template.metadata.as_mut())
+        .and_then(|metadata| metadata.annotations.as_mut())
+    {
+        annotations.remove(annotations::BUILD_PLAN);
+    }
+    let actual = serde_json::to_string_pretty(&(job, build_plan)).unwrap() + "\n";
     if std::env::var_os("ZEABUR_BUILDER_BLESS").is_some() {
         let path = format!("{}/golden/{name}.json", env!("CARGO_MANIFEST_DIR"));
         std::fs::write(path, &actual).unwrap();

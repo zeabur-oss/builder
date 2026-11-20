@@ -274,6 +274,17 @@ fn selector() -> String {
     )
 }
 
+/// A merge patch of the `scale` subresource that sets only `spec.replicas`.
+#[derive(Debug, serde::Serialize)]
+struct ScalePatch {
+    spec: Replicas,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct Replicas {
+    replicas: i32,
+}
+
 async fn scale_to_zero(
     client: &Client,
     settings: &Settings,
@@ -283,7 +294,9 @@ async fn scale_to_zero(
         .patch_scale(
             &set.name_any(),
             &PatchParams::default(),
-            &Patch::Merge(serde_json::json!({"spec": {"replicas": 0}})),
+            &Patch::Merge(ScalePatch {
+                spec: Replicas { replicas: 0 },
+            }),
         )
         .await
         .map(drop)

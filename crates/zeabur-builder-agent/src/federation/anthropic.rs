@@ -128,7 +128,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rig_core::completion::CompletionRequest;
     use rig_core::message::Message;
-    use serde_json::{Value, json};
 
     use super::*;
     use crate::testing::{Replay, text};
@@ -153,14 +152,11 @@ mod tests {
         let body = anthropic().request("jwt");
         assert_eq!(body.content_type, "application/json");
         assert_eq!(
-            serde_json::from_slice::<Value>(&body.bytes).unwrap(),
-            json!({
-                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                "assertion": "jwt",
-                "federation_rule_id": "fdrl_1",
-                "organization_id": "org",
-                "workspace_id": "wrkspc_1",
-            })
+            std::str::from_utf8(&body.bytes).unwrap(),
+            concat!(
+                r#"{"grant_type":"urn:ietf:params:oauth:grant-type:jwt-bearer","assertion":"jwt","#,
+                r#""federation_rule_id":"fdrl_1","organization_id":"org","workspace_id":"wrkspc_1"}"#
+            )
         );
     }
 

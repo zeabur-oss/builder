@@ -20,7 +20,13 @@
 //! [`backend_unix.go`]: https://github.com/moby/buildkit/blob/v0.33.1/solver/llbsolver/file/backend_unix.go
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+
+/// Fields of a Railpack plan that this code does not read, written back as they are.
+#[expect(
+    clippy::disallowed_types,
+    reason = "Railpack's plan has fields of any shape"
+)]
+type Unread = serde_json::Map<String, serde_json::Value>;
 
 /// A Railpack build plan ([`plan.go`]), with the fields this crate reads. The rest stays as it is.
 ///
@@ -32,17 +38,32 @@ pub struct Plan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deploy: Option<Deploy>,
     #[serde(flatten)]
-    rest: Map<String, Value>,
+    rest: Unread,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct Step {
     name: String,
-    /// Railpack's commands are a union this crate does not read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    commands: Option<Vec<Value>>,
+    commands: Option<Vec<Command>>,
     #[serde(flatten)]
-    rest: Map<String, Value>,
+    rest: Unread,
+}
+
+/// A step's command: one that runs a program, or another kind this code does not read.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+enum Command {
+    Exec(Exec),
+    Other(Unread),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Exec {
+    cmd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -50,7 +71,7 @@ struct Deploy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     inputs: Vec<Layer>,
     #[serde(flatten)]
-    rest: Map<String, Value>,
+    rest: Unread,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -60,7 +81,7 @@ struct Layer {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     local: bool,
     #[serde(flatten)]
-    rest: Map<String, Value>,
+    rest: Unread,
 }
 
 /// The user and group a Railpack image runs as.
@@ -88,7 +109,10 @@ pub fn own_deploy_layers(plan: &mut Plan) -> Vec<String> {
         }
     }
     let names: Vec<String> = names.into_iter().map(str::to_owned).collect();
-    let own = json!({"cmd": OWN_COMMAND, "customName": OWN_NAME});
+    let own = Command::Exec(Exec {
+        cmd: OWN_COMMAND.to_owned(),
+        custom_name: Some(OWN_NAME.to_owned()),
+    });
     let mut owned = Vec::new();
     for step in &mut plan.steps {
         if !names.contains(&step.name) {
@@ -126,7 +150,8 @@ mod tests {
     use super::*;
 
     fn plan() -> Plan {
-        serde_json::from_value(json!({
+        serde_json::from_str(
+            r#"{
             "steps": [
                 {"name": "packages:mise", "inputs": [{"image": "railpack-builder"}],
                  "commands": [{"cmd": "mise install"}]},
@@ -146,7 +171,8 @@ mod tests {
                     {"image": "caddy", "include": ["/usr/bin/caddy"]}
                 ]
             }
-        }))
+        }"#,
+        )
         .unwrap()
     }
 
@@ -155,7 +181,10 @@ mod tests {
         step.commands
             .iter()
             .flatten()
-            .map(|c| c["cmd"].as_str().unwrap().to_owned())
+            .map(|c| match c {
+                Command::Exec(exec) => exec.cmd.clone(),
+                Command::Other(other) => panic!("not a program: {other:?}"),
+            })
             .collect()
     }
 
@@ -186,15 +215,14 @@ mod tests {
 
     #[test]
     fn a_plan_without_deploy_inputs_is_left_alone() {
-        for json in [json!({}), json!({"deploy": {"startCmd": "x"}})] {
-            let mut plan: Plan = serde_json::from_value(json.clone()).unwrap();
+        for json in ["{}", r#"{"deploy":{"startCmd":"x"}}"#] {
+            let mut plan: Plan = serde_json::from_str(json).unwrap();
             assert_eq!(own_deploy_layers(&mut plan), Vec::<String>::new());
-            assert_eq!(serde_json::to_value(&plan).unwrap(), json);
+            assert_eq!(serde_json::to_string(&plan).unwrap(), json);
         }
-        let mut no_commands: Plan = serde_json::from_value(json!({
-            "steps": [{"name": "build"}],
-            "deploy": {"inputs": [{"step": "build", "include": ["."]}]}
-        }))
+        let mut no_commands: Plan = serde_json::from_str(
+            r#"{"steps": [{"name": "build"}], "deploy": {"inputs": [{"step": "build", "include": ["."]}]}}"#,
+        )
         .unwrap();
         assert_eq!(own_deploy_layers(&mut no_commands), ["build"]);
         assert_eq!(commands(&no_commands, "build"), [OWN_COMMAND]);
@@ -202,15 +230,14 @@ mod tests {
 
     #[test]
     fn fields_the_plan_does_not_read_are_written_back() {
-        let json = json!({
-            "caches": {"npm": {"directory": "/root/.npm", "type": "shared"}},
-            "secrets": ["NPM_TOKEN"],
-            "steps": [{"name": "build", "inputs": [{"image": "b"}], "commands": [{"path": "/x"}]}],
-            "deploy": {"startCmd": "node .", "inputs": [{"local": true, "include": ["."]}]}
-        });
-        let mut plan: Plan = serde_json::from_value(json.clone()).unwrap();
+        let json = concat!(
+            r#"{"steps":[{"name":"build","commands":[{"path":"/x"}],"inputs":[{"image":"b"}]}],"#,
+            r#""deploy":{"inputs":[{"local":true,"include":["."]}],"startCmd":"node ."},"#,
+            r#""caches":{"npm":{"directory":"/root/.npm","type":"shared"}},"secrets":["NPM_TOKEN"]}"#,
+        );
+        let mut plan: Plan = serde_json::from_str(json).unwrap();
         own_deploy_layers(&mut plan);
-        assert_eq!(serde_json::to_value(&plan).unwrap(), json);
+        assert_eq!(serde_json::to_string(&plan).unwrap(), json);
     }
 
     #[test]

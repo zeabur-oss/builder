@@ -431,29 +431,53 @@ fn keep_tail(text: &mut String, max: usize) {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
-    use serde_json::json;
+    use zeabur_builder_core::progress::{Log, Vertex};
 
     use super::*;
 
-    fn line(value: &serde_json::Value) -> String {
-        value.to_string()
+    fn line(status: &SolveStatus) -> String {
+        serde_json::to_string(status).unwrap()
     }
 
-    fn b64(text: &str) -> String {
-        base64::engine::general_purpose::STANDARD.encode(text)
+    fn vertex(digest: &str, name: &str) -> Vertex {
+        Vertex {
+            digest: digest.to_owned(),
+            name: name.to_owned(),
+            ..Vertex::default()
+        }
+    }
+
+    fn vertexes(vertexes: Vec<Vertex>) -> String {
+        line(&SolveStatus {
+            vertexes,
+            ..SolveStatus::default()
+        })
+    }
+
+    fn log(vertex: &str, stream: u8, text: &str) -> String {
+        line(&SolveStatus {
+            logs: vec![Log {
+                vertex: vertex.to_owned(),
+                stream,
+                data: base64::engine::general_purpose::STANDARD.encode(text),
+            }],
+            ..SolveStatus::default()
+        })
     }
 
     #[test]
     fn the_policy_denies_first_and_allows_after() {
-        let policy = serde_json::to_value(source_policy(&["docker.io".to_owned()])).unwrap();
+        let policy = serde_json::to_string(&source_policy(&["docker.io".to_owned()])).unwrap();
         assert_eq!(
             policy,
-            json!({"version": 1, "rules": [
-                {"action": 1, "selector": {"identifier": "*", "match_type": 0}},
-                {"action": 0, "selector": {"identifier": "local://context", "match_type": 1}},
-                {"action": 0, "selector": {"identifier": "local://dockerfile", "match_type": 1}},
-                {"action": 0, "selector": {"identifier": "docker-image://docker.io/*", "match_type": 0}},
-            ]})
+            concat!(
+                r#"{"version":1,"rules":["#,
+                r#"{"action":1,"selector":{"identifier":"*","match_type":0}},"#,
+                r#"{"action":0,"selector":{"identifier":"local://context","match_type":1}},"#,
+                r#"{"action":0,"selector":{"identifier":"local://dockerfile","match_type":1}},"#,
+                r#"{"action":0,"selector":{"identifier":"docker-image://docker.io/*","match_type":0}}"#,
+                "]}"
+            )
         );
     }
 
@@ -567,16 +591,15 @@ mod tests {
     #[test]
     fn summarises_the_failing_step() {
         let mut progress = Progress::default();
-        progress.line(&line(&json!({"vertexes": [
-            {"digest": "a", "name": "[1/2] FROM docker.io/library/node:24.9-alpine"},
-            {"digest": "b", "name": "[2/2] RUN npm ci"},
-        ]})));
-        progress.line(&line(&json!({"logs": [
-            {"vertex": "b", "stream": 2, "data": b64("npm error missing package-lock.json\n")},
-        ]})));
-        progress.line(&line(&json!({"vertexes": [
-            {"digest": "b", "name": "[2/2] RUN npm ci", "error": "exit code: 1"},
-        ]})));
+        progress.line(&vertexes(vec![
+            vertex("a", "[1/2] FROM docker.io/library/node:24.9-alpine"),
+            vertex("b", "[2/2] RUN npm ci"),
+        ]));
+        progress.line(&log("b", 2, "npm error missing package-lock.json\n"));
+        progress.line(&vertexes(vec![Vertex {
+            error: Some("exit code: 1".to_owned()),
+            ..vertex("b", "[2/2] RUN npm ci")
+        }]));
         let Attempt::Failed { summary, log } = progress.failure() else {
             panic!("built");
         };

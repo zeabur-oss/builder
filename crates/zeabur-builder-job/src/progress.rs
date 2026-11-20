@@ -184,18 +184,13 @@ fn elapsed(start: Option<Timestamp>, completed: Option<&str>) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value, json};
-
     use super::*;
 
-    fn render(renderer: &mut Renderer, stream: &str) -> Vec<Value> {
-        let mut out = Vec::new();
-        for line in stream.lines() {
-            for event in renderer.line(line) {
-                out.push(serde_json::from_str(&event).unwrap());
-            }
-        }
-        out
+    fn render(renderer: &mut Renderer, stream: &str) -> Vec<String> {
+        stream
+            .lines()
+            .flat_map(|line| renderer.line(line))
+            .collect()
     }
 
     #[test]
@@ -211,19 +206,18 @@ mod tests {
 error: failed to solve: exit code: 2"#;
         let mut renderer = Renderer::default();
         let out = render(&mut renderer, stream);
-        let make = "[2/3] RUN make";
         assert_eq!(
             out,
             [
-                json!({"vertex":1,"name":"[1/3] FROM alpine","event":"started","time":"2026-10-22T00:00:00Z"}),
-                json!({"vertex":1,"name":"[1/3] FROM alpine","event":"cached"}),
-                json!({"vertex":2,"name":make,"event":"started","time":"2026-10-22T00:00:01Z"}),
-                json!({"vertex":2,"name":make,"event":"log","stream":"stdout","text":"cc -o app"}),
-                json!({"vertex":2,"name":make,"event":"log","stream":"stderr","text":"warning"}),
-                json!({"vertex":3,"name":"[3/3] RUN sleep","event":"started","time":"2026-10-22T00:00:03Z"}),
-                json!({"vertex":3,"name":"[3/3] RUN sleep","event":"done","seconds":2.0}),
-                json!({"vertex":2,"name":make,"event":"error","seconds":2.0,"message":"exit code: 2"}),
-                json!({"event":"message","text":"error: failed to solve: exit code: 2"}),
+                r#"{"vertex":1,"name":"[1/3] FROM alpine","event":"started","time":"2026-10-22T00:00:00Z"}"#,
+                r#"{"vertex":1,"name":"[1/3] FROM alpine","event":"cached"}"#,
+                r#"{"vertex":2,"name":"[2/3] RUN make","event":"started","time":"2026-10-22T00:00:01Z"}"#,
+                r#"{"vertex":2,"name":"[2/3] RUN make","event":"log","stream":"stdout","text":"cc -o app"}"#,
+                r#"{"vertex":2,"name":"[2/3] RUN make","event":"log","stream":"stderr","text":"warning"}"#,
+                r#"{"vertex":3,"name":"[3/3] RUN sleep","event":"started","time":"2026-10-22T00:00:03Z"}"#,
+                r#"{"vertex":3,"name":"[3/3] RUN sleep","event":"done","seconds":2.0}"#,
+                r#"{"vertex":2,"name":"[2/3] RUN make","event":"error","seconds":2.0,"message":"exit code: 2"}"#,
+                r#"{"event":"message","text":"error: failed to solve: exit code: 2"}"#,
             ]
         );
         assert_eq!(
@@ -240,8 +234,13 @@ error: failed to solve: exit code: 2"#;
         render(&mut renderer, first);
         renderer.next_run();
         let out = render(&mut renderer, second);
-        let vertices: Vec<&Value> = out.iter().map(|e| &e["vertex"]).collect();
-        assert_eq!(vertices, [&json!(2), &json!(2), &json!(3)]);
-        assert_eq!(out[1]["event"], "done");
+        assert_eq!(
+            out,
+            [
+                r#"{"vertex":2,"name":"load metadata","event":"started","time":"2026-10-22T00:01:00Z"}"#,
+                r#"{"vertex":2,"name":"load metadata","event":"done","seconds":1.0}"#,
+                r#"{"vertex":3,"name":"RUN x","event":"cached"}"#,
+            ]
+        );
     }
 }

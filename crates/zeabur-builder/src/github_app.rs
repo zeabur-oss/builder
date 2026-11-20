@@ -433,67 +433,63 @@ async fn create(args: CreateArgs) -> Result<String, GithubAppError> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     #[test]
     fn the_manifest_asks_for_little() {
-        let m = serde_json::to_value(manifest(
+        let m = serde_json::to_string(&manifest(
             "Zeabur Builder",
             "https://hooks.example.com/hooks/github-app",
             Some("http://127.0.0.1:9/callback"),
         ))
         .unwrap();
         assert_eq!(
-            m["default_permissions"],
-            json!({"contents": "read", "metadata": "read", "statuses": "write"})
+            m,
+            r#"{"name":"Zeabur Builder","url":"https://github.com/zeabur-oss/builder","description":"Builds container images of pushed commits with Zeabur Builder.","hook_attributes":{"url":"https://hooks.example.com/hooks/github-app","active":true},"redirect_url":"http://127.0.0.1:9/callback","public":false,"default_permissions":{"contents":"read","metadata":"read","statuses":"write"},"default_events":["push"]}"#
         );
-        assert_eq!(m["default_events"], json!(["push"]));
-        assert_eq!(m["public"], json!(false));
-        assert_eq!(
-            m["hook_attributes"],
-            json!({"url": "https://hooks.example.com/hooks/github-app", "active": true})
-        );
-        assert_eq!(m["redirect_url"], "http://127.0.0.1:9/callback");
     }
 
     #[test]
     fn the_secret_keeps_what_the_controller_reads() {
-        let conversion: Conversion = serde_json::from_value(json!({
-            "id": 42, "slug": "zeabur-builder", "client_id": "Iv23li", "client_secret": "cs",
-            "webhook_secret": "ws", "pem": "-----BEGIN RSA PRIVATE KEY-----",
-            "html_url": "https://github.com/apps/zeabur-builder", "owner": {}
-        }))
+        let conversion: Conversion = serde_json::from_str(
+            r#"{"id":42,"slug":"zeabur-builder","client_id":"Iv23li","client_secret":"cs",
+                "webhook_secret":"ws","pem":"-----BEGIN RSA PRIVATE KEY-----",
+                "html_url":"https://github.com/apps/zeabur-builder","owner":{}}"#,
+        )
         .unwrap();
-        let s = serde_json::to_value(conversion.secret(
-            "github-app",
-            "builder-system",
-            "https://api.github.com/",
-        ))
-        .unwrap();
+        let s = conversion.secret("github-app", "builder-system", "https://api.github.com/");
         assert_eq!(
-            s["stringData"],
-            json!({"app-id": "42", "client-id": "Iv23li", "private-key": "-----BEGIN RSA PRIVATE KEY-----",
-                   "webhook-secret": "ws"})
+            s.string_data,
+            Some(BTreeMap::from(
+                [
+                    ("app-id", "42"),
+                    ("client-id", "Iv23li"),
+                    ("private-key", "-----BEGIN RSA PRIVATE KEY-----"),
+                    ("webhook-secret", "ws"),
+                ]
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            ))
         );
-        assert_eq!(s["kind"], "Secret");
-        assert_eq!(s["metadata"]["namespace"], "builder-system");
-        let ghes =
-            serde_json::to_value(conversion.secret("x", "y", "https://ghe.example.com/api/v3"))
-                .unwrap();
+        assert!(
+            serde_json::to_string(&s)
+                .unwrap()
+                .contains(r#""kind":"Secret""#)
+        );
+        assert_eq!(s.metadata.namespace.as_deref(), Some("builder-system"));
+        let ghes = conversion.secret("x", "y", "https://ghe.example.com/api/v3");
         assert_eq!(
-            ghes["stringData"]["api-url"],
-            "https://ghe.example.com/api/v3"
+            ghes.string_data
+                .unwrap_or_default()
+                .get("api-url")
+                .map(String::as_str),
+            Some("https://ghe.example.com/api/v3")
         );
     }
 
     #[test]
     fn an_answer_without_the_keys_is_refused() {
-        let no_secret = json!({
-            "id": 42, "client_id": "Iv23li", "webhook_secret": null, "pem": "k"
-        });
-        assert!(serde_json::from_value::<Conversion>(no_secret).is_err());
+        let no_secret = r#"{"id":42,"client_id":"Iv23li","webhook_secret":null,"pem":"k"}"#;
+        assert!(serde_json::from_str::<Conversion>(no_secret).is_err());
     }
 
     #[test]

@@ -6,10 +6,15 @@ use std::time::Duration;
 use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt as _, Full};
-use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::Pod;
-use kube::Client;
-use serde_json::{Value, json};
+use k8s_openapi::ByteString;
+use k8s_openapi::api::apps::v1::{StatefulSet, StatefulSetSpec, StatefulSetStatus};
+use k8s_openapi::api::core::v1::{Namespace, Pod, PodCondition, PodStatus, Secret, Service};
+use k8s_openapi::api::networking::v1::NetworkPolicy;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{
+    DeleteOptions, ObjectMeta, OwnerReference, Status, Time,
+};
+use kube::{Client, ResourceExt as _};
+use serde::Serialize;
 use zeabur_builder_jobspec::buildkitd::Resources;
 use zeabur_builder_jobspec::{JobMemory, Placement};
 
@@ -25,7 +30,51 @@ const POD: &str = "buildkitd-team-a-0";
 #[derive(Debug, Clone)]
 struct Call {
     method: Method,
-    body: Value,
+    body: Bytes,
+}
+
+/// An object the fake API server stores.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+enum Object {
+    Namespace(Box<Namespace>),
+    StatefulSet(Box<StatefulSet>),
+    Service(Box<Service>),
+    NetworkPolicy(Box<NetworkPolicy>),
+    Secret(Box<Secret>),
+}
+
+impl Object {
+    fn parse(resource: &str, body: &[u8]) -> Option<Self> {
+        Some(match resource {
+            "namespaces" => Self::Namespace(Box::new(serde_json::from_slice(body).ok()?)),
+            "statefulsets" => Self::StatefulSet(Box::new(serde_json::from_slice(body).ok()?)),
+            "services" => Self::Service(Box::new(serde_json::from_slice(body).ok()?)),
+            "networkpolicies" => Self::NetworkPolicy(Box::new(serde_json::from_slice(body).ok()?)),
+            "secrets" => Self::Secret(Box::new(serde_json::from_slice(body).ok()?)),
+            _ => return None,
+        })
+    }
+
+    const fn meta(&self) -> &ObjectMeta {
+        match self {
+            Self::Namespace(o) => &o.metadata,
+            Self::StatefulSet(o) => &o.metadata,
+            Self::Service(o) => &o.metadata,
+            Self::NetworkPolicy(o) => &o.metadata,
+            Self::Secret(o) => &o.metadata,
+        }
+    }
+
+    const fn meta_mut(&mut self) -> &mut ObjectMeta {
+        match self {
+            Self::Namespace(o) => &mut o.metadata,
+            Self::StatefulSet(o) => &mut o.metadata,
+            Self::Service(o) => &mut o.metadata,
+            Self::NetworkPolicy(o) => &mut o.metadata,
+            Self::Secret(o) => &mut o.metadata,
+        }
+    }
 }
 
 /// An in-memory API server for the objects [`wake`](super::wake) reads and writes. It keeps `uid`,
@@ -35,7 +84,7 @@ struct Call {
 #[derive(Debug, Default)]
 struct Cluster {
     /// By `<resource>/<name>`.
-    objects: BTreeMap<String, Value>,
+    objects: BTreeMap<String, Object>,
     serial: u64,
     /// The answer to every apply of a `StatefulSet` instead of the normal handling.
     apply: Option<(u16, &'static str, &'static str)>,
@@ -50,17 +99,32 @@ fn lock(cluster: &Shared) -> std::sync::MutexGuard<'_, Cluster> {
     cluster.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn object(cluster: &Shared, key: &str) -> Value {
-    lock(cluster).objects.get(key).cloned().unwrap_or_default()
+fn object(cluster: &Shared, key: &str) -> Object {
+    lock(cluster)
+        .objects
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("no {key}"))
 }
 
-fn status(code: u16, reason: &str, message: &str) -> (u16, Value) {
-    let body = json!({
-        "kind": "Status", "apiVersion": "v1", "metadata": {},
-        "status": "Failure", "reason": reason, "message": message, "code": code,
-    });
-    (code, body)
+fn stored_set(cluster: &Shared) -> StatefulSet {
+    let Object::StatefulSet(set) = object(cluster, &set_key()) else {
+        panic!("{} is not a StatefulSet", set_key());
+    };
+    *set
 }
+
+fn status(code: u16, reason: &str, message: &str) -> Box<Status> {
+    Box::new(Status {
+        code: Some(code.into()),
+        message: Some(message.to_owned()),
+        reason: Some(reason.to_owned()),
+        status: Some("Failure".to_owned()),
+        ..Status::default()
+    })
+}
+
+type Answer = Result<(u16, Object), Box<Status>>;
 
 impl Cluster {
     fn next(&mut self) -> String {
@@ -68,21 +132,18 @@ impl Cluster {
         self.serial.to_string()
     }
 
-    fn put(&mut self, key: &str, mut object: Value) -> Value {
+    fn put(&mut self, key: &str, mut object: Object) -> Object {
         let rv = self.next();
-        object["metadata"]["resourceVersion"] = json!(rv);
-        if object["metadata"]["uid"].is_null() {
-            object["metadata"]["uid"] = json!(format!("uid-{}", self.next()));
+        object.meta_mut().resource_version = Some(rv);
+        if object.meta().uid.is_none() {
+            object.meta_mut().uid = Some(format!("uid-{}", self.next()));
         }
         self.objects.insert(key.to_owned(), object.clone());
         object
     }
 
     fn uid(&self, key: &str) -> Option<String> {
-        self.objects
-            .get(key)
-            .and_then(|o| o["metadata"]["uid"].as_str())
-            .map(str::to_owned)
+        self.objects.get(key).and_then(|o| o.meta().uid.clone())
     }
 
     /// The garbage collector finishes deleting `key`.
@@ -90,89 +151,100 @@ impl Cluster {
         self.objects.remove(key);
     }
 
-    fn answer(&mut self, method: &Method, path: &str, body: Value) -> (u16, Value) {
+    fn answer(&mut self, method: &Method, path: &str, body: &[u8]) -> Answer {
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
         let (resource, name) = match parts.as_slice() {
             [.., "namespaces", _, resource, name] => (*resource, Some(*name)),
             [.., "namespaces", _, resource] => (*resource, None),
             ["api", "v1", "namespaces", name] => ("namespaces", Some(*name)),
-            _ => return status(404, "NotFound", "unknown path"),
+            _ => return Err(status(404, "NotFound", "unknown path")),
         };
         let key = name.map(|n| format!("{resource}/{n}"));
+        let object =
+            || Object::parse(resource, body).ok_or_else(|| status(400, "BadRequest", "unreadable"));
         match (method.as_str(), key) {
-            ("GET", Some(key)) => self.objects.get(&key).map_or_else(
-                || status(404, "NotFound", "not found"),
-                |object| (200, object.clone()),
-            ),
-            ("PATCH", Some(key)) => self.apply(&key, body),
+            ("GET", Some(key)) => self
+                .objects
+                .get(&key)
+                .map(|object| (200, object.clone()))
+                .ok_or_else(|| status(404, "NotFound", "not found")),
+            ("PATCH", Some(key)) => self.apply(&key, object()?),
             ("POST", None) => {
+                let object = object()?;
                 let key = format!(
                     "{resource}/{}",
-                    body["metadata"]["name"].as_str().unwrap_or("")
+                    object.meta().name.as_deref().unwrap_or_default()
                 );
                 if self.objects.contains_key(&key) {
-                    return status(409, "AlreadyExists", "already exists");
+                    return Err(status(409, "AlreadyExists", "already exists"));
                 }
-                (201, self.put(&key, body))
+                Ok((201, self.put(&key, object)))
             }
-            ("PUT", Some(key)) => (200, self.put(&key, body)),
-            ("DELETE", Some(key)) => self.delete(&key, &body),
-            _ => status(405, "MethodNotAllowed", "not handled by the fake"),
+            ("PUT", Some(key)) => Ok((200, self.put(&key, object()?))),
+            ("DELETE", Some(key)) => {
+                let options = serde_json::from_slice(body)
+                    .map_err(|e| status(400, "BadRequest", &e.to_string()))?;
+                self.delete(&key, &options)
+            }
+            _ => Err(status(405, "MethodNotAllowed", "not handled by the fake")),
         }
     }
 
-    fn apply(&mut self, key: &str, body: Value) -> (u16, Value) {
+    fn apply(&mut self, key: &str, body: Object) -> Answer {
         if let (Some((code, reason, message)), true) =
             (self.apply, key.starts_with("statefulsets/"))
         {
-            return status(code, reason, message);
+            return Err(status(code, reason, message));
         }
-        match self.objects.get(key).cloned() {
-            None => {
-                let created = self.put(key, body);
-                (201, created)
-            }
-            Some(old) => {
-                if old["spec"]["volumeClaimTemplates"] != body["spec"]["volumeClaimTemplates"] {
-                    return status(
-                        422,
-                        "Invalid",
-                        "StatefulSet.apps \"buildkitd-team-a\" is invalid: spec: Forbidden: \
-                         updates to statefulset spec for fields other than ... are forbidden",
-                    );
-                }
-                let mut updated = body;
-                updated["metadata"]["uid"] = old["metadata"]["uid"].clone();
-                updated["metadata"]["deletionTimestamp"] =
-                    old["metadata"]["deletionTimestamp"].clone();
-                let updated = self.put(key, updated);
-                (200, updated)
-            }
+        let Some(old) = self.objects.get(key).cloned() else {
+            return Ok((201, self.put(key, body)));
+        };
+        if let (Object::StatefulSet(old), Object::StatefulSet(new)) = (&old, &body)
+            && claims(old) != claims(new)
+        {
+            return Err(status(
+                422,
+                "Invalid",
+                "StatefulSet.apps \"buildkitd-team-a\" is invalid: spec: Forbidden: \
+                 updates to statefulset spec for fields other than ... are forbidden",
+            ));
         }
+        let mut updated = body;
+        updated.meta_mut().uid.clone_from(&old.meta().uid);
+        updated
+            .meta_mut()
+            .deletion_timestamp
+            .clone_from(&old.meta().deletion_timestamp);
+        Ok((200, self.put(key, updated)))
     }
 
-    fn delete(&mut self, key: &str, body: &Value) -> (u16, Value) {
+    fn delete(&mut self, key: &str, options: &DeleteOptions) -> Answer {
         if std::mem::take(&mut self.scale_up_before_delete)
-            && let Some(mut object) = self.objects.get(key).cloned()
+            && let Some(Object::StatefulSet(mut set)) = self.objects.get(key).cloned()
         {
-            object["spec"]["replicas"] = json!(1);
-            self.put(key, object);
+            set.spec.get_or_insert_default().replicas = Some(1);
+            self.put(key, Object::StatefulSet(set));
         }
-        let Some(object) = self.objects.get(key).cloned() else {
-            return status(404, "NotFound", "not found");
+        let Some(mut deleting) = self.objects.get(key).cloned() else {
+            return Err(status(404, "NotFound", "not found"));
         };
-        let want = &body["preconditions"];
-        for field in ["uid", "resourceVersion"] {
-            if !want[field].is_null() && want[field] != object["metadata"][field] {
-                return status(409, "Conflict", "Precondition failed");
+        if let Some(want) = &options.preconditions {
+            let meta = deleting.meta();
+            if want.uid.is_some() && want.uid != meta.uid
+                || want.resource_version.is_some() && want.resource_version != meta.resource_version
+            {
+                return Err(status(409, "Conflict", "Precondition failed"));
             }
         }
-        let mut deleting = object;
-        deleting["metadata"]["deletionTimestamp"] = json!("2026-11-11T00:00:00Z");
-        deleting["metadata"]["finalizers"] = json!(["foregroundDeletion"]);
-        let deleting = self.put(key, deleting);
-        (200, deleting)
+        let meta = deleting.meta_mut();
+        meta.deletion_timestamp = Some(deleted_at());
+        meta.finalizers = Some(vec!["foregroundDeletion".to_owned()]);
+        Ok((200, self.put(key, deleting)))
     }
+}
+
+fn claims(set: &StatefulSet) -> Option<&Vec<k8s_openapi::api::core::v1::PersistentVolumeClaim>> {
+    set.spec.as_ref()?.volume_claim_templates.as_ref()
 }
 
 fn client(cluster: &Shared) -> Client {
@@ -182,25 +254,38 @@ fn client(cluster: &Shared) -> Client {
         async move {
             let method = request.method().clone();
             let path = request.uri().path().to_owned();
-            let bytes = request.into_body().collect().await.unwrap().to_bytes();
-            let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-            let (code, answer) = {
+            let body = request.into_body().collect().await.unwrap().to_bytes();
+            let answer = {
                 let mut cluster = lock(&cluster);
                 cluster.calls.push(Call {
                     method: method.clone(),
                     body: body.clone(),
                 });
-                cluster.answer(&method, &path, body)
+                cluster.answer(&method, &path, &body)
+            };
+            let (code, answer) = match answer {
+                Ok((code, object)) => (code, serde_json::to_vec(&object)),
+                Err(status) => (
+                    status
+                        .code
+                        .and_then(|c| u16::try_from(c).ok())
+                        .unwrap_or(500),
+                    serde_json::to_vec(&status),
+                ),
             };
             let response = Response::builder()
                 .status(code)
                 .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(answer.to_string())))
+                .body(Full::new(Bytes::from(answer.unwrap())))
                 .unwrap_or_default();
             Ok::<_, Infallible>(response)
         }
     });
     Client::new(service, "default")
+}
+
+fn deleted_at() -> Time {
+    Time("2026-11-11T00:00:00Z".parse().unwrap())
 }
 
 fn settings() -> Settings {
@@ -229,21 +314,38 @@ fn limits() -> decide::Limits {
     }
 }
 
+fn meta(name: &str) -> ObjectMeta {
+    ObjectMeta {
+        name: Some(name.to_owned()),
+        ..ObjectMeta::default()
+    }
+}
+
 /// A cluster with the namespace `team-a` of UID `uid`.
 fn with_namespace(uid: &str) -> Shared {
     let mut cluster = Cluster::default();
     cluster.put(
         &format!("namespaces/{NAMESPACE}"),
-        json!({"metadata": {"name": NAMESPACE, "uid": uid}}),
+        Object::Namespace(Box::new(Namespace {
+            metadata: ObjectMeta {
+                uid: Some(uid.to_owned()),
+                ..meta(NAMESPACE)
+            },
+            ..Namespace::default()
+        })),
     );
     Arc::new(Mutex::new(cluster))
 }
 
-fn namespace_owner(uid: &str) -> Value {
-    json!([{
-        "apiVersion": "v1", "kind": "Namespace", "name": NAMESPACE, "uid": uid,
-        "blockOwnerDeletion": false,
-    }])
+fn namespace_owner(uid: &str) -> Vec<OwnerReference> {
+    vec![OwnerReference {
+        api_version: "v1".to_owned(),
+        kind: "Namespace".to_owned(),
+        name: NAMESPACE.to_owned(),
+        uid: uid.to_owned(),
+        block_owner_deletion: Some(false),
+        controller: None,
+    }]
 }
 
 fn writes(cluster: &Shared) -> Vec<Call> {
@@ -274,8 +376,8 @@ async fn the_namespace_owns_every_object_of_its_daemon() {
     ] {
         let stored = object(&cluster, &key);
         assert_eq!(
-            stored["metadata"]["ownerReferences"],
-            namespace_owner("ns-1"),
+            stored.meta().owner_references,
+            Some(namespace_owner("ns-1")),
             "{key}"
         );
     }
@@ -284,34 +386,59 @@ async fn the_namespace_owns_every_object_of_its_daemon() {
 #[tokio::test]
 async fn a_secret_made_before_owners_gets_the_namespace_as_owner() {
     let cluster = with_namespace("ns-1");
+    let data = [
+        ("ca.pem", "ca"),
+        ("client-cert.pem", "cert"),
+        ("client-key.pem", "key"),
+    ]
+    .map(|(k, v)| (k.to_owned(), ByteString(v.into())));
     lock(&cluster).put(
         &format!("secrets/{NAME}-tls"),
-        json!({"metadata": {"name": format!("{NAME}-tls")}, "data": {
-            "ca.pem": "Y2E=", "client-cert.pem": "Y2VydA==", "client-key.pem": "a2V5",
-        }}),
+        Object::Secret(Box::new(Secret {
+            metadata: meta(&format!("{NAME}-tls")),
+            data: Some(data.into()),
+            ..Secret::default()
+        })),
     );
 
     let woken = wake_namespace(&cluster).await;
 
     assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
-    let secret = object(&cluster, &format!("secrets/{NAME}-tls"));
+    let Object::Secret(secret) = object(&cluster, &format!("secrets/{NAME}-tls")) else {
+        panic!("not a Secret");
+    };
     assert_eq!(
-        secret["metadata"]["ownerReferences"],
-        namespace_owner("ns-1")
+        secret.metadata.owner_references,
+        Some(namespace_owner("ns-1"))
     );
-    assert_eq!(secret["data"]["ca.pem"], "Y2E=", "the CA stays");
+    assert_eq!(
+        secret.data.unwrap_or_default().get("ca.pem"),
+        Some(&ByteString(b"ca".into())),
+        "the CA stays"
+    );
 }
 
 #[tokio::test]
 async fn a_daemon_of_a_deleted_namespace_with_the_same_name_waits_for_garbage_collection() {
     let cluster = with_namespace("ns-2");
-    for key in [set_key(), format!("secrets/{NAME}-tls")] {
-        lock(&cluster).put(
-            &key,
-            json!({"metadata": {"name": key.split('/').nth(1),
-                                "ownerReferences": namespace_owner("ns-1")}}),
-        );
-    }
+    let owned = |name: String| ObjectMeta {
+        owner_references: Some(namespace_owner("ns-1")),
+        ..meta(&name)
+    };
+    lock(&cluster).put(
+        &set_key(),
+        Object::StatefulSet(Box::new(StatefulSet {
+            metadata: owned(NAME.to_owned()),
+            ..StatefulSet::default()
+        })),
+    );
+    lock(&cluster).put(
+        &format!("secrets/{NAME}-tls"),
+        Object::Secret(Box::new(Secret {
+            metadata: owned(format!("{NAME}-tls")),
+            ..Secret::default()
+        })),
+    );
 
     for gone in [set_key(), format!("secrets/{NAME}-tls")] {
         let woken = wake_namespace(&cluster).await;
@@ -328,8 +455,8 @@ async fn a_daemon_of_a_deleted_namespace_with_the_same_name_waits_for_garbage_co
     for key in [set_key(), format!("secrets/{NAME}-tls")] {
         let stored = object(&cluster, &key);
         assert_eq!(
-            stored["metadata"]["ownerReferences"],
-            namespace_owner("ns-2"),
+            stored.meta().owner_references,
+            Some(namespace_owner("ns-2")),
             "{key}"
         );
     }
@@ -351,17 +478,23 @@ async fn daemon_at(replicas: i32, changed: bool) -> Shared {
     let cluster = with_namespace("ns-1");
     let woken = wake_namespace(&cluster).await;
     assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
-    {
-        let mut cluster = lock(&cluster);
-        let mut set = cluster.objects.get(&set_key()).cloned().unwrap_or_default();
-        set["spec"]["replicas"] = json!(replicas);
-        if changed {
-            set["metadata"]["annotations"]["builder.zeabur.com/spec-hash"] = json!("old");
-            set["spec"]["volumeClaimTemplates"][0]["spec"]["storageClassName"] = json!("old");
-        }
-        cluster.put(&set_key(), set);
-        cluster.calls.clear();
+    let mut set = stored_set(&cluster);
+    let spec = set.spec.get_or_insert_default();
+    spec.replicas = Some(replicas);
+    if changed {
+        let claim = spec
+            .volume_claim_templates
+            .get_or_insert_default()
+            .first_mut()
+            .expect("a cache claim");
+        claim.spec.get_or_insert_default().storage_class_name = Some("old".to_owned());
+        set.annotations_mut()
+            .insert("builder.zeabur.com/spec-hash".to_owned(), "old".to_owned());
     }
+    let mut cluster_lock = lock(&cluster);
+    cluster_lock.put(&set_key(), Object::StatefulSet(Box::new(set)));
+    cluster_lock.calls.clear();
+    drop(cluster_lock);
     cluster
 }
 
@@ -390,8 +523,9 @@ async fn a_daemon_scaled_to_zero_with_old_settings_is_replaced() {
     let [delete] = deletes(&cluster)
         .try_into()
         .unwrap_or_else(|d| panic!("{d:?}"));
-    assert_eq!(delete.body["preconditions"]["uid"].as_str(), old.as_deref());
-    assert_eq!(delete.body["propagationPolicy"], "Foreground");
+    let options: DeleteOptions = serde_json::from_slice(&delete.body).unwrap();
+    assert_eq!(options.preconditions.and_then(|p| p.uid), old);
+    assert_eq!(options.propagation_policy.as_deref(), Some("Foreground"));
 
     let woken = wake_namespace(&cluster).await;
     assert!(
@@ -403,10 +537,19 @@ async fn a_daemon_scaled_to_zero_with_old_settings_is_replaced() {
     lock(&cluster).collect(&set_key());
     let woken = wake_namespace(&cluster).await;
     assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
-    let new = object(&cluster, &set_key());
-    assert_ne!(new["metadata"]["uid"].as_str(), old.as_deref());
-    assert_eq!(new["spec"]["replicas"], 1);
-    assert!(new["spec"]["volumeClaimTemplates"][0]["spec"]["storageClassName"].is_null());
+    let new = stored_set(&cluster);
+    assert_ne!(new.metadata.uid, old);
+    let spec = new.spec.unwrap_or_default();
+    assert_eq!(spec.replicas, Some(1));
+    assert!(
+        spec.volume_claim_templates
+            .unwrap_or_default()
+            .iter()
+            .all(|c| c
+                .spec
+                .as_ref()
+                .is_none_or(|s| s.storage_class_name.is_none()))
+    );
 }
 
 #[tokio::test]
@@ -417,9 +560,9 @@ async fn a_daemon_scaled_up_while_being_replaced_keeps_running() {
     let woken = wake_namespace(&cluster).await;
 
     assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
-    let set = object(&cluster, &set_key());
-    assert!(set["metadata"]["deletionTimestamp"].is_null(), "{set}");
-    assert_eq!(set["spec"]["replicas"], 1);
+    let set = stored_set(&cluster);
+    assert!(set.metadata.deletion_timestamp.is_none(), "{set:?}");
+    assert_eq!(set.spec.and_then(|s| s.replicas), Some(1));
 }
 
 #[tokio::test]
@@ -432,7 +575,7 @@ async fn a_daemon_scaled_to_zero_with_the_same_settings_scales_up() {
     assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
     assert!(deletes(&cluster).is_empty());
     assert_eq!(lock(&cluster).uid(&set_key()), old);
-    assert_eq!(object(&cluster, &set_key())["spec"]["replicas"], 1);
+    assert_eq!(stored_set(&cluster).spec.and_then(|s| s.replicas), Some(1));
 }
 
 #[tokio::test]
@@ -451,25 +594,42 @@ async fn an_apply_conflict_waits() {
 
 #[test]
 fn only_a_ready_pod_of_the_current_statefulset_is_ready() {
-    let set: StatefulSet = serde_json::from_value(json!({
-        "metadata": {"name": NAME, "uid": "new", "generation": 2},
-        "spec": {"selector": {}, "template": {}},
-        "status": {"observedGeneration": 2, "updateRevision": "r2"},
-    }))
-    .unwrap_or_default();
-    let pod = |owner: &str, deleting: bool, ready: &str, revision: &str| -> Pod {
-        let mut pod = json!({
-            "metadata": {"name": POD, "labels": {"controller-revision-hash": revision},
-                         "ownerReferences": [{
-                "apiVersion": "apps/v1", "kind": "StatefulSet", "name": NAME,
-                "uid": owner, "controller": true,
-            }]},
-            "status": {"conditions": [{"type": "Ready", "status": ready}]},
-        });
-        if deleting {
-            pod["metadata"]["deletionTimestamp"] = json!("2026-11-11T00:00:00Z");
-        }
-        serde_json::from_value(pod).unwrap_or_default()
+    let set = StatefulSet {
+        metadata: ObjectMeta {
+            uid: Some("new".to_owned()),
+            generation: Some(2),
+            ..meta(NAME)
+        },
+        spec: Some(StatefulSetSpec::default()),
+        status: Some(StatefulSetStatus {
+            observed_generation: Some(2),
+            update_revision: Some("r2".to_owned()),
+            ..StatefulSetStatus::default()
+        }),
+    };
+    let pod = |owner: &str, deleting: bool, ready: &str, revision: &str| Pod {
+        metadata: ObjectMeta {
+            labels: Some([("controller-revision-hash".to_owned(), revision.to_owned())].into()),
+            owner_references: Some(vec![OwnerReference {
+                api_version: "apps/v1".to_owned(),
+                kind: "StatefulSet".to_owned(),
+                name: NAME.to_owned(),
+                uid: owner.to_owned(),
+                controller: Some(true),
+                block_owner_deletion: None,
+            }]),
+            deletion_timestamp: deleting.then(deleted_at),
+            ..meta(POD)
+        },
+        status: Some(PodStatus {
+            conditions: Some(vec![PodCondition {
+                type_: "Ready".to_owned(),
+                status: ready.to_owned(),
+                ..PodCondition::default()
+            }]),
+            ..PodStatus::default()
+        }),
+        ..Pod::default()
     };
     let cases = [
         ("ready, current set", pod("new", false, "True", "r2"), true),
