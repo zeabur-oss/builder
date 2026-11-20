@@ -197,12 +197,6 @@ fn one_of(tags: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::disallowed_macros,
-        clippy::disallowed_types,
-        reason = "the JsonSchema derive expands to serde_json::json!"
-    )]
-
     use schemars::{JsonSchema, SchemaGenerator};
     use serde::{Deserialize, Serialize};
 

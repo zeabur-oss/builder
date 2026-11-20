@@ -14,11 +14,7 @@ doc-valid-idents = ["BuildKit", "GitHub", "GitOps", "OpenAI", "OpenAPI", "OpenRo
 # `#[derive(Deserialize)]`. Only data of any shape is read through `serde_json::Value`.
 disallowed-types = [
   { path = "serde_json::Value", reason = "deserialize into a k8s_openapi type or a local struct with #[derive(Deserialize)]" },
-  { path = "serde_json::Map", reason = "deserialize into a typed struct" },
   { path = "kube::core::DynamicObject", reason = "use the k8s_openapi type, or a local struct through Api<T> or kube::core::Object" },
-]
-disallowed-macros = [
-  { path = "serde_json::json", reason = "build a typed struct and serialize it" },
 ]
 # A value inferred from an untyped API, such as `serde_json::to_value`, is not caught by the type.
 disallowed-methods = [

@@ -1,9 +1,4 @@
 //! `Build`: what to build, and the newest image of it.
-#![expect(
-    clippy::disallowed_macros,
-    clippy::disallowed_types,
-    reason = "the CustomResource and JsonSchema derives expand to serde_json::json!"
-)]
 #![cfg_attr(
     feature = "schema",
     expect(

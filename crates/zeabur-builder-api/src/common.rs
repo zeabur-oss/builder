@@ -1,12 +1,4 @@
 //! Types shared by the custom resources.
-#![cfg_attr(
-    feature = "schema",
-    expect(
-        clippy::disallowed_macros,
-        clippy::disallowed_types,
-        reason = "the JsonSchema derive expands to serde_json::json!"
-    )
-)]
 
 use jiff::Timestamp;
 #[cfg(feature = "schema")]
