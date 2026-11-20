@@ -43,7 +43,7 @@ EOF
 }
 
 # A Build without a digest waits for its upload. Anyone who may edit it asks for a token.
-build "$a" app "{archive: {}}" | k apply -f - >/dev/null
+build "$a" app "{type: archive}" | k apply -f - >/dev/null
 k -n "$a" annotate build/app --overwrite builder.zeabur.com/upload-token-request=archive-test >/dev/null
 k -n "$a" wait build/app --timeout 60s --for=jsonpath='{.status.uploadToken.request}'=archive-test >/dev/null
 token=$(k -n "$a" get secret app-upload -o jsonpath='{.data.token}' | base64 -d)
@@ -86,7 +86,7 @@ digest=$(sed -n 's/^digest=//p' <<<"$push")
 }
 echo "pushed $registry/$a/app/source@$digest"
 
-archive="{archive: {digest: $digest}}"
+archive="{type: archive, archive: {digest: $digest}}"
 
 echo "== admission"
 refused() { # $1 = what, then the manifest on stdin
@@ -96,12 +96,12 @@ refused() { # $1 = what, then the manifest on stdin
     ok "$1 is refused: $(grep -oE 'set exactly one[^"]*|an archive source has no webhook trigger|should match [^"]*' <<<"$out" | head -n1)"
   fi
 }
-build "$a" app "{git: {url: https://github.com/traefik/whoami}, archive: {digest: $digest}}" |
+build "$a" app "{type: git, git: {url: https://github.com/traefik/whoami}, archive: {digest: $digest}}" |
   refused "a source with git and archive"
-build "$a" app "{}" | refused "a source with neither git nor archive"
+build "$a" app "{}" | refused "a source without a type"
 { build "$a" app "$archive"; echo "  triggers: {webhook: {secretRef: {name: hook, key: secret}}}"; } |
   refused "an archive source with a webhook"
-build "$a" app "{archive: {digest: sha256:abc}}" | refused "a short digest"
+build "$a" app "{type: archive, archive: {digest: sha256:abc}}" | refused "a short digest"
 
 build "$a" app "$archive" | k apply -f - >/dev/null
 build "$a" other "$archive" | k apply -f - >/dev/null
@@ -190,7 +190,7 @@ fi
 
 # A Build of that name claims its repositories when it starts and clears them when it goes. The
 # controller handles delete events in order, so A/handmade is done once A/app's repositories are.
-build "$a" handmade "{archive: {}}" | k apply -f - >/dev/null
+build "$a" handmade "{type: archive}" | k apply -f - >/dev/null
 k -n "$a" wait build/handmade --timeout 60s --for=jsonpath='{.status.observedGeneration}'=1 >/dev/null
 k -n "$a" delete build handmade >/dev/null
 k -n "$a" delete build app >/dev/null

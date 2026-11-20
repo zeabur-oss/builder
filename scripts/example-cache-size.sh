@@ -41,7 +41,7 @@ apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: resized, namespace: $ns}
 spec:
-  source: {git: {url: https://github.com/traefik/whoami}}
+  source: {type: git, git: {url: https://github.com/traefik/whoami}}
   builderRef: dockerfile
 EOF
 deadline=$(($(date +%s) + timeout))

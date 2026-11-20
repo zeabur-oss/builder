@@ -24,6 +24,7 @@ pub mod build;
 pub mod build_run;
 pub mod cluster_builder;
 pub mod common;
+mod union;
 
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::CustomResourceExt as _;

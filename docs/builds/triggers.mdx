@@ -7,7 +7,7 @@ You can trigger Zeabur Builder builds with polling, push webhooks, a [GitHub App
 
 ## Polling
 
-The controller queries the Git server for the ref every minute by default. A Build with `spec.source.githubApp` polls every 10 minutes when the controller receives webhooks. Set the polling interval with `spec.triggers.pollInterval`.
+The controller queries the Git server for the ref every minute by default. A Build with `spec.source.git.githubApp` polls every 10 minutes when the controller receives webhooks. Set the polling interval with `spec.triggers.pollInterval`.
 
 ## Configure a push webhook
 

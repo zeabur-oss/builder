@@ -78,11 +78,12 @@ kind: Build
 metadata: {name: api, namespace: team-a}
 spec:
   source:
+    type: archive
     archive: {digest: "sha256:<manifest digest>"}
   builderRef: railpack
 ```
 
-`source` 必须在 `git` 和 `archive` 中选择一个配置。归档文件来源和 Git 来源一样支持 `contextDir` 与 `dockerfile`，但不支持 `credentialsRef`、`githubApp` 或 webhook 触发。
+`source.type` 是 `git` 或 `archive`。归档文件来源和 Git 来源一样支持 `contextDir` 与 `dockerfile`，但不支持 webhook 触发。
 
 要构建新上传的内容，更新 `digest`。
 

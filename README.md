@@ -49,7 +49,7 @@ apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: whoami, namespace: team-a}
 spec:
-  source: {git: {url: https://github.com/traefik/whoami}}
+  source: {type: git, git: {url: https://github.com/traefik/whoami}}
   builderRef: dockerfile
 ```
 

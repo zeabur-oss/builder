@@ -3,11 +3,11 @@ title: 建置私有儲存庫
 description: 使用 credentialsRef 或 GitHub App，讓 Build 取得私有儲存庫的程式碼並觸發建置。
 ---
 
-你可以用 `spec.source.credentialsRef` 指定 Secret，搭配 basic-auth 權杖或 ssh-auth deploy key 存取私有儲存庫。使用 deploy key 時，必須搭配 `known_hosts`，Secret 也必須加上指定標籤。私有 GitHub 儲存庫也可以使用 GitHub App，讓 Build 取得短效 installation 權杖。
+你可以用 `spec.source.git.credentialsRef` 指定 Secret，搭配 basic-auth 權杖或 ssh-auth deploy key 存取私有儲存庫。使用 deploy key 時，必須搭配 `known_hosts`，Secret 也必須加上指定標籤。私有 GitHub 儲存庫也可以使用 GitHub App，讓 Build 取得短效 installation 權杖。
 
 ## 使用 credentialsRef
 
-將 `spec.source.credentialsRef` 指向存放認證資訊的 Secret。Secret 支援以下兩種型別：
+將 `spec.source.git.credentialsRef` 指向存放認證資訊的 Secret。Secret 支援以下兩種型別：
 
 | Secret 型別 | 內容 |
 | --- | --- |
@@ -50,13 +50,15 @@ kubectl -n builder-system create configmap github-app-installations \
 
 ### 在 Build 指定 installation
 
-在 Build 的 `spec.source.githubApp` 填入 installation ID。Git 網址必須是 `https://`，也不能同時設定 `credentialsRef`：
+在 Build 的 `spec.source.git.githubApp` 填入 installation ID。Git 網址必須是 `https://`，也不能同時設定 `credentialsRef`：
 
 ```yaml
 spec:
   source:
-    git: {url: https://github.com/acme/private-api}
-    githubApp: {installationId: 12345678}
+    type: git
+    git:
+      url: https://github.com/acme/private-api
+      githubApp: {installationId: 12345678}
 ```
 
 </Step>

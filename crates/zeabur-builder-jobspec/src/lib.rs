@@ -44,7 +44,7 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar};
+use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar, SourceKind};
 use zeabur_builder_api::build_run::BuildRun;
 use zeabur_builder_api::cluster_builder::{
     BuilderType, ClusterBuilderSpec, FrontendType, PlannerSpec,
@@ -191,9 +191,6 @@ pub enum JobError {
     /// The revision is not a full commit SHA for a Git source, or not a digest for an archive.
     #[error("the revision `{0}` does not fit the source")]
     Revision(String),
-    /// The `Build` sets neither `git` nor `archive`.
-    #[error("the Build has no source")]
-    NoSource,
     /// The repository URL is not one `fetch` may use.
     #[error(transparent)]
     Url(#[from] RepoUrlError),
@@ -226,11 +223,12 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     }
     let revision = &inputs.build_run.spec.revision;
     let source = &inputs.build.spec.source;
-    let repo = match (&source.git, &source.archive) {
-        (Some(git), _) if is_commit_sha(revision) => Some(RepoKey::parse(&git.url)?),
-        (None, Some(_)) if is_digest(revision) => None,
-        (None, None) => return Err(JobError::NoSource),
-        _ => return Err(JobError::Revision(revision.clone())),
+    let repo = match &source.kind {
+        SourceKind::Git { git } if is_commit_sha(revision) => Some(RepoKey::parse(&git.url)?),
+        SourceKind::Archive { .. } if is_digest(revision) => None,
+        SourceKind::Git { .. } | SourceKind::Archive { .. } => {
+            return Err(JobError::Revision(revision.clone()));
+        }
     };
 
     let labels = BTreeMap::from([
@@ -244,10 +242,10 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     ]);
     let annotations = job_annotations(inputs, revision);
 
-    let fetch = source.git.as_ref().map_or_else(
-        || archive_container(inputs, namespace),
-        |git| fetch_container(inputs, &git.url),
-    );
+    let fetch = match &source.kind {
+        SourceKind::Git { git } => fetch_container(inputs, &git.url),
+        SourceKind::Archive { .. } => archive_container(inputs, namespace),
+    };
     let mut init_containers = vec![fetch];
     init_containers.extend(plan_container(inputs)?);
     let resources = inputs.memory.requirements();
@@ -720,7 +718,8 @@ fn frontend_args(
                 .build
                 .spec
                 .source
-                .dockerfile()
+                .dockerfile
+                .as_deref()
                 .unwrap_or("Dockerfile");
             let (dir, file) = path
                 .rsplit_once('/')
@@ -854,7 +853,8 @@ fn context_path(inputs: &JobInputs<'_>) -> String {
         .build
         .spec
         .source
-        .context_dir()
+        .context_dir
+        .as_deref()
         .map(|d| d.trim_matches('/'))
     {
         None | Some("" | ".") => SRC.to_owned(),

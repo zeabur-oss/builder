@@ -7,7 +7,7 @@ description: 設定輪詢與 push webhook、手動重建，並選擇新 commit �
 
 ## 輪詢
 
-控制器預設每分鐘向 Git 伺服器查詢一次 ref。控制器有接收 webhook 時，使用 `spec.source.githubApp` 的 Build 改為每 10 分鐘查詢一次。你可以用 `spec.triggers.pollInterval` 設定輪詢間隔。
+控制器預設每分鐘向 Git 伺服器查詢一次 ref。控制器有接收 webhook 時，使用 `spec.source.git.githubApp` 的 Build 改為每 10 分鐘查詢一次。你可以用 `spec.triggers.pollInterval` 設定輪詢間隔。
 
 ## 設定 push webhook
 

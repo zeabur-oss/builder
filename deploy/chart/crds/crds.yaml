@@ -453,7 +453,7 @@
             "description": "A Git ref or an uploaded archive that Zeabur Builder keeps built into a container image.",
             "properties": {
               "spec": {
-                "description": "A Git ref to follow, or an uploaded archive, and the image to keep built from it.\n\n```yaml\napiVersion: builder.zeabur.com/v1alpha1\nkind: Build\nmetadata: {name: api, namespace: team-a}\nspec:\n  source: {git: {url: https://github.com/acme/api, ref: main}}\n  builderRef: railpack\n```",
+                "description": "A Git ref to follow, or an uploaded archive, and the image to keep built from it.\n\n```yaml\napiVersion: builder.zeabur.com/v1alpha1\nkind: Build\nmetadata: {name: api, namespace: team-a}\nspec:\n  source: {type: git, git: {url: https://github.com/acme/api, ref: main}}\n  builderRef: railpack\n```",
                 "properties": {
                   "builderRef": {
                     "description": "The `ClusterBuilder`.",
@@ -638,66 +638,66 @@
                     "description": "Where the source comes from.",
                     "properties": {
                       "archive": {
-                        "description": "An archive pushed as an OCI artifact to `<registry>/<namespace>/<name>/source`\n(`docs/builds/archive-source.mdx`).",
-                        "nullable": true,
+                        "description": "The archive's digest.",
                         "properties": {
-                          "contextDir": {
-                            "description": "The build context inside the archive.",
-                            "maxLength": 1024,
-                            "nullable": true,
-                            "pattern": "^[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*$",
-                            "type": "string"
-                          },
                           "digest": {
                             "description": "The artifact's manifest digest. Unset: the `Build` waits for an upload.",
                             "maxLength": 71,
                             "nullable": true,
                             "pattern": "^sha256:[0-9a-f]{64}$",
                             "type": "string"
-                          },
-                          "dockerfile": {
-                            "description": "The Dockerfile, relative to the context, for the `dockerfile` builder. Default\n`Dockerfile`.",
-                            "maxLength": 1024,
-                            "nullable": true,
-                            "pattern": "^[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*$",
-                            "type": "string"
                           }
                         },
                         "type": "object"
                       },
-                      "credentialsRef": {
-                        "description": "Credentials for a plain Git server: a `kubernetes.io/ssh-auth` Secret (with `known_hosts`)\nor a `kubernetes.io/basic-auth` one, labelled `builder.zeabur.com/git-credentials: \"true\"`.",
+                      "contextDir": {
+                        "description": "The build context inside the source, for monorepos.",
+                        "maxLength": 1024,
                         "nullable": true,
-                        "properties": {
-                          "name": {
-                            "description": "The Secret's name.",
-                            "maxLength": 253,
-                            "minLength": 1,
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "name"
-                        ],
-                        "type": "object"
+                        "pattern": "^[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*$",
+                        "type": "string"
+                      },
+                      "dockerfile": {
+                        "description": "The Dockerfile, relative to the context, for the `dockerfile` builder. Default\n`Dockerfile`.",
+                        "maxLength": 1024,
+                        "nullable": true,
+                        "pattern": "^[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*$",
+                        "type": "string"
                       },
                       "git": {
-                        "description": "The Git repository.",
-                        "nullable": true,
+                        "description": "The repository, its ref and how to reach it.",
                         "properties": {
-                          "contextDir": {
-                            "description": "The build context inside the repository, for monorepos.",
-                            "maxLength": 1024,
+                          "credentialsRef": {
+                            "description": "Credentials for a plain Git server: a `kubernetes.io/ssh-auth` Secret (with `known_hosts`)\nor a `kubernetes.io/basic-auth` one, labelled `builder.zeabur.com/git-credentials: \"true\"`.",
                             "nullable": true,
-                            "pattern": "^[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*$",
-                            "type": "string"
+                            "properties": {
+                              "name": {
+                                "description": "The Secret's name.",
+                                "maxLength": 253,
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name"
+                            ],
+                            "type": "object"
                           },
-                          "dockerfile": {
-                            "description": "The Dockerfile, relative to the context, for the `dockerfile` builder. Default\n`Dockerfile`.",
-                            "maxLength": 1024,
+                          "githubApp": {
+                            "description": "Reach the repository through an installation of the cluster's GitHub App, which a cluster\nadmin has allowed for this namespace.",
                             "nullable": true,
-                            "pattern": "^[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*(/[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)*$",
-                            "type": "string"
+                            "properties": {
+                              "installationId": {
+                                "description": "The installation's id, from `https://github.com/settings/installations/<id>`.",
+                                "format": "int64",
+                                "minimum": 1.0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "installationId"
+                            ],
+                            "type": "object"
                           },
                           "ref": {
                             "default": "HEAD",
@@ -716,42 +716,39 @@
                         "required": [
                           "url"
                         ],
-                        "type": "object"
-                      },
-                      "githubApp": {
-                        "description": "Reach the repository through an installation of the cluster's GitHub App, which a cluster\nadmin has allowed for this namespace.",
-                        "nullable": true,
-                        "properties": {
-                          "installationId": {
-                            "description": "The installation's id, from `https://github.com/settings/installations/<id>`.",
-                            "format": "int64",
-                            "minimum": 1.0,
-                            "type": "integer"
+                        "type": "object",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "set at most one of credentialsRef and githubApp",
+                            "rule": "!(has(self.credentialsRef) && has(self.githubApp))"
+                          },
+                          {
+                            "message": "a githubApp source needs an https URL",
+                            "rule": "!has(self.githubApp) || self.url.startsWith('https://')"
                           }
-                        },
-                        "required": [
-                          "installationId"
+                        ]
+                      },
+                      "type": {
+                        "description": "`git`: A Git repository.\n\n`archive`: An archive pushed as an OCI artifact to `<registry>/<namespace>/<name>/source`\n(`docs/builds/archive-source.mdx`).",
+                        "enum": [
+                          "git",
+                          "archive"
                         ],
-                        "type": "object"
+                        "type": "string"
                       }
                     },
+                    "required": [
+                      "type"
+                    ],
                     "type": "object",
                     "x-kubernetes-validations": [
                       {
-                        "message": "set exactly one of git and archive",
-                        "rule": "has(self.git) != has(self.archive)"
+                        "message": "git is required for type git, and only for it",
+                        "rule": "has(self.git) == (self.type == 'git')"
                       },
                       {
-                        "message": "credentialsRef and githubApp need a git source",
-                        "rule": "has(self.git) || !(has(self.credentialsRef) || has(self.githubApp))"
-                      },
-                      {
-                        "message": "set at most one of credentialsRef and githubApp",
-                        "rule": "!(has(self.credentialsRef) && has(self.githubApp))"
-                      },
-                      {
-                        "message": "a githubApp source needs an https URL",
-                        "rule": "!has(self.githubApp) || (has(self.git) && self.git.url.startsWith('https://'))"
+                        "message": "archive is only for type archive",
+                        "rule": "!has(self.archive) || self.type == 'archive'"
                       }
                     ]
                   },
@@ -814,7 +811,7 @@
                 "x-kubernetes-validations": [
                   {
                     "message": "an archive source has no webhook trigger",
-                    "rule": "!has(self.source.archive) || !has(self.triggers.webhook)"
+                    "rule": "self.source.type != 'archive' || !has(self.triggers.webhook)"
                   }
                 ]
               },
