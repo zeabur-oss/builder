@@ -1,4 +1,9 @@
 //! `ClusterBuilder`: how to plan a build and which frontend builds it.
+#![expect(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    reason = "the CustomResource and JsonSchema derives expand to serde_json::json!"
+)]
 
 use std::collections::BTreeMap;
 

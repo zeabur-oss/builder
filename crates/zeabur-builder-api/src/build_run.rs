@@ -1,5 +1,9 @@
 //! `BuildRun`: one build of one commit or archive.
-
+#![expect(
+    clippy::disallowed_macros,
+    clippy::disallowed_types,
+    reason = "the CustomResource and JsonSchema derives expand to serde_json::json!"
+)]
 #![cfg_attr(
     feature = "schema",
     expect(
