@@ -39,8 +39,6 @@ enum Error {
     },
     #[error("a TLS provider is already installed")]
     TlsProvider,
-    #[error("cannot start the async runtime: {0}")]
-    Runtime(#[source] std::io::Error),
     #[error("cannot reach Kubernetes: {0}")]
     Kube(#[source] kube::Error),
     #[error(transparent)]
@@ -375,38 +373,30 @@ fn install_tls() -> Result<(), Error> {
         .map_err(|_provider| Error::TlsProvider)
 }
 
-fn runtime(multi_thread: bool) -> Result<tokio::runtime::Runtime, Error> {
-    let mut builder = if multi_thread {
-        tokio::runtime::Builder::new_multi_thread()
-    } else {
-        tokio::runtime::Builder::new_current_thread()
-    };
-    builder.enable_all().build().map_err(Error::Runtime)
-}
-
 /// Runs a subcommand; the text for stdout, if it prints any.
-fn execute(command: Command) -> Result<Option<String>, Error> {
+async fn execute(command: Command) -> Result<Option<String>, Error> {
     match command {
         Command::Crds => Ok(Some(zeabur_builder_api::definitions_yaml()?)),
         Command::Controller(args) => {
-            runtime(true)?.block_on(run_controller(args))?;
+            run_controller(args).await?;
             Ok(None)
         }
         Command::GithubApp(command) => {
             install_tls()?;
-            let text = runtime(false)?.block_on(github_app::run(command))?;
+            let text = github_app::run(command).await?;
             Ok(Some(text))
         }
         Command::RegistryToken(args) => {
             install_tls()?;
-            let text = runtime(false)?.block_on(registry_token(args))?;
+            let text = registry_token(args).await?;
             Ok(Some(text))
         }
     }
 }
 
-fn main() -> ExitCode {
-    match execute(Cli::parse().command) {
+#[tokio::main]
+async fn main() -> ExitCode {
+    match execute(Cli::parse().command).await {
         Ok(Some(text)) => output::stdout_line(&text),
         Ok(None) => ExitCode::SUCCESS,
         Err(error) => {
