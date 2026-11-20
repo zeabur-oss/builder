@@ -25,7 +25,7 @@ async fn main() -> ExitCode {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(2),
         Err(e) => {
-            output::error(&e);
+            output::error(&e.to_string());
             ExitCode::FAILURE
         }
     }

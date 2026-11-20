@@ -19,7 +19,41 @@ use std::path::{Path, PathBuf};
 
 use flate2::read::MultiGzDecoder;
 use tar::EntryType;
-use zeabur_builder_core::archive::{entry_path, link_stays_inside};
+use zeabur_builder_core::archive::{ArchiveError, entry_path, link_stays_inside};
+
+/// Why an archive cannot be unpacked. The controller shows the message as the run's message.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum UnpackError {
+    #[error("cannot create {}: {source}", path.display())]
+    CreateRoot { path: PathBuf, source: io::Error },
+    #[error("cannot read the archive: {0}")]
+    Read(#[source] io::Error),
+    #[error("cannot write `{}`: {source}", path.display())]
+    Write { path: PathBuf, source: io::Error },
+    #[error(transparent)]
+    Path(#[from] ArchiveError),
+    #[error("the archive entry `{}` has no name", .0.display())]
+    NoName(PathBuf),
+    #[error("the link `{}` has no target", .0.display())]
+    NoLinkTarget(PathBuf),
+    #[error("the link `{}` points outside the source folder", .0.display())]
+    LinkOutside(PathBuf),
+    #[error("the hard link `{}` does not name a file of the archive", .0.display())]
+    HardLinkTarget(PathBuf),
+    #[error("`{}` is below `{}`, which is not a directory", path.display(), part.display())]
+    ParentNotDirectory { path: PathBuf, part: PathBuf },
+    #[error("`{}` would replace a directory", .0.display())]
+    ReplacesDirectory(PathBuf),
+}
+
+impl UnpackError {
+    fn write(path: &Path, source: io::Error) -> Self {
+        Self::Write {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
 
 /// A reader that fails once more than `limit` bytes have passed.
 struct Capped<R> {
@@ -42,31 +76,31 @@ impl<R: Read> Read for Capped<R> {
 }
 
 /// Unpacks the gzip tar `archive` into `root`, which must not exist yet.
-pub(crate) fn unpack(archive: impl Read, root: &Path, limit: u64) -> Result<(), String> {
+pub(crate) fn unpack(archive: impl Read, root: &Path, limit: u64) -> Result<(), UnpackError> {
     DirBuilder::new()
         .mode(0o755)
         .create(root)
-        .map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+        .map_err(|source| UnpackError::CreateRoot {
+            path: root.to_path_buf(),
+            source,
+        })?;
     let stream = Capped {
         inner: MultiGzDecoder::new(archive),
         left: limit,
     };
     let mut tar = tar::Archive::new(stream);
     let mut files: HashSet<PathBuf> = HashSet::new();
-    let entries = tar.entries().map_err(|e| read_error(&e))?;
+    let entries = tar.entries().map_err(UnpackError::Read)?;
     for entry in entries {
-        let mut entry = entry.map_err(|e| read_error(&e))?;
-        let name = entry.path().map_err(|e| read_error(&e))?.into_owned();
-        let path = entry_path(&name).map_err(|e| e.to_string())?;
+        let mut entry = entry.map_err(UnpackError::Read)?;
+        let name = entry.path().map_err(UnpackError::Read)?.into_owned();
+        let path = entry_path(&name)?;
         let kind = entry.header().entry_type();
         if path.as_os_str().is_empty() {
             if kind.is_dir() {
                 continue;
             }
-            return Err(format!(
-                "the archive entry `{}` has no name",
-                name.display()
-            ));
+            return Err(UnpackError::NoName(name));
         }
         let to = root.join(&path);
         #[expect(
@@ -81,7 +115,7 @@ pub(crate) fn unpack(archive: impl Read, root: &Path, limit: u64) -> Result<(), 
                     DirBuilder::new()
                         .mode(0o755)
                         .create(&to)
-                        .map_err(|e| write_error(&path, &e))?;
+                        .map_err(|e| UnpackError::write(&path, e))?;
                 }
                 files.remove(&path);
             }
@@ -94,44 +128,39 @@ pub(crate) fn unpack(archive: impl Read, root: &Path, limit: u64) -> Result<(), 
                     .create_new(true)
                     .mode(if executable { 0o755 } else { 0o644 })
                     .open(&to)
-                    .map_err(|e| write_error(&path, &e))?;
-                io::copy(&mut entry, &mut file).map_err(|e| read_error(&e))?;
+                    .map_err(|e| UnpackError::write(&path, e))?;
+                io::copy(&mut entry, &mut file).map_err(UnpackError::Read)?;
                 files.insert(path);
             }
             EntryType::Symlink => {
                 let target = entry
                     .link_name()
-                    .map_err(|e| read_error(&e))?
-                    .ok_or_else(|| format!("the link `{}` has no target", path.display()))?;
+                    .map_err(UnpackError::Read)?
+                    .ok_or_else(|| UnpackError::NoLinkTarget(path.clone()))?;
                 if !link_stays_inside(&path, &target) {
-                    return Err(format!(
-                        "the link `{}` points outside the source folder",
-                        path.display()
-                    ));
+                    return Err(UnpackError::LinkOutside(path));
                 }
                 parents(root, &path)?;
                 clear(&to, false)?;
-                std::os::unix::fs::symlink(&target, &to).map_err(|e| write_error(&path, &e))?;
+                std::os::unix::fs::symlink(&target, &to)
+                    .map_err(|e| UnpackError::write(&path, e))?;
                 files.remove(&path);
             }
             EntryType::Link => {
                 let target = entry
                     .link_name()
-                    .map_err(|e| read_error(&e))?
-                    .ok_or_else(|| format!("the link `{}` has no target", path.display()))?;
-                let target = entry_path(&target).map_err(|e| e.to_string())?;
+                    .map_err(UnpackError::Read)?
+                    .ok_or_else(|| UnpackError::NoLinkTarget(path.clone()))?;
+                let target = entry_path(&target)?;
                 let from = root.join(&target);
                 if !files.contains(&target)
                     || !fs::symlink_metadata(&from).is_ok_and(|m| m.is_file())
                 {
-                    return Err(format!(
-                        "the hard link `{}` does not name a file of the archive",
-                        path.display()
-                    ));
+                    return Err(UnpackError::HardLinkTarget(path));
                 }
                 parents(root, &path)?;
                 clear(&to, false)?;
-                fs::hard_link(&from, &to).map_err(|e| write_error(&path, &e))?;
+                fs::hard_link(&from, &to).map_err(|e| UnpackError::write(&path, e))?;
                 files.insert(path);
             }
             // Device files, FIFOs and other kinds have no place in a build context.
@@ -141,16 +170,8 @@ pub(crate) fn unpack(archive: impl Read, root: &Path, limit: u64) -> Result<(), 
     Ok(())
 }
 
-fn read_error(e: &io::Error) -> String {
-    format!("cannot read the archive: {e}")
-}
-
-fn write_error(path: &Path, e: &io::Error) -> String {
-    format!("cannot write `{}`: {e}", path.display())
-}
-
 /// Creates the parents of `path` below `root`, and refuses a parent that is not a real directory.
-fn parents(root: &Path, path: &Path) -> Result<(), String> {
+fn parents(root: &Path, path: &Path) -> Result<(), UnpackError> {
     let mut at = root.to_path_buf();
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -160,19 +181,18 @@ fn parents(root: &Path, path: &Path) -> Result<(), String> {
         match fs::symlink_metadata(&at) {
             Ok(meta) if meta.is_dir() => {}
             Ok(_) => {
-                return Err(format!(
-                    "`{}` is below `{}`, which is not a directory",
-                    path.display(),
-                    part.as_os_str().display()
-                ));
+                return Err(UnpackError::ParentNotDirectory {
+                    path: path.to_path_buf(),
+                    part: PathBuf::from(part.as_os_str()),
+                });
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 DirBuilder::new()
                     .mode(0o755)
                     .create(&at)
-                    .map_err(|e| write_error(path, &e))?;
+                    .map_err(|e| UnpackError::write(path, e))?;
             }
-            Err(e) => return Err(write_error(path, &e)),
+            Err(e) => return Err(UnpackError::write(path, e)),
         }
     }
     Ok(())
@@ -180,18 +200,18 @@ fn parents(root: &Path, path: &Path) -> Result<(), String> {
 
 /// Removes a file or link that a later entry replaces. A directory stays for a directory entry and
 /// stops the unpack for any other.
-fn clear(to: &Path, directory: bool) -> Result<(), String> {
+fn clear(to: &Path, directory: bool) -> Result<(), UnpackError> {
     match fs::symlink_metadata(to) {
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(write_error(to, &e)),
+        Err(e) => Err(UnpackError::write(to, e)),
         Ok(meta) if meta.is_dir() => {
             if directory {
                 Ok(())
             } else {
-                Err(format!("`{}` would replace a directory", to.display()))
+                Err(UnpackError::ReplacesDirectory(to.to_path_buf()))
             }
         }
-        Ok(_) => fs::remove_file(to).map_err(|e| write_error(to, &e)),
+        Ok(_) => fs::remove_file(to).map_err(|e| UnpackError::write(to, e)),
     }
 }
 

@@ -24,6 +24,7 @@ use zeabur_builder_api::cluster_builder::{
 use zeabur_builder_api::common::{Condition, ConditionStatus, ConditionType, SecretKeyRef};
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::plan::{self, Info};
+use zeabur_builder_core::refusal::Refusal;
 use zeabur_builder_core::result::{self, BuildResult, FailureReason, Outcome, Step};
 use zeabur_builder_core::tag::{self, TagError, TagInputs};
 use zeabur_builder_jobspec::JobMemory;
@@ -237,7 +238,9 @@ pub(crate) fn run_status(
     };
     let generation = run.metadata.generation;
     let message = status.message.clone().unwrap_or_default();
-    let why = status.reason.map_or_else(|| wire(phase), wire);
+    let why = status
+        .reason
+        .map_or_else(|| phase.to_string(), |r| r.to_string());
     let (reconciling, stalled, ready) = match phase {
         Phase::Pending | Phase::Planning | Phase::Building => (true, false, ConditionStatus::False),
         Phase::Succeeded => (false, false, ConditionStatus::True),
@@ -279,14 +282,6 @@ pub(crate) fn run_status(
     status
 }
 
-/// The spelling of a `Phase` or `Reason` on the wire.
-fn wire<T: Serialize>(value: T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "Unknown".to_owned())
-}
-
 fn put_condition(
     conditions: &mut Vec<Condition>,
     kind: ConditionType,
@@ -316,7 +311,7 @@ pub(crate) fn set_condition(
     conditions: &mut Vec<Condition>,
     kind: ConditionType,
     status: ConditionStatus,
-    reason: ConditionReason,
+    reason: impl std::fmt::Display,
     message: &str,
     now: Timestamp,
     generation: Option<i64>,
@@ -712,8 +707,14 @@ fn queued(run: &BuildRun) -> bool {
     !is_finished(phase(run))
         && status.is_none_or(|s| !admitted(s))
         && status.is_none_or(|s| {
-            s.reason
-                .is_none_or(|r| matches!(r, Reason::QuotaExceeded | Reason::InsufficientResources))
+            s.reason.is_none_or(|r| {
+                matches!(
+                    r,
+                    Reason::QuotaExceeded
+                        | Reason::PreviousRunRunning
+                        | Reason::InsufficientResources
+                )
+            })
         })
 }
 
@@ -761,7 +762,7 @@ pub(crate) fn admission(
     run: &BuildRun,
     namespace_limit: u32,
     cluster_limit: u32,
-) -> Result<(), String> {
+) -> Result<(), Refusal<Reason>> {
     let me = (
         run.metadata.namespace.as_deref(),
         run.metadata.name.as_deref(),
@@ -775,8 +776,9 @@ pub(crate) fn admission(
         .filter(|r| holds_slot(r))
         .count();
     if in_namespace >= usize::try_from(namespace_limit).unwrap_or(usize::MAX) {
-        return Err(format!(
-            "{in_namespace} of the namespace's {namespace_limit} builds are running"
+        return Err(Refusal::new(
+            Reason::QuotaExceeded,
+            format!("{in_namespace} of the namespace's {namespace_limit} builds are running"),
         ));
     }
     let running = others().filter(|r| holds_slot(r)).count();
@@ -784,8 +786,11 @@ pub(crate) fn admission(
         .filter(|r| queued(r) && queue_key(r) < queue_key(run))
         .count();
     if running + ahead >= usize::try_from(cluster_limit).unwrap_or(usize::MAX) {
-        return Err(format!(
-            "{running} of the cluster's {cluster_limit} builds are running, {ahead} wait ahead"
+        return Err(Refusal::new(
+            Reason::QuotaExceeded,
+            format!(
+                "{running} of the cluster's {cluster_limit} builds are running, {ahead} wait ahead"
+            ),
         ));
     }
     Ok(())
@@ -1010,7 +1015,7 @@ pub(crate) fn repositories(default_registry: &str, namespace: &str, name: &str) 
 /// The repositories of `build` in `default_registry`. An image on the default registry's host
 /// must be the default one, `<namespace>/<name>`: tokens and deletion cover that repository only,
 /// so a `Build` cannot push to or delete another's.
-pub(crate) fn owned(build: &Build, default_registry: &str) -> Result<Owned, String> {
+pub(crate) fn owned(build: &Build, default_registry: &str) -> Result<Owned, Refusal<Reason>> {
     let registry = default_registry.trim_end_matches('/');
     let host = registry_host(registry);
     let namespace = build.metadata.namespace.as_deref().unwrap_or_default();
@@ -1034,8 +1039,9 @@ pub(crate) fn owned(build: &Build, default_registry: &str) -> Result<Owned, Stri
     } else if repository == own {
         Some(repository)
     } else {
-        return Err(format!(
-            "an image on {host} must be {host}/{own}, the Build's own repository"
+        return Err(Refusal::new(
+            Reason::InfraError,
+            format!("an image on {host} must be {host}/{own}, the Build's own repository"),
         ));
     };
     Ok(Owned {
@@ -1183,7 +1189,7 @@ pub(crate) fn summarise(
         || {
             (
                 ConditionStatus::Unknown,
-                ConditionReason::NotBuilt,
+                ConditionReason::NotBuilt.to_string(),
                 String::new(),
             )
         },
@@ -1193,14 +1199,14 @@ pub(crate) fn summarise(
             if s.phase == Some(Phase::Succeeded) {
                 (
                     ConditionStatus::True,
-                    ConditionReason::Succeeded,
+                    ConditionReason::Succeeded.to_string(),
                     format!("{name} built {}", run.spec.revision),
                 )
             } else {
                 (
                     ConditionStatus::False,
                     s.reason
-                        .map_or(ConditionReason::Failed, ConditionReason::from),
+                        .map_or_else(|| ConditionReason::Failed.to_string(), |r| r.to_string()),
                     format!("{name}: {}", s.message.unwrap_or_default()),
                 )
             }
@@ -1304,12 +1310,13 @@ pub(crate) fn model_key(
     secret_ref: &SecretKeyRef,
     namespace: &str,
     secret: Option<&Secret>,
-) -> Result<(), String> {
+) -> Result<(), Refusal<Reason>> {
     let SecretKeyRef { name, key } = secret_ref;
+    let missing = |message: String| Refusal::new(Reason::ModelKeyMissing, message);
     let Some(secret) = secret else {
-        return Err(format!(
+        return Err(missing(format!(
             "no Secret `{name}` in `{namespace}` for the model API key"
-        ));
+        )));
     };
     let present = secret
         .data
@@ -1319,9 +1326,9 @@ pub(crate) fn model_key(
     if present {
         Ok(())
     } else {
-        Err(format!(
+        Err(missing(format!(
             "Secret `{name}` has no key `{key}` with the model API key"
-        ))
+        )))
     }
 }
 

@@ -11,6 +11,7 @@ use rig_core::operation::Completion;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use zeabur_builder_core::refusal::Refusal;
 
 use crate::budget::{Limits, Spent};
 use crate::plan::{Details, Outcome, Plan, Reason, Source};
@@ -230,8 +231,11 @@ impl<B: TrialBuild> Agent<B> {
         let mut state = State::default();
         let mut history = vec![Message::user(task(hint))];
         loop {
-            if let Some((reason, detail)) = spent.exceeded(&self.limits) {
-                return Outcome::NeedsUser { reason, detail };
+            if let Some(Refusal { reason, message }) = spent.exceeded(&self.limits) {
+                return Outcome::NeedsUser {
+                    reason,
+                    detail: message,
+                };
             }
             let request = CompletionRequest::from(history.clone())
                 .preamble(SYSTEM)
@@ -318,8 +322,11 @@ impl<B: TrialBuild> Agent<B> {
     }
 
     async fn build(&self, args: BuildArgs, state: &mut State, spent: &mut Spent) -> Step {
-        if let Some((reason, detail)) = spent.exceeded(&self.limits) {
-            return Step::done(Outcome::NeedsUser { reason, detail });
+        if let Some(Refusal { reason, message }) = spent.exceeded(&self.limits) {
+            return Step::done(Outcome::NeedsUser {
+                reason,
+                detail: message,
+            });
         }
         state.facts = args.facts;
         let build = self.builder.build(&args.dockerfile, &args.dockerignore);

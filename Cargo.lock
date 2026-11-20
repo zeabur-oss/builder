@@ -4432,6 +4432,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tar",
+ "thiserror",
  "tokio",
  "zeabur-builder-core",
 ]

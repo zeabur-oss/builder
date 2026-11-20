@@ -20,6 +20,7 @@ use jiff::Timestamp;
 use k8s_openapi::api::core::v1::Secret;
 use kube::{Api, Client};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use zeabur_builder_api::labels;
 
 use crate::remote::HttpClient;
@@ -40,6 +41,135 @@ const MANIFEST_TYPES: [&str; 4] = [
     INDEX_TYPES[0],
     INDEX_TYPES[1],
 ];
+
+/// Why the key, a Secret, a Docker config or the registry refused.
+#[derive(Debug, Error)]
+pub(crate) enum RegistryError {
+    /// The Secret with the signing key could not be read.
+    #[error("reading Secret `{namespace}/{name}`: {source}")]
+    ReadSecret {
+        namespace: String,
+        name: String,
+        #[source]
+        source: kube::Error,
+    },
+    /// There is no Secret with the signing key.
+    #[error("no Secret `{name}` with the registry token key in `{namespace}`")]
+    NoKeySecret { namespace: String, name: String },
+    /// The Secret has no `tls.key`.
+    #[error("Secret `{namespace}/{name}` has no tls.key")]
+    NoKey { namespace: String, name: String },
+    /// The Secret's `tls.key` is no Ed25519 key.
+    #[error("Secret `{namespace}/{name}`: {source}")]
+    Key {
+        namespace: String,
+        name: String,
+        #[source]
+        source: KeyError,
+    },
+    /// A Docker config does not parse.
+    #[error("cannot read the Docker config: {0}")]
+    ReadConfig(#[source] serde_json::Error),
+    /// A Docker config does not encode.
+    #[error("cannot write the Docker config: {0}")]
+    WriteConfig(#[source] serde_json::Error),
+    /// The push Secret lacks the opt-in label.
+    #[error(
+        "Secret `{name}` needs the label `{}: \"true\"`",
+        labels::PUSH_CREDENTIALS
+    )]
+    PushLabel { name: String },
+    /// The push Secret is not a `kubernetes.io/dockerconfigjson` Secret.
+    #[error("Secret `{name}` is of type `{type_}`; use {DOCKER_CONFIG_JSON}")]
+    PushType { name: String, type_: String },
+    /// The push Secret has no `.dockerconfigjson`.
+    #[error("Secret `{name}` has no .dockerconfigjson")]
+    PushNoConfig { name: String },
+    /// The push Secret's `.dockerconfigjson` is no Docker config.
+    #[error("Secret `{name}`: .dockerconfigjson is not a Docker config")]
+    PushNotConfig {
+        name: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The request could not be built.
+    #[error(transparent)]
+    Request(#[from] http::Error),
+    /// The registry did not answer in time.
+    #[error("{method} {url}: timed out")]
+    TimedOut { method: Method, url: String },
+    /// The registry could not be reached.
+    #[error("{method} {url}: {source}")]
+    Transport {
+        method: Method,
+        url: String,
+        #[source]
+        source: hyper_util::client::legacy::Error,
+    },
+    /// The answer's body could not be read.
+    #[error("{method} {url}: {source}")]
+    Body {
+        method: Method,
+        url: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// The registry refused to list the tags of a repository.
+    #[error("listing the tags of {repository}: {status}")]
+    ListStatus {
+        repository: String,
+        status: StatusCode,
+    },
+    /// The list of tags is not a list of tags.
+    #[error("listing the tags of {repository}: {source}")]
+    ListAnswer {
+        repository: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The registry refused to give a manifest.
+    #[error("reading {repository}:{tag}: {status}")]
+    ReadStatus {
+        repository: String,
+        tag: String,
+        status: StatusCode,
+    },
+    /// The registry sent a manifest without its digest.
+    #[error("{repository}:{tag} has no Docker-Content-Digest")]
+    NoDigest { repository: String, tag: String },
+    /// The manifest is not a manifest.
+    #[error("reading {repository}:{tag}: {source}")]
+    ManifestAnswer {
+        repository: String,
+        tag: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The registry refused to delete a manifest.
+    #[error("deleting {repository}@{digest}: {status}")]
+    DeleteStatus {
+        repository: String,
+        digest: String,
+        status: StatusCode,
+    },
+}
+
+/// Why a PEM text is no signing key.
+#[derive(Debug, Error)]
+pub(crate) enum KeyError {
+    /// The key is not text.
+    #[error("the key is not PEM")]
+    NotText(#[source] std::str::Utf8Error),
+    /// The key has no `PRIVATE KEY` block.
+    #[error("the key is not a PEM PKCS#8 private key")]
+    NotPkcs8,
+    /// The block is not base64.
+    #[error("the key is not valid PEM")]
+    NotBase64(#[source] base64::DecodeError),
+    /// The DER is no Ed25519 key.
+    #[error("the key is not an Ed25519 key: {0}")]
+    NotEd25519(#[source] aws_lc_rs::error::KeyRejected),
+}
 
 /// What a token allows on one repository, besides pulling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -87,21 +217,18 @@ impl std::fmt::Debug for Signer {
 
 impl Signer {
     /// Reads a PEM PKCS#8 Ed25519 key, as cert-manager writes to `tls.key`.
-    pub(crate) fn from_pem(pem: &[u8]) -> Result<Self, String> {
-        let pem = std::str::from_utf8(pem).map_err(|_error| "the key is not PEM".to_owned())?;
+    pub(crate) fn from_pem(pem: &[u8]) -> Result<Self, KeyError> {
+        let pem = std::str::from_utf8(pem).map_err(KeyError::NotText)?;
         if !pem.contains("-----BEGIN PRIVATE KEY-----") {
-            return Err("the key is not a PEM PKCS#8 private key".to_owned());
+            return Err(KeyError::NotPkcs8);
         }
         let body: String = pem
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with("-----"))
             .collect();
-        let der = STANDARD
-            .decode(body)
-            .map_err(|_error| "the key is not valid PEM".to_owned())?;
-        let key = Ed25519KeyPair::from_pkcs8_maybe_unchecked(&der)
-            .map_err(|e| format!("the key is not an Ed25519 key: {e}"))?;
+        let der = STANDARD.decode(body).map_err(KeyError::NotBase64)?;
+        let key = Ed25519KeyPair::from_pkcs8_maybe_unchecked(&der).map_err(KeyError::NotEd25519)?;
         Ok(Self { key })
     }
 
@@ -145,19 +272,35 @@ pub(crate) async fn read_signer(
     client: &Client,
     namespace: &str,
     name: &str,
-) -> Result<Signer, String> {
+) -> Result<Signer, RegistryError> {
+    let here = || (namespace.to_owned(), name.to_owned());
     let secret = Api::<Secret>::namespaced(client.clone(), namespace)
         .get_opt(name)
         .await
-        .map_err(|e| format!("reading Secret `{namespace}/{name}`: {e}"))?
+        .map_err(|source| RegistryError::ReadSecret {
+            namespace: namespace.to_owned(),
+            name: name.to_owned(),
+            source,
+        })?
         .ok_or_else(|| {
-            format!("no Secret `{name}` with the registry token key in `{namespace}`")
+            let (namespace, name) = here();
+            RegistryError::NoKeySecret { namespace, name }
         })?;
     let key = secret
         .data
         .and_then(|mut d| d.remove("tls.key"))
-        .ok_or_else(|| format!("Secret `{namespace}/{name}` has no tls.key"))?;
-    Signer::from_pem(&key.0).map_err(|e| format!("Secret `{namespace}/{name}`: {e}"))
+        .ok_or_else(|| {
+            let (namespace, name) = here();
+            RegistryError::NoKey { namespace, name }
+        })?;
+    Signer::from_pem(&key.0).map_err(|source| {
+        let (namespace, name) = here();
+        RegistryError::Key {
+            namespace,
+            name,
+            source,
+        }
+    })
 }
 
 /// The registry token's claims.
@@ -214,9 +357,9 @@ fn bearer(token: &str) -> Auth {
 }
 
 /// Adds `token` for `host` to a Docker config, replacing any entry for `host`.
-pub(crate) fn with_token(config: &[u8], host: &str, token: &str) -> Result<Vec<u8>, String> {
-    let mut config: DockerConfig = serde_json::from_slice(config)
-        .map_err(|e| format!("cannot read the Docker config: {e}"))?;
+pub(crate) fn with_token(config: &[u8], host: &str, token: &str) -> Result<Vec<u8>, RegistryError> {
+    let mut config: DockerConfig =
+        serde_json::from_slice(config).map_err(RegistryError::ReadConfig)?;
     config.auths.retain(|key, _| {
         let key = key
             .strip_prefix("https://")
@@ -225,12 +368,12 @@ pub(crate) fn with_token(config: &[u8], host: &str, token: &str) -> Result<Vec<u
         key.split('/').next() != Some(host)
     });
     config.auths.insert(host.to_owned(), bearer(token));
-    serde_json::to_vec(&config).map_err(|e| e.to_string())
+    serde_json::to_vec(&config).map_err(RegistryError::WriteConfig)
 }
 
 /// The Docker config of `secret`, named `name`: a `kubernetes.io/dockerconfigjson` Secret with the
-/// label `builder.zeabur.com/push-credentials: "true"`. The message says what is wrong.
-pub(crate) fn push_config(name: &str, secret: &Secret) -> Result<Vec<u8>, String> {
+/// label `builder.zeabur.com/push-credentials: "true"`. The error says what is wrong.
+pub(crate) fn push_config(name: &str, secret: &Secret) -> Result<Vec<u8>, RegistryError> {
     let labelled = secret
         .metadata
         .labels
@@ -238,25 +381,29 @@ pub(crate) fn push_config(name: &str, secret: &Secret) -> Result<Vec<u8>, String
         .and_then(|l| l.get(labels::PUSH_CREDENTIALS))
         .is_some_and(|v| v == "true");
     if !labelled {
-        return Err(format!(
-            "Secret `{name}` needs the label `{}: \"true\"`",
-            labels::PUSH_CREDENTIALS
-        ));
+        return Err(RegistryError::PushLabel {
+            name: name.to_owned(),
+        });
     }
     if secret.type_.as_deref() != Some(DOCKER_CONFIG_JSON) {
-        return Err(format!(
-            "Secret `{name}` is of type `{}`; use {DOCKER_CONFIG_JSON}",
-            secret.type_.as_deref().unwrap_or("Opaque")
-        ));
+        return Err(RegistryError::PushType {
+            name: name.to_owned(),
+            type_: secret.type_.as_deref().unwrap_or("Opaque").to_owned(),
+        });
     }
     let config = secret
         .data
         .as_ref()
         .and_then(|d| d.get(".dockerconfigjson"))
-        .ok_or_else(|| format!("Secret `{name}` has no .dockerconfigjson"))?;
+        .ok_or_else(|| RegistryError::PushNoConfig {
+            name: name.to_owned(),
+        })?;
     serde_json::from_slice::<DockerConfig>(&config.0)
         .map(|_| config.0.clone())
-        .map_err(|_error| format!("Secret `{name}`: .dockerconfigjson is not a Docker config"))
+        .map_err(|source| RegistryError::PushNotConfig {
+            name: name.to_owned(),
+            source,
+        })
 }
 
 /// The registry API of one host.
@@ -303,7 +450,7 @@ impl Registry {
         method: Method,
         path: &str,
         token: &str,
-    ) -> Result<(StatusCode, http::HeaderMap, Bytes), String> {
+    ) -> Result<(StatusCode, http::HeaderMap, Bytes), RegistryError> {
         let url = format!("{}/v2/{path}", self.base);
         let request = Request::builder()
             .method(method.clone())
@@ -311,17 +458,28 @@ impl Registry {
             .header(header::USER_AGENT, USER_AGENT)
             .header(header::AUTHORIZATION, format!("Bearer {token}"))
             .header(header::ACCEPT, MANIFEST_TYPES.join(", "))
-            .body(Full::new(Bytes::new()))
-            .map_err(|e| e.to_string())?;
+            .body(Full::new(Bytes::new()))?;
+        let timed_out = |_elapsed| RegistryError::TimedOut {
+            method: method.clone(),
+            url: url.clone(),
+        };
         let response = tokio::time::timeout(TIMEOUT, self.client.request(request))
             .await
-            .map_err(|_elapsed| format!("{method} {url}: timed out"))?
-            .map_err(|e| format!("{method} {url}: {e}"))?;
+            .map_err(timed_out)?
+            .map_err(|source| RegistryError::Transport {
+                method: method.clone(),
+                url: url.clone(),
+                source,
+            })?;
         let (parts, body) = response.into_parts();
         let body = tokio::time::timeout(TIMEOUT, Limited::new(body, MAX_ANSWER).collect())
             .await
-            .map_err(|_elapsed| format!("{method} {url}: timed out"))?
-            .map_err(|e| format!("{method} {url}: {e}"))?
+            .map_err(timed_out)?
+            .map_err(|source| RegistryError::Body {
+                method: method.clone(),
+                url: url.clone(),
+                source,
+            })?
             .to_bytes();
         Ok((parts.status, parts.headers, body))
     }
@@ -333,7 +491,7 @@ impl Registry {
         &self,
         repository: &str,
         token: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), RegistryError> {
         let (status, _, body) = self
             .send(Method::GET, &format!("{repository}/tags/list"), token)
             .await?;
@@ -341,10 +499,16 @@ impl Registry {
             return Ok(());
         }
         if status != StatusCode::OK {
-            return Err(format!("listing the tags of {repository}: {status}"));
+            return Err(RegistryError::ListStatus {
+                repository: repository.to_owned(),
+                status,
+            });
         }
-        let tags: Tags = serde_json::from_slice(&body)
-            .map_err(|e| format!("listing the tags of {repository}: {e}"))?;
+        let tags: Tags =
+            serde_json::from_slice(&body).map_err(|source| RegistryError::ListAnswer {
+                repository: repository.to_owned(),
+                source,
+            })?;
         let mut deleted = Vec::new();
         for tag in tags.tags.unwrap_or_default() {
             let (status, headers, body) = self
@@ -354,18 +518,29 @@ impl Registry {
                 continue;
             }
             if status != StatusCode::OK {
-                return Err(format!("reading {repository}:{tag}: {status}"));
+                return Err(RegistryError::ReadStatus {
+                    repository: repository.to_owned(),
+                    tag,
+                    status,
+                });
             }
             let digest = headers
                 .get("docker-content-digest")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
-                .ok_or_else(|| format!("{repository}:{tag} has no Docker-Content-Digest"))?;
+                .ok_or_else(|| RegistryError::NoDigest {
+                    repository: repository.to_owned(),
+                    tag: tag.clone(),
+                })?;
             if deleted.contains(&digest) {
                 continue;
             }
-            let manifest: Manifest = serde_json::from_slice(&body)
-                .map_err(|e| format!("reading {repository}:{tag}: {e}"))?;
+            let manifest: Manifest =
+                serde_json::from_slice(&body).map_err(|source| RegistryError::ManifestAnswer {
+                    repository: repository.to_owned(),
+                    tag,
+                    source,
+                })?;
             let index = manifest
                 .media_type
                 .as_deref()
@@ -398,7 +573,7 @@ impl Registry {
         repository: &str,
         digest: &str,
         token: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), RegistryError> {
         let (status, ..) = self
             .send(
                 Method::DELETE,
@@ -409,7 +584,11 @@ impl Registry {
         if status.is_success() || status == StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            Err(format!("deleting {repository}@{digest}: {status}"))
+            Err(RegistryError::DeleteStatus {
+                repository: repository.to_owned(),
+                digest: digest.to_owned(),
+                status,
+            })
         }
     }
 }

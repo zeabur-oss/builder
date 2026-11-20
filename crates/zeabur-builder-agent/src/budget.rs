@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use rig_core::completion::Usage;
+use zeabur_builder_core::refusal::Refusal;
 
 use crate::plan::Reason;
 
@@ -73,10 +74,10 @@ impl Spent {
     }
 
     /// The first limit reached, with a message for the user, or `None`.
-    pub(crate) fn exceeded(&self, limits: &Limits) -> Option<(Reason, String)> {
-        let spent = |message: String| Some((Reason::BudgetSpent, message));
+    pub(crate) fn exceeded(&self, limits: &Limits) -> Option<Refusal<Reason>> {
+        let spent = |message: String| Some(Refusal::new(Reason::BudgetSpent, message));
         if self.failed_builds >= limits.failed_builds {
-            Some((
+            Some(Refusal::new(
                 Reason::BuildKeepsFailing,
                 format!("{} trial builds failed", self.failed_builds),
             ))
@@ -111,7 +112,7 @@ mod tests {
         assert_eq!(fresh.exceeded(&limits), None);
 
         let message = |spent: &Spent, limits: &Limits| {
-            let (reason, message) = spent.exceeded(limits).unwrap();
+            let Refusal { reason, message } = spent.exceeded(limits).unwrap();
             assert_eq!(
                 reason == Reason::BuildKeepsFailing,
                 message.contains("trial builds")

@@ -135,7 +135,7 @@ fn conditions_keep_their_transition_time() {
         &mut conditions,
         ConditionType::Ready,
         ConditionStatus::False,
-        ConditionReason::BuildFailed,
+        Reason::BuildFailed,
         "",
         now(),
         Some(2),
@@ -1285,12 +1285,18 @@ fn an_agent_run_waits_for_its_model_key() {
     };
     assert_eq!(
         model_key(&secret_ref, "team-a", None),
-        Err("no Secret `model` in `team-a` for the model API key".to_owned())
+        Err(Refusal::new(
+            Reason::ModelKeyMissing,
+            "no Secret `model` in `team-a` for the model API key"
+        ))
     );
     for wrong in [secret("openai", b"sk"), secret("anthropic", b"")] {
         assert_eq!(
             model_key(&secret_ref, "team-a", Some(&wrong)),
-            Err("Secret `model` has no key `anthropic` with the model API key".to_owned())
+            Err(Refusal::new(
+                Reason::ModelKeyMissing,
+                "Secret `model` has no key `anthropic` with the model API key"
+            ))
         );
     }
     assert_eq!(

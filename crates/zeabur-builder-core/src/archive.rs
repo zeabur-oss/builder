@@ -101,19 +101,17 @@ struct Descriptor {
 /// `sha256:` and the hexadecimal SHA-256 of `bytes`.
 #[must_use]
 pub fn sha256(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
+    format!("sha256:{}", hex(&Sha256::digest(bytes)))
 }
 
-/// `sha256:` and `hash` in hexadecimal.
+/// `bytes` in lowercase hexadecimal.
 #[must_use]
-pub fn hex(hash: &[u8]) -> String {
-    let mut text = String::from("sha256:");
-    for b in hash {
-        for nibble in [b >> 4, b & 0xF] {
-            text.push(char::from_digit(u32::from(nibble), 16).unwrap_or('0'));
-        }
-    }
-    text
+pub fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .flat_map(|b| [b >> 4, b & 0xF])
+        .filter_map(|n| char::from_digit(u32::from(n), 16))
+        .collect()
 }
 
 /// Checks a manifest against `digest` and returns its one layer.

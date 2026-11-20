@@ -59,6 +59,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use jiff::Timestamp;
 use kube::ResourceExt as _;
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use zeabur_builder_api::build::Build;
@@ -78,6 +79,18 @@ const MAX_TOUCHES: usize = 8;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Connections served at once.
 const MAX_CONNECTIONS: usize = 64;
+
+/// Why the receiver stopped.
+#[derive(Debug, Error)]
+pub(crate) enum WebhookError {
+    /// The address is taken or not ours.
+    #[error("cannot listen on {addr}: {source}")]
+    Bind {
+        addr: SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 /// The receiver's settings, from the command line.
 #[derive(Debug, Clone)]
@@ -514,11 +527,11 @@ impl Receiver {
 }
 
 /// Serves `receiver` until the process ends.
-pub(crate) async fn serve(receiver: Arc<Receiver>) -> Result<(), String> {
+pub(crate) async fn serve(receiver: Arc<Receiver>) -> Result<(), WebhookError> {
     let addr = receiver.settings.addr;
     let listener = TcpListener::bind(addr)
         .await
-        .map_err(|e| format!("cannot listen on {addr}: {e}"))?;
+        .map_err(|source| WebhookError::Bind { addr, source })?;
     tracing::info!(%addr, prefix = %receiver.settings.prefix, "webhook receiver listening");
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {

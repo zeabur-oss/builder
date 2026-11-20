@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use futures_util::Stream;
 use kube::Client;
-use kube_lease_manager::{LeaseManager, LeaseManagerBuilder};
+use kube_lease_manager::{LeaseManager, LeaseManagerBuilder, LeaseManagerError};
+use thiserror::Error;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -20,6 +21,18 @@ use tokio::task::JoinHandle;
 pub(crate) const LEASE: &str = "zeabur-builder";
 /// How long a stopped replica may take to give the Lease back.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Why the Lease could not be set up.
+#[derive(Debug, Error)]
+pub(crate) enum LeaderError {
+    /// The Lease manager refused its settings or the API server.
+    #[error("Lease `{LEASE}` in `{namespace}`: {source}")]
+    Lease {
+        namespace: String,
+        #[source]
+        source: LeaseManagerError,
+    },
+}
 
 /// Whether this replica holds the Lease.
 #[derive(Debug, Clone)]
@@ -65,15 +78,15 @@ pub(crate) async fn elect(
     client: Client,
     namespace: &str,
     identity: Option<String>,
-) -> Result<(Leader, Election), String> {
+) -> Result<(Leader, Election), LeaderError> {
     let mut builder = LeaseManagerBuilder::new(client, LEASE).with_namespace(namespace);
     if let Some(identity) = identity {
         builder = builder.with_identity(identity);
     }
-    let manager = builder
-        .build()
-        .await
-        .map_err(|e| format!("Lease `{LEASE}` in `{namespace}`: {e}"))?;
+    let manager = builder.build().await.map_err(|source| LeaderError::Lease {
+        namespace: namespace.to_owned(),
+        source,
+    })?;
     let (state, task) = manager.watch().await;
     Ok((Leader(state), Election(task)))
 }

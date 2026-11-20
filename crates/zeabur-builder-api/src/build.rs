@@ -10,7 +10,6 @@ use kube::{CustomResource, KubeSchema};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::build_run::Reason;
 use crate::common::{
     Condition, DIGEST_PATTERN, DURATION_PATTERN, MAX_NAME, MAX_REVISION, REVISION_PATTERN,
     SecretKeyRef, SecretRef,
@@ -509,31 +508,7 @@ pub enum ConditionReason {
     Succeeded,
     /// `Ready`: the latest finished run failed without a reason.
     Failed,
-    /// `Ready`: the latest finished run failed or was cancelled for [`Reason::QuotaExceeded`].
-    QuotaExceeded,
-    /// `Ready`: [`Reason::InsufficientResources`].
-    InsufficientResources,
-    /// `Ready`: [`Reason::BuildkitdStarting`].
-    BuildkitdStarting,
-    /// `Ready`: [`Reason::RegistryCredentialsMissing`].
-    RegistryCredentialsMissing,
-    /// `Ready`: [`Reason::ModelKeyMissing`].
-    ModelKeyMissing,
-    /// `Ready`: [`Reason::SourceFailed`].
-    SourceFailed,
-    /// `Ready`: [`Reason::PlanFailed`].
-    PlanFailed,
-    /// `Ready`: [`Reason::BuildFailed`].
-    BuildFailed,
-    /// `Ready`: [`Reason::OutOfMemory`].
-    OutOfMemory,
-    /// `Ready`: [`Reason::Timeout`].
-    Timeout,
-    /// `Ready`: [`Reason::Cancelled`].
-    Cancelled,
-    /// `Ready`: [`Reason::InfraError`].
-    InfraError,
-    /// `Ready`: the run's reason is one this version does not know.
+    /// A reason this version does not know.
     #[serde(other)]
     Unknown,
 }
@@ -544,29 +519,10 @@ impl std::fmt::Display for ConditionReason {
     }
 }
 
-impl From<Reason> for ConditionReason {
-    fn from(reason: Reason) -> Self {
-        match reason {
-            Reason::QuotaExceeded => Self::QuotaExceeded,
-            Reason::InsufficientResources => Self::InsufficientResources,
-            Reason::BuildkitdStarting => Self::BuildkitdStarting,
-            Reason::RegistryCredentialsMissing => Self::RegistryCredentialsMissing,
-            Reason::ModelKeyMissing => Self::ModelKeyMissing,
-            Reason::SourceFailed => Self::SourceFailed,
-            Reason::PlanFailed => Self::PlanFailed,
-            Reason::BuildFailed => Self::BuildFailed,
-            Reason::OutOfMemory => Self::OutOfMemory,
-            Reason::Timeout => Self::Timeout,
-            Reason::Cancelled => Self::Cancelled,
-            Reason::InfraError => Self::InfraError,
-            Reason::Unknown => Self::Unknown,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build_run::{Phase, Reason};
 
     #[test]
     fn a_condition_reason_is_written_as_its_name() {
@@ -583,25 +539,8 @@ mod tests {
     }
 
     #[test]
-    fn a_run_reason_is_the_same_word_in_the_ready_condition() {
-        for reason in [
-            Reason::QuotaExceeded,
-            Reason::BuildkitdStarting,
-            Reason::RegistryCredentialsMissing,
-            Reason::ModelKeyMissing,
-            Reason::SourceFailed,
-            Reason::PlanFailed,
-            Reason::BuildFailed,
-            Reason::OutOfMemory,
-            Reason::Timeout,
-            Reason::Cancelled,
-            Reason::InfraError,
-            Reason::Unknown,
-        ] {
-            assert_eq!(
-                ConditionReason::from(reason).to_string(),
-                serde_json::to_value(reason).unwrap().as_str().unwrap()
-            );
-        }
+    fn a_run_reason_is_written_as_its_name() {
+        assert_eq!(Reason::OutOfMemory.to_string(), "OutOfMemory");
+        assert_eq!(Phase::Succeeded.to_string(), "Succeeded");
     }
 }

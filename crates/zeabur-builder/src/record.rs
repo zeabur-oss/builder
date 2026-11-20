@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use jiff::Timestamp;
 use k8s_openapi::api::core::v1::ConfigMap;
 use kube::api::{Api, DeleteParams, ListParams, ObjectMeta, PostParams, Preconditions};
+use thiserror::Error;
 use zeabur_builder_api::labels;
 
 /// Selects the records among the controller's `ConfigMap`s.
@@ -19,6 +20,27 @@ const NAMESPACE: &str = "namespace";
 const NAME: &str = "name";
 const REPOSITORIES: &str = "repositories";
 const TOKENS_UNTIL: &str = "tokensUntil";
+
+/// Why a record could not be read or written.
+#[derive(Debug, Error)]
+pub(crate) enum RecordError {
+    /// The API server refused.
+    #[error(transparent)]
+    Kube(#[from] kube::Error),
+    /// The `ConfigMap` lacks a key.
+    #[error("ConfigMap `{name}` has no {key}")]
+    Missing { name: String, key: &'static str },
+    /// The time the tokens last until is no time.
+    #[error("ConfigMap `{name}`: {}: {source}", TOKENS_UNTIL)]
+    TokensUntil {
+        name: String,
+        #[source]
+        source: jiff::Error,
+    },
+    /// The `ConfigMap`'s name is not the hash of the `Build` it names.
+    #[error("ConfigMap `{name}` names another Build")]
+    Foreign { name: String },
+}
 
 /// The repositories the controller pushed to for one `Build`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,12 +86,15 @@ impl Record {
         }
     }
 
-    fn from_config_map(config_map: &ConfigMap) -> Result<Self, String> {
+    fn from_config_map(config_map: &ConfigMap) -> Result<Self, RecordError> {
         let name = config_map.metadata.name.as_deref().unwrap_or_default();
         let data = config_map.data.as_ref();
-        let field = |key: &str| {
+        let field = |key: &'static str| {
             data.and_then(|d| d.get(key))
-                .ok_or_else(|| format!("ConfigMap `{name}` has no {key}"))
+                .ok_or_else(|| RecordError::Missing {
+                    name: name.to_owned(),
+                    key,
+                })
         };
         let record = Self {
             namespace: field(NAMESPACE)?.clone(),
@@ -79,12 +104,17 @@ impl Record {
                 .filter(|l| !l.is_empty())
                 .map(str::to_owned)
                 .collect(),
-            tokens_until: field(TOKENS_UNTIL)?
-                .parse()
-                .map_err(|e| format!("ConfigMap `{name}`: {TOKENS_UNTIL}: {e}"))?,
+            tokens_until: field(TOKENS_UNTIL)?.parse().map_err(|source| {
+                RecordError::TokensUntil {
+                    name: name.to_owned(),
+                    source,
+                }
+            })?,
         };
         if object_name(&record.namespace, &record.name) != name {
-            return Err(format!("ConfigMap `{name}` names another Build"));
+            return Err(RecordError::Foreign {
+                name: name.to_owned(),
+            });
         }
         Ok(record)
     }
@@ -98,9 +128,9 @@ pub(crate) async fn add(
     name: &str,
     repository: &str,
     until: Timestamp,
-) -> Result<(), String> {
+) -> Result<(), RecordError> {
     let object = object_name(namespace, name);
-    let existing = api.get_opt(&object).await.map_err(|e| e.to_string())?;
+    let existing = api.get_opt(&object).await?;
     let mut record = match &existing {
         Some(config_map) => Record::from_config_map(config_map)?,
         None => Record {
@@ -111,7 +141,7 @@ pub(crate) async fn add(
         },
     };
     if record.namespace != namespace || record.name != name {
-        return Err(format!("ConfigMap `{object}` names another Build"));
+        return Err(RecordError::Foreign { name: object });
     }
     let added = record.repositories.insert(repository.to_owned());
     if !added && record.tokens_until >= until {
@@ -127,7 +157,7 @@ pub(crate) async fn add(
         }
         None => api.create(&PostParams::default(), &config_map).await,
     };
-    result.map(drop).map_err(|e| e.to_string())
+    result.map(drop).map_err(RecordError::from)
 }
 
 /// The record of the `Build` `namespace/name` and its resource version, if there is one.
@@ -135,11 +165,10 @@ pub(crate) async fn get(
     api: &Api<ConfigMap>,
     namespace: &str,
     name: &str,
-) -> Result<Option<(Record, String)>, String> {
+) -> Result<Option<(Record, String)>, RecordError> {
     let object = object_name(namespace, name);
     api.get_opt(&object)
-        .await
-        .map_err(|e| e.to_string())?
+        .await?
         .map(|c| {
             let version = c.metadata.resource_version.clone().unwrap_or_default();
             Record::from_config_map(&c).map(|r| (r, version))
@@ -148,13 +177,13 @@ pub(crate) async fn get(
 }
 
 /// Every record.
-pub(crate) async fn list(api: &Api<ConfigMap>, page: u32) -> Result<Vec<Record>, String> {
+pub(crate) async fn list(api: &Api<ConfigMap>, page: u32) -> Result<Vec<Record>, RecordError> {
     let mut params = ListParams::default()
         .labels(&format!("{LABEL}=true"))
         .limit(page);
     let mut all = Vec::new();
     loop {
-        let list = api.list(&params).await.map_err(|e| e.to_string())?;
+        let list = api.list(&params).await?;
         for config_map in &list.items {
             match Record::from_config_map(config_map) {
                 Ok(record) => all.push(record),
@@ -174,7 +203,7 @@ pub(crate) async fn remove(
     namespace: &str,
     name: &str,
     version: &str,
-) -> Result<(), String> {
+) -> Result<(), RecordError> {
     let params = DeleteParams {
         preconditions: Some(Preconditions {
             resource_version: Some(version.to_owned()),
@@ -185,7 +214,7 @@ pub(crate) async fn remove(
     match api.delete(&object_name(namespace, name), &params).await {
         Ok(_) => Ok(()),
         Err(kube::Error::Api(e)) if e.code == 404 || e.code == 409 => Ok(()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -206,7 +235,7 @@ mod tests {
     fn a_record_reads_back_as_written() {
         let record = record();
         let config_map = record.to_config_map();
-        assert_eq!(Record::from_config_map(&config_map), Ok(record));
+        assert_eq!(Record::from_config_map(&config_map).unwrap(), record);
         assert_eq!(
             config_map.data.unwrap()[REPOSITORIES],
             "team-a/api\nteam-a/api/source"

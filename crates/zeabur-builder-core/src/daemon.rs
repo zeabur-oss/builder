@@ -26,11 +26,7 @@ pub fn name(namespace: &str) -> String {
         return format!("{PREFIX}{namespace}");
     }
     let digest = Sha256::digest(namespace.as_bytes());
-    let mut bytes = [0_u8; 4];
-    for (to, from) in bytes.iter_mut().zip(digest.iter()) {
-        *to = *from;
-    }
-    let hash = format!("{:08x}", u32::from_be_bytes(bytes));
+    let hash = crate::archive::hex(digest.first_chunk::<4>().map_or(&[], |first| first));
     let keep = MAX_NAME - PREFIX.len() - 1 - hash.len();
     let head = namespace.get(..keep).unwrap_or(namespace);
     format!("{PREFIX}{head}-{hash}")
