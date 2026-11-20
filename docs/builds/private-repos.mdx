@@ -3,11 +3,11 @@ title: Build private repositories
 description: Use credentialsRef or a GitHub App to give Build access to private repository code and trigger builds.
 ---
 
-Use `spec.source.credentialsRef` to reference a Secret with a basic-auth token or an ssh-auth deploy key to access a private repository. Deploy keys require `known_hosts`, and the Secret must have the required label. For private GitHub repositories, you can also use a GitHub App to give Build a short-lived installation token.
+Use `spec.source.git.credentialsRef` to reference a Secret with a basic-auth token or an ssh-auth deploy key to access a private repository. Deploy keys require `known_hosts`, and the Secret must have the required label. For private GitHub repositories, you can also use a GitHub App to give Build a short-lived installation token.
 
 ## Use credentialsRef
 
-Point `spec.source.credentialsRef` to the Secret that holds the credentials. The Secret supports these two types:
+Point `spec.source.git.credentialsRef` to the Secret that holds the credentials. The Secret supports these two types:
 
 | Secret type | Contents |
 | --- | --- |
@@ -50,13 +50,15 @@ Install the App on the accounts that own the repositories you build. The install
 
 ### Specify the installation in a Build
 
-Set the installation ID in the Build's `spec.source.githubApp`. It needs an `https://` Git URL and can't be combined with `credentialsRef`:
+Set the installation ID in the Build's `spec.source.git.githubApp`. It needs an `https://` Git URL and can't be combined with `credentialsRef`:
 
 ```yaml
 spec:
   source:
-    git: {url: https://github.com/acme/private-api}
-    githubApp: {installationId: 12345678}
+    type: git
+    git:
+      url: https://github.com/acme/private-api
+      githubApp: {installationId: 12345678}
 ```
 
 </Step>

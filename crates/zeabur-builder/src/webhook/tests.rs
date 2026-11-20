@@ -61,7 +61,7 @@ fn build(
     source: &serde_json::Value,
 ) -> Arc<Build> {
     let mut spec = json!({
-        "source": {"git": {"url": url, "ref": git_ref}},
+        "source": {"type": "git", "git": {"url": url, "ref": git_ref}},
         "builderRef": "dockerfile",
         "triggers": {"webhook": {"secretRef": {"name": "hook", "key": "secret"}}},
     });
@@ -69,7 +69,7 @@ fn build(
         for (k, v) in extra {
             match k.as_str() {
                 "githubApp" => {
-                    spec["source"]["githubApp"] = v.clone();
+                    spec["source"]["git"]["githubApp"] = v.clone();
                     spec["triggers"] = json!({});
                 }
                 _ => spec[k] = v.clone(),

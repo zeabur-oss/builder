@@ -49,7 +49,7 @@ apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: node-hello, namespace: team-a}
 spec:
-  source: {git: {url: https://github.com/heroku/node-js-getting-started, ref: main}}
+  source: {type: git, git: {url: https://github.com/heroku/node-js-getting-started, ref: main}}
   builderRef: agent
 ```
 
@@ -127,7 +127,7 @@ mkdir plan && oras blob fetch --output - "${plan%@*}@$layer" | tar -xz -C plan
 | run 停在 `ModelKeyMissing` 等待，訊息說找不到 `model` Secret 或 `anthropic` 鍵 | 在 Build 所在的 Namespace 建立 Secret 或補上鍵。補好後 run 會自己開始，等待時不會建立 Job。 |
 | run 以 `PlanFailed` 失敗 | 從 `status.plan.stopped` 看停止原因，從 `status.message` 看要怎麼處理。 |
 | `stopped` 是 `ModelKeyMissing` 或 `ModelFailed` | 檢查金鑰與 `status.message`。金鑰缺少或被拒絕是 `ModelKeyMissing`；模型 API 拒絕要求或要求失敗是 `ModelFailed`。 |
-| `stopped` 是 `SeveralApps` | 在 `spec.source.git.contextDir` 指定應用程式所在的資料夾。 |
+| `stopped` 是 `SeveralApps` | 在 `spec.source.contextDir` 指定應用程式所在的資料夾。 |
 | `stopped` 是 `NeedsBuildVariable` | 試建置拿不到 Build 的變數，所以 agent 寫不完這個 Dockerfile。請自己寫 Dockerfile，用 `RUN --mount=type=secret,id=NAME,env=NAME` 讀變數，放進儲存庫，把 `builderRef` 改成 `dockerfile`，再在 `spec.env` 設定變數。 |
 | `stopped` 是 `NoAppFound`、`NeedsPrivateDependency` 或 `UnsupportedPlatform` | `status.message` 會說明應用程式、私有相依套件或平台需要什麼。 |
 | `stopped` 是 `BudgetSpent` 或 `BuildKeepsFailing` | 檢視 `status.message`。`BudgetSpent` 表示到了上限：模型呼叫次數、建置失敗次數、時間或 token。 |

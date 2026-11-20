@@ -317,7 +317,7 @@ pub(crate) fn candidates(
         .iter()
         .filter(|b| !b.spec.suspend)
         .filter(|b| match provider {
-            Provider::GitHubApp => b.spec.source.github_app.is_some(),
+            Provider::GitHubApp => b.spec.source.github_app().is_some(),
             Provider::GitHub
             | Provider::GitLab
             | Provider::Gitea
@@ -325,7 +325,7 @@ pub(crate) fn candidates(
             | Provider::Generic => b.spec.triggers.webhook.is_some(),
         })
         .filter(|b| {
-            b.spec.source.git.as_ref().is_some_and(|git| {
+            b.spec.source.git().is_some_and(|git| {
                 RepoKey::parse(&git.url).is_ok_and(|k| repositories.contains(&k))
             })
         })
@@ -371,7 +371,7 @@ pub(crate) fn pushed(build: &Build, refs: &[String]) -> bool {
         .status
         .as_ref()
         .and_then(|s| s.resolved_ref.as_deref());
-    let Some(git) = &build.spec.source.git else {
+    let Some(git) = build.spec.source.git() else {
         return false;
     };
     refs.iter()

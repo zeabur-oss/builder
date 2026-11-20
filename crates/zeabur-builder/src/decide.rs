@@ -43,8 +43,8 @@ pub(crate) const APP_POLL: Duration = Duration::from_mins(10);
 pub(crate) const WAKE_GAP: Duration = Duration::from_secs(5);
 
 /// The polling interval of a `Build` that sets none.
-pub(crate) const fn default_poll(build: &Build, receiving: bool) -> Duration {
-    if receiving && build.spec.source.github_app.is_some() {
+pub(crate) fn default_poll(build: &Build, receiving: bool) -> Duration {
+    if receiving && build.spec.source.github_app().is_some() {
         APP_POLL
     } else {
         DEFAULT_POLL
@@ -188,18 +188,10 @@ pub(crate) fn builder_ready(found: bool, name: &str) -> (ConditionStatus, Condit
     }
 }
 
-/// The `SourceReady` condition of a `Build` with no `git` source, and the digest it builds.
+/// The `SourceReady` condition of a `Build` with an archive source, and the digest it builds.
 pub(crate) fn archive_source(
-    archive: Option<&ArchiveSource>,
+    archive: &ArchiveSource,
 ) -> (ConditionStatus, ConditionReason, String, Option<String>) {
-    let Some(archive) = archive else {
-        return (
-            ConditionStatus::False,
-            ConditionReason::NoSource,
-            "set git or archive".to_owned(),
-            None,
-        );
-    };
     let Some(digest) = &archive.digest else {
         return (
             ConditionStatus::False,
@@ -1047,14 +1039,9 @@ pub(crate) fn tags(build: &Build, run: &BuildRun) -> Result<Vec<String>, TagErro
     let template = output
         .and_then(|o| o.tag_template.as_deref())
         .unwrap_or(tag::DEFAULT_TEMPLATE);
-    let branch = build
-        .spec
-        .source
-        .git
-        .as_ref()
-        .map_or(ARCHIVE_BRANCH, |git| {
-            short_ref(run.spec.git_ref.as_deref().unwrap_or(&git.git_ref))
-        });
+    let branch = build.spec.source.git().map_or(ARCHIVE_BRANCH, |git| {
+        short_ref(run.spec.git_ref.as_deref().unwrap_or(&git.git_ref))
+    });
     let sha = run
         .spec
         .revision

@@ -7,7 +7,7 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{OwnerReference, Time};
 use zeabur_builder_api::build::{
     ArchiveSource, BuildSpec, GitHubAppSource, GitSource, NotifyTarget, NotifyType, OutputSpec,
-    SourceSpec, TriggerSpec,
+    SourceKind, SourceSpec, TriggerSpec,
 };
 use zeabur_builder_api::build_run::BuildRunSpec;
 
@@ -18,10 +18,15 @@ const B: &str = "0123456789abcdef0123456789abcdef01234567";
 const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const PLAN: &str = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
-fn set_ref(build: &mut Build, git_ref: &str) {
-    if let Some(git) = &mut build.spec.source.git {
-        git.git_ref = git_ref.to_owned();
+fn git(build: &mut Build) -> &mut GitSource {
+    match &mut build.spec.source.kind {
+        SourceKind::Git { git } => git,
+        SourceKind::Archive { .. } => panic!("an archive source"),
     }
+}
+
+fn set_ref(build: &mut Build, git_ref: &str) {
+    git(build).git_ref = git_ref.to_owned();
 }
 
 fn ts(at: &str) -> Timestamp {
@@ -37,15 +42,16 @@ fn build() -> Build {
         "api",
         BuildSpec {
             source: SourceSpec {
-                git: Some(GitSource {
-                    url: "https://github.com/acme/api".to_owned(),
-                    git_ref: "main".to_owned(),
-                    context_dir: None,
-                    dockerfile: None,
-                }),
-                archive: None,
-                credentials_ref: None,
-                github_app: None,
+                kind: SourceKind::Git {
+                    git: GitSource {
+                        url: "https://github.com/acme/api".to_owned(),
+                        git_ref: "main".to_owned(),
+                        credentials_ref: None,
+                        github_app: None,
+                    },
+                },
+                context_dir: None,
+                dockerfile: None,
             },
             builder_ref: "dockerfile".to_owned(),
             output: None,
@@ -269,7 +275,7 @@ fn webhooks_wake_from_status_and_wait_out_the_gap() {
 fn app_sources_poll_less_when_webhooks_arrive() {
     let mut build = build();
     assert_eq!(default_poll(&build, true), DEFAULT_POLL);
-    build.spec.source.github_app = Some(GitHubAppSource { installation_id: 1 });
+    git(&mut build).github_app = Some(GitHubAppSource { installation_id: 1 });
     assert_eq!(default_poll(&build, true), APP_POLL);
     assert_eq!(default_poll(&build, false), DEFAULT_POLL);
 }
@@ -876,12 +882,11 @@ fn image_and_tags() {
 #[test]
 fn archive_tags_use_the_digest() {
     let mut build = build();
-    build.spec.source.git = None;
-    build.spec.source.archive = Some(ArchiveSource {
-        digest: Some(DIGEST.to_owned()),
-        context_dir: None,
-        dockerfile: None,
-    });
+    build.spec.source.kind = SourceKind::Archive {
+        archive: ArchiveSource {
+            digest: Some(DIGEST.to_owned()),
+        },
+    };
     let run = run("api-x7k2p", DIGEST, None, "2025-10-21T15:00:00Z");
     assert_eq!(tags(&build, &run).unwrap(), ["archive-1761058800-0123456"]);
 }
@@ -1692,23 +1697,17 @@ fn a_missing_builder_and_a_found_one_set_builder_ready() {
 fn an_archive_source_sets_source_ready_by_its_digest() {
     let archive = |digest: Option<&str>| ArchiveSource {
         digest: digest.map(str::to_owned),
-        context_dir: None,
-        dockerfile: None,
     };
-    let reason = |archive: Option<&ArchiveSource>| {
+    let reason = |archive: &ArchiveSource| {
         let (status, reason, _, digest) = archive_source(archive);
         (status, reason.to_string(), digest)
     };
     assert_eq!(
-        reason(None),
-        (ConditionStatus::False, "NoSource".to_owned(), None)
-    );
-    assert_eq!(
-        reason(Some(&archive(None))),
+        reason(&archive(None)),
         (ConditionStatus::False, "WaitingForUpload".to_owned(), None)
     );
     assert_eq!(
-        reason(Some(&archive(Some(DIGEST)))),
+        reason(&archive(Some(DIGEST))),
         (
             ConditionStatus::True,
             "Archive".to_owned(),

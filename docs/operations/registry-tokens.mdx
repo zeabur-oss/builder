@@ -28,7 +28,7 @@ If a Build's image is hosted at `registry.host` but its repository path doesn't 
 
 ### Request an upload token
 
-The Build must have `spec.source.archive`. Set its `builder.zeabur.com/upload-token-request` annotation to a new value of 1 to 63 characters. The controller creates the Secret `<build>-upload` and reports the request value in `.status.uploadToken.request`.
+The Build's `spec.source.type` must be `archive`. Set its `builder.zeabur.com/upload-token-request` annotation to a new value of 1 to 63 characters. The controller creates the Secret `<build>-upload` and reports the request value in `.status.uploadToken.request`.
 
 ```sh
 kubectl -n team-a annotate build/api --overwrite builder.zeabur.com/upload-token-request=u1

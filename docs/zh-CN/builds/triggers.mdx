@@ -7,7 +7,7 @@ description: 配置轮询与 push webhook、手动重新构建，并选择新 co
 
 ## 轮询
 
-控制器默认每分钟向 Git 服务器查询 ref。控制器接收 webhook 时，使用 `spec.source.githubApp` 的 Build 改为每 10 分钟查询一次。轮询间隔由 `spec.triggers.pollInterval` 配置。
+控制器默认每分钟向 Git 服务器查询 ref。控制器接收 webhook 时，使用 `spec.source.git.githubApp` 的 Build 改为每 10 分钟查询一次。轮询间隔由 `spec.triggers.pollInterval` 配置。
 
 ## 配置 push webhook
 

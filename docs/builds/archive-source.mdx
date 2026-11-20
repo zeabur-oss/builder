@@ -78,11 +78,12 @@ kind: Build
 metadata: {name: api, namespace: team-a}
 spec:
   source:
+    type: archive
     archive: {digest: "sha256:<manifest digest>"}
   builderRef: railpack
 ```
 
-Set exactly one of `git` or `archive` in `source`. Archive sources support `contextDir` and `dockerfile`, as Git sources do, but don't support `credentialsRef`, `githubApp`, or webhook triggers.
+`source.type` is `git` or `archive`. Archive sources support `contextDir` and `dockerfile`, as Git sources do, but don't support webhook triggers.
 
 To build newly uploaded content, update `digest`.
 

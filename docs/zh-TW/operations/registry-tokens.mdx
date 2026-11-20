@@ -28,7 +28,7 @@ registry 只信任一把 Ed25519 金鑰，只有控制器能讀取這把金鑰�
 
 ### 申請 upload 權杖
 
-Build 必須設定 `spec.source.archive`。將它的 annotation `builder.zeabur.com/upload-token-request` 設為 1 到 63 個字元的新值。控制器會建立 Secret `<build>-upload`，並在 `.status.uploadToken.request` 回報這次請求的值。
+Build 的 `spec.source.type` 必須是 `archive`。將它的 annotation `builder.zeabur.com/upload-token-request` 設為 1 到 63 個字元的新值。控制器會建立 Secret `<build>-upload`，並在 `.status.uploadToken.request` 回報這次請求的值。
 
 ```sh
 kubectl -n team-a annotate build/api --overwrite builder.zeabur.com/upload-token-request=u1

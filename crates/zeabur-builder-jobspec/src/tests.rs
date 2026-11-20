@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use pretty_assertions::assert_eq;
 use zeabur_builder_api::build::{
-    ArchiveSource, BuildSpec, Concurrency, EnvVarSource, GitSource, SourceSpec, TriggerSpec,
+    ArchiveSource, BuildSpec, Concurrency, EnvVarSource, GitSource, SourceKind, SourceSpec,
+    TriggerSpec,
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{FrontendSpec, ModelSpec, PlannerSpec};
@@ -25,15 +26,16 @@ fn build(url: &str, context_dir: Option<&str>, env: Vec<BuildEnvVar>) -> Build {
         "api",
         BuildSpec {
             source: SourceSpec {
-                git: Some(GitSource {
-                    url: url.to_owned(),
-                    git_ref: "main".to_owned(),
-                    context_dir: context_dir.map(str::to_owned),
-                    dockerfile: None,
-                }),
-                archive: None,
-                credentials_ref: None,
-                github_app: None,
+                kind: SourceKind::Git {
+                    git: GitSource {
+                        url: url.to_owned(),
+                        git_ref: "main".to_owned(),
+                        credentials_ref: None,
+                        github_app: None,
+                    },
+                },
+                context_dir: context_dir.map(str::to_owned),
+                dockerfile: None,
             },
             builder_ref: "dockerfile".to_owned(),
             output: None,
@@ -52,14 +54,13 @@ fn build(url: &str, context_dir: Option<&str>, env: Vec<BuildEnvVar>) -> Build {
 fn archive_build(namespace: &str) -> Build {
     let mut build = build("https://unused.example", None, Vec::new());
     build.spec.source = SourceSpec {
-        git: None,
-        archive: Some(ArchiveSource {
-            digest: Some(DIGEST.to_owned()),
-            context_dir: Some("app".to_owned()),
-            dockerfile: None,
-        }),
-        credentials_ref: None,
-        github_app: None,
+        kind: SourceKind::Archive {
+            archive: ArchiveSource {
+                digest: Some(DIGEST.to_owned()),
+            },
+        },
+        context_dir: Some("app".to_owned()),
+        dockerfile: None,
     };
     build.metadata.namespace = Some(namespace.to_owned());
     build
@@ -204,9 +205,7 @@ fn dockerfile_in_a_monorepo() {
         Some("services/api"),
         Vec::new(),
     );
-    if let Some(git) = &mut build.spec.source.git {
-        git.dockerfile = Some("docker/Dockerfile.prod".to_owned());
-    }
+    build.spec.source.dockerfile = Some("docker/Dockerfile.prod".to_owned());
     let builder = dockerfile();
     let tags = tags();
     let job = job(&inputs(

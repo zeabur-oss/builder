@@ -53,7 +53,7 @@ pub const RELATIVE_PATH_PATTERN: &str =
 /// kind: Build
 /// metadata: {name: api, namespace: team-a}
 /// spec:
-///   source: {git: {url: https://github.com/acme/api, ref: main}}
+///   source: {type: git, git: {url: https://github.com/acme/api, ref: main}}
 ///   builderRef: railpack
 /// ```
 #[derive(CustomResource, KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub const RELATIVE_PATH_PATTERN: &str =
     doc = "A Git ref or an uploaded archive that Zeabur Builder keeps built into a container image."
 )]
 #[x_kube(
-    validation = Rule::new("!has(self.source.archive) || !has(self.triggers.webhook)").message("an archive source has no webhook trigger")
+    validation = Rule::new("self.source.type != 'archive' || !has(self.triggers.webhook)").message("an archive source has no webhook trigger")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BuildSpec {
@@ -126,31 +126,74 @@ pub struct BuildSpec {
     pub suspend: bool,
 }
 
-/// The source: a Git repository or an uploaded archive.
-#[derive(KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[x_kube(
-    validation = Rule::new("has(self.git) != has(self.archive)").message("set exactly one of git and archive"),
-    validation = Rule::new("has(self.git) || !(has(self.credentialsRef) || has(self.githubApp))").message("credentialsRef and githubApp need a git source"),
-    validation = Rule::new("!(has(self.credentialsRef) && has(self.githubApp))").message("set at most one of credentialsRef and githubApp"),
-    validation = Rule::new("!has(self.githubApp) || (has(self.git) && self.git.url.startsWith('https://'))").message("a githubApp source needs an https URL"),
-)]
+/// The source: a Git repository or an uploaded archive, and where the build context is in it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceSpec {
-    /// The Git repository.
+    /// Git or archive.
+    #[serde(flatten)]
+    pub kind: SourceKind,
+    /// The build context inside the source, for monorepos.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git: Option<GitSource>,
+    #[schemars(length(max = MAX_PATH), regex(pattern = RELATIVE_PATH_PATTERN))]
+    pub context_dir: Option<String>,
+    /// The Dockerfile, relative to the context, for the `dockerfile` builder. Default
+    /// `Dockerfile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = MAX_PATH), regex(pattern = RELATIVE_PATH_PATTERN))]
+    pub dockerfile: Option<String>,
+}
+
+/// Where the source comes from.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[schemars(transform = crate::union::tagged)]
+pub enum SourceKind {
+    /// A Git repository.
+    Git {
+        /// The repository, its ref and how to reach it.
+        git: GitSource,
+    },
     /// An archive pushed as an OCI artifact to `<registry>/<namespace>/<name>/source`
     /// (`docs/builds/archive-source.mdx`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub archive: Option<ArchiveSource>,
-    /// Credentials for a plain Git server: a `kubernetes.io/ssh-auth` Secret (with `known_hosts`)
-    /// or a `kubernetes.io/basic-auth` one, labelled `builder.zeabur.com/git-credentials: "true"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credentials_ref: Option<SecretRef>,
-    /// Reach the repository through an installation of the cluster's GitHub App, which a cluster
-    /// admin has allowed for this namespace.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub github_app: Option<GitHubAppSource>,
+    Archive {
+        /// The archive's digest.
+        #[serde(default)]
+        archive: ArchiveSource,
+    },
+}
+
+impl SourceSpec {
+    /// The Git repository, unless the source is an archive.
+    #[must_use]
+    pub const fn git(&self) -> Option<&GitSource> {
+        match &self.kind {
+            SourceKind::Git { git } => Some(git),
+            SourceKind::Archive { .. } => None,
+        }
+    }
+
+    /// The GitHub App installation a Git source is reached through.
+    #[must_use]
+    pub fn github_app(&self) -> Option<&GitHubAppSource> {
+        self.git().and_then(|git| git.github_app.as_ref())
+    }
+
+    /// The Secret a plain Git source authenticates with.
+    #[must_use]
+    pub fn credentials_ref(&self) -> Option<&SecretRef> {
+        self.git().and_then(|git| git.credentials_ref.as_ref())
+    }
+
+    /// How the source is reached.
+    #[must_use]
+    pub const fn mode(&self) -> SourceMode {
+        match &self.kind {
+            SourceKind::Git { git } if git.github_app.is_some() => SourceMode::GitHubApp,
+            SourceKind::Git { .. } => SourceMode::PlainGit,
+            SourceKind::Archive { .. } => SourceMode::Archive,
+        }
+    }
 }
 
 /// An installation of the cluster's GitHub App.
@@ -162,8 +205,12 @@ pub struct GitHubAppSource {
     pub installation_id: i64,
 }
 
-/// A Git repository and ref.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+/// A Git repository and ref, and how to reach it.
+#[derive(KubeSchema, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[x_kube(
+    validation = Rule::new("!(has(self.credentialsRef) && has(self.githubApp))").message("set at most one of credentialsRef and githubApp"),
+    validation = Rule::new("!has(self.githubApp) || self.url.startsWith('https://')").message("a githubApp source needs an https URL"),
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GitSource {
     /// `https://`, `ssh://` or `user@host:path`.
@@ -174,57 +221,25 @@ pub struct GitSource {
     #[schemars(length(min = 1, max = MAX_REF))]
     #[serde(rename = "ref", default = "default_ref")]
     pub git_ref: String,
-    /// The build context inside the repository, for monorepos.
+    /// Credentials for a plain Git server: a `kubernetes.io/ssh-auth` Secret (with `known_hosts`)
+    /// or a `kubernetes.io/basic-auth` one, labelled `builder.zeabur.com/git-credentials: "true"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_PATH), regex(pattern = RELATIVE_PATH_PATTERN))]
-    pub context_dir: Option<String>,
-    /// The Dockerfile, relative to the context, for the `dockerfile` builder. Default
-    /// `Dockerfile`.
+    pub credentials_ref: Option<SecretRef>,
+    /// Reach the repository through an installation of the cluster's GitHub App, which a cluster
+    /// admin has allowed for this namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_PATH), regex(pattern = RELATIVE_PATH_PATTERN))]
-    pub dockerfile: Option<String>,
+    pub github_app: Option<GitHubAppSource>,
 }
 
 /// An uploaded archive. The repository follows from the `Build`'s namespace and name, so a
 /// `Build` reads only its own archives.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveSource {
     /// The artifact's manifest digest. Unset: the `Build` waits for an upload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 71), regex(pattern = DIGEST_PATTERN))]
     pub digest: Option<String>,
-    /// The build context inside the archive.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_PATH), regex(pattern = RELATIVE_PATH_PATTERN))]
-    pub context_dir: Option<String>,
-    /// The Dockerfile, relative to the context, for the `dockerfile` builder. Default
-    /// `Dockerfile`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(length(max = MAX_PATH), regex(pattern = RELATIVE_PATH_PATTERN))]
-    pub dockerfile: Option<String>,
-}
-
-impl SourceSpec {
-    /// The build context inside the source.
-    #[must_use]
-    pub fn context_dir(&self) -> Option<&str> {
-        match (&self.git, &self.archive) {
-            (Some(git), _) => git.context_dir.as_deref(),
-            (None, Some(archive)) => archive.context_dir.as_deref(),
-            (None, None) => None,
-        }
-    }
-
-    /// The Dockerfile, relative to the context.
-    #[must_use]
-    pub fn dockerfile(&self) -> Option<&str> {
-        match (&self.git, &self.archive) {
-            (Some(git), _) => git.dockerfile.as_deref(),
-            (None, Some(archive)) => archive.dockerfile.as_deref(),
-            (None, None) => None,
-        }
-    }
 }
 
 fn default_ref() -> String {
@@ -466,8 +481,6 @@ pub enum SourceMode {
 /// The `reason` of a `Build` or `ClusterBuilder` condition, written as its name.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConditionReason {
-    /// `SourceReady`: neither `git` nor `archive` is set.
-    NoSource,
     /// `SourceReady`: the archive has no digest yet.
     WaitingForUpload,
     /// `SourceReady`: the archive's digest is set.

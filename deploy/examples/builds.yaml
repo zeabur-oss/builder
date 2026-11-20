@@ -15,33 +15,33 @@ apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: whoami, namespace: team-b}
 spec:
-  source: {git: {url: https://github.com/traefik/whoami}}
+  source: {type: git, git: {url: https://github.com/traefik/whoami}}
   builderRef: dockerfile
 ---
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: whoami, namespace: team-a}
 spec:
-  source: {git: {url: https://github.com/traefik/whoami}}
+  source: {type: git, git: {url: https://github.com/traefik/whoami}}
   builderRef: dockerfile
 ---
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: hello-python, namespace: team-a}
 spec:
-  source: {git: {url: https://github.com/dockersamples/helloworld-demo-python, ref: main}}
+  source: {type: git, git: {url: https://github.com/dockersamples/helloworld-demo-python, ref: main}}
   builderRef: railpack
 ---
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: no-such-ref, namespace: team-a}
 spec:
-  source: {git: {url: https://github.com/traefik/whoami, ref: no-such-branch}}
+  source: {type: git, git: {url: https://github.com/traefik/whoami, ref: no-such-branch}}
   builderRef: dockerfile
 ---
 apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: no-such-dockerfile, namespace: team-a}
 spec:
-  source: {git: {url: https://github.com/traefik/whoami, ref: master, dockerfile: Dockerfile.missing}}
+  source: {type: git, git: {url: https://github.com/traefik/whoami, ref: master}, dockerfile: Dockerfile.missing}
   builderRef: dockerfile

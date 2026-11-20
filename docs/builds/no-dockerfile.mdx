@@ -49,7 +49,7 @@ apiVersion: builder.zeabur.com/v1alpha1
 kind: Build
 metadata: {name: node-hello, namespace: team-a}
 spec:
-  source: {git: {url: https://github.com/heroku/node-js-getting-started, ref: main}}
+  source: {type: git, git: {url: https://github.com/heroku/node-js-getting-started, ref: main}}
   builderRef: agent
 ```
 
@@ -127,7 +127,7 @@ Commit both `plan/Dockerfile` and `plan/Dockerfile.dockerignore` to the reposito
 | The run waits with `ModelKeyMissing`, and its message names a missing `model` Secret or `anthropic` key. | Create the Secret, or add the key, in the Build's Namespace. The run starts by itself; no Job is created while it waits. |
 | The run fails with `PlanFailed`. | Read `status.plan.stopped` for the reason and `status.message` for what to do. |
 | `stopped` is `ModelKeyMissing` or `ModelFailed`. | Check the key and `status.message`. A missing or refused key is `ModelKeyMissing`; a refused or failed request to the model API is `ModelFailed`. |
-| `stopped` is `SeveralApps`. | Set the app's folder in `spec.source.git.contextDir`. |
+| `stopped` is `SeveralApps`. | Set the app's folder in `spec.source.contextDir`. |
 | `stopped` is `NeedsBuildVariable`. | Trial builds run without the Build's variables, so the agent cannot finish this Dockerfile. Write it yourself, read the variable with `RUN --mount=type=secret,id=NAME,env=NAME`, commit it, set `builderRef` to `dockerfile` and the variable in `spec.env`. |
 | `stopped` is `NoAppFound`, `NeedsPrivateDependency` or `UnsupportedPlatform`. | `status.message` says what the app, its private dependency or its platform needs. |
 | `stopped` is `BudgetSpent` or `BuildKeepsFailing`. | Read `status.message`. `BudgetSpent` means a limit was reached: model calls, failed builds, time or tokens. |

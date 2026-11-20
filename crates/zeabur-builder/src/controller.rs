@@ -56,7 +56,7 @@ use kube::{Client, Resource as _, ResourceExt as _};
 use serde::Serialize;
 use thiserror::Error;
 use zeabur_builder_api::build::{
-    Build, BuildStatus, ConditionReason, MAX_UPLOAD_REQUEST, NotifyTarget, NotifyType, SourceMode,
+    Build, BuildStatus, ConditionReason, MAX_UPLOAD_REQUEST, NotifyTarget, NotifyType, SourceKind,
     UploadToken,
 };
 use zeabur_builder_api::build_run::{
@@ -558,12 +558,7 @@ async fn reconcile_build(build: Arc<Build>, ctx: Arc<Context>) -> Result<Action,
     let at = now();
     claim_repositories(&ctx, &build).await?;
     let mut status = build.status.clone().unwrap_or_default();
-    let source = &build.spec.source;
-    status.source_mode = Some(match (&source.archive, &source.github_app) {
-        (Some(_), _) => SourceMode::Archive,
-        (None, Some(_)) => SourceMode::GitHubApp,
-        (None, None) => SourceMode::PlainGit,
-    });
+    status.source_mode = Some(build.spec.source.mode());
     let interval = build
         .spec
         .triggers
@@ -656,21 +651,23 @@ async fn resolve_source(
     at: Timestamp,
 ) -> Option<String> {
     let generation = build.metadata.generation;
-    let Some(git) = &build.spec.source.git else {
-        let (ready, reason, message, digest) =
-            decide::archive_source(build.spec.source.archive.as_ref());
-        status.remote_revision.clone_from(&digest);
-        status.resolved_ref = None;
-        decide::set_condition(
-            &mut status.conditions,
-            ConditionType::SourceReady,
-            ready,
-            reason,
-            &message,
-            at,
-            generation,
-        );
-        return digest;
+    let git = match &build.spec.source.kind {
+        SourceKind::Git { git } => git,
+        SourceKind::Archive { archive } => {
+            let (ready, reason, message, digest) = decide::archive_source(archive);
+            status.remote_revision.clone_from(&digest);
+            status.resolved_ref = None;
+            decide::set_condition(
+                &mut status.conditions,
+                ConditionType::SourceReady,
+                ready,
+                reason,
+                &message,
+                at,
+                generation,
+            );
+            return digest;
+        }
     };
     let resolved = if decide::needs_resolve(build.status.as_ref(), generation, force, interval, at)
     {
@@ -731,19 +728,19 @@ async fn git_credentials(
     ctx: &Context,
     build: &Build,
 ) -> Result<Option<GitCredentials>, Refusal<ConditionReason>> {
-    if build.spec.source.github_app.is_some() {
+    let Some(git) = build.spec.source.git() else {
+        return Ok(None);
+    };
+    if git.github_app.is_some() {
         let token = app_token(ctx, build, Access::Controller).await?;
         return Ok(Some(GitCredentials::Basic {
             username: "x-access-token".to_owned(),
             password: token,
         }));
     }
-    let Some(secret_ref) = &build.spec.source.credentials_ref else {
+    let Some(secret_ref) = &git.credentials_ref else {
         return Ok(None);
     };
-    if build.spec.source.git.is_none() {
-        return Ok(None);
-    }
     let name = &secret_ref.name;
     let namespace = build.namespace().unwrap_or_default();
     let secret = Api::<Secret>::namespaced(ctx.client.clone(), &namespace)
@@ -769,7 +766,7 @@ async fn git_credentials_for_job(
     ctx: &Context,
     build: &Build,
 ) -> Result<Option<GitCredentials>, Refusal<ConditionReason>> {
-    if build.spec.source.github_app.is_some() {
+    if build.spec.source.github_app().is_some() {
         return Ok(None);
     }
     git_credentials(ctx, build).await
@@ -782,7 +779,7 @@ async fn app_token(
     build: &Build,
     access: Access,
 ) -> Result<String, Refusal<ConditionReason>> {
-    let (Some(app), Some(git)) = (&build.spec.source.github_app, &build.spec.source.git) else {
+    let (Some(git), Some(app)) = (build.spec.source.git(), build.spec.source.github_app()) else {
         return Err(Refusal::new(
             ConditionReason::CredentialsMissing,
             "no githubApp source",
@@ -798,7 +795,7 @@ async fn app_token(
 /// Sets the commit status of a `githubApp` source's run. Nothing happens for other sources,
 /// archive sources among them.
 async fn report(ctx: &Context, build: &Build, sha: &str, state: State, description: &str) {
-    let (Some(app), Some(git)) = (&build.spec.source.github_app, &build.spec.source.git) else {
+    let (Some(git), Some(app)) = (build.spec.source.git(), build.spec.source.github_app()) else {
         return;
     };
     let namespace = build.namespace().unwrap_or_default();
@@ -1447,7 +1444,7 @@ fn static_checks(
     run: &BuildRun,
 ) -> Result<(Vec<String>, decide::Owned), Refusal<Reason>> {
     let infra = |e: &dyn std::fmt::Display| Refusal::new(Reason::InfraError, e.to_string());
-    if let Some(git) = &build.spec.source.git {
+    if let Some(git) = build.spec.source.git() {
         RepoKey::parse(&git.url).map_err(|e| infra(&e))?;
     }
     let tags = decide::tags(build, run).map_err(|e| infra(&e))?;
@@ -1594,7 +1591,7 @@ async fn start(
         return refused(ctx, run, status, refusal).await;
     }
     let git_secret = format!("{name}-git");
-    let mut git_auth = match (&credentials, &build.spec.source.credentials_ref) {
+    let mut git_auth = match (&credentials, build.spec.source.credentials_ref()) {
         (Some(credentials), Some(secret)) => credentials.job_auth(&secret.name),
         _ => GitAuth::Anonymous,
     };
@@ -1612,7 +1609,7 @@ async fn start(
         Ok(woken) => woken,
         Err(action) => return Ok(action),
     };
-    if build.spec.source.github_app.is_some() {
+    if build.spec.source.github_app().is_some() {
         // Minted only now, so a run waiting for a slot does not mint a token every retry.
         match app_token(ctx, &build, Access::Fetch).await {
             Ok(token) => ensure_git_secret(ctx, run, &git_secret, token).await?,
@@ -1683,7 +1680,7 @@ async fn registry_auth(
     if let Some(image) = &owned.image {
         grants.push((image.as_str(), registry::Access::PUSH));
     }
-    if build.spec.source.archive.is_some() {
+    if matches!(build.spec.source.kind, SourceKind::Archive { .. }) {
         grants.push((owned.source.as_str(), registry::Access::PULL));
     }
     if grants.is_empty() {
@@ -1780,7 +1777,7 @@ async fn answer_upload_request(
     status: &mut BuildStatus,
     at: Timestamp,
 ) -> Result<(), ControllerError> {
-    if build.spec.source.archive.is_some()
+    if matches!(build.spec.source.kind, SourceKind::Archive { .. })
         && let Some(request) = build.annotations().get(annotations::UPLOAD_TOKEN_REQUEST)
         && !request.is_empty()
         && request.len() <= MAX_UPLOAD_REQUEST
