@@ -289,12 +289,18 @@
                     "properties": {
                       "opts": {
                         "additionalProperties": {
-                          "maxLength": 4096,
+                          "maxLength": 512,
                           "type": "string"
                         },
                         "description": "Frontend options added to every build, as `buildctl --opt key=value`.",
                         "maxProperties": 32,
-                        "type": "object"
+                        "type": "object",
+                        "x-kubernetes-validations": [
+                          {
+                            "message": "an option name is at most 128 characters",
+                            "rule": "self.all(k, size(k) <= 128)"
+                          }
+                        ]
                       },
                       "source": {
                         "description": "The frontend image, such as `ghcr.io/railwayapp/railpack-frontend:v0.43.0` for\n`railpack`, whose version must match the planner's, or `docker/dockerfile:1`.",

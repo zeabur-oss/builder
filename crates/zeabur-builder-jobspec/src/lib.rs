@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch archive` |
 //! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the controller hands it a saved plan (`JobInputs::saved_plan`), the job image's `zeabur-builder-job plan restore` unpacks it there instead |
-//! | `build` | job image | `zeabur-builder-job build --build buildctl build …`; after a planner ran, it pushes `/workspace/plan` as the plan artifact (`--save-plan`) |
+//! | `build` | job image | `zeabur-builder-job build <file>`, a [`BuildPlan`] as JSON from the Pod's annotation; after a planner ran, it pushes `/workspace/plan` as the plan artifact |
 //!
 //! A Railpack build runs `buildctl` twice: Railpack's image, pushed by digest only, then a
 //! Dockerfile build `FROM` it that makes it run as a non-root user and pushes the tags
@@ -16,8 +16,8 @@
 //!
 //! The job image is `moby/buildkit` (for `buildctl` and `git`) plus `zeabur-builder-job`, a small
 //! static wrapper that runs the `buildctl` command it is given with `--progress rawjson`, prints
-//! the progress for people, counts cached steps, reads the image digest from `--metadata-file`
-//! and writes the termination message ([`zeabur_builder_core::result`]). The `buildctl`
+//! the progress for people, counts cached steps, reads the image digest from `buildctl`'s metadata
+//! file and writes the termination message ([`zeabur_builder_core::result`]). The `buildctl`
 //! arguments are built here, so they are reviewed and tested with the rest of the Job.
 //!
 //! An archive source is fetched from [`archive::repository`] of the run's own namespace and
@@ -38,10 +38,11 @@ use std::collections::BTreeMap;
 
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, KeyToPath,
-    PodSecurityContext, PodSpec, PodTemplateSpec, ProjectedVolumeSource, ResourceRequirements,
-    SeccompProfile, SecretKeySelector, SecretVolumeSource, SecurityContext,
-    ServiceAccountTokenProjection, Toleration, Volume, VolumeMount, VolumeProjection,
+    Capabilities, Container, DownwardAPIVolumeFile, DownwardAPIVolumeSource, EmptyDirVolumeSource,
+    EnvVar, EnvVarSource, KeyToPath, ObjectFieldSelector, PodSecurityContext, PodSpec,
+    PodTemplateSpec, ProjectedVolumeSource, ResourceRequirements, SeccompProfile,
+    SecretKeySelector, SecretVolumeSource, SecurityContext, ServiceAccountTokenProjection,
+    Toleration, Volume, VolumeMount, VolumeProjection,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
@@ -52,6 +53,7 @@ use zeabur_builder_api::cluster_builder::{
     OpenAiFederation, Planner, PlannerSpec,
 };
 use zeabur_builder_api::{annotations, labels};
+use zeabur_builder_core::build_plan::{self, BuildPlan, Image, NonRoot, Output, PREVIOUS_DIGEST};
 use zeabur_builder_core::repo::{RepoKey, RepoUrlError};
 use zeabur_builder_core::result::is_digest;
 use zeabur_builder_core::{archive, is_commit_sha, plan};
@@ -63,12 +65,15 @@ const WORKSPACE: &str = "/workspace";
 const SRC: &str = "/workspace/src";
 const PLAN: &str = "/workspace/plan";
 const OUT: &str = "/workspace/out";
-/// Where `zeabur-builder-job build --non-root` writes the Railpack plan it rewrites and the second
+/// Where `zeabur-builder-job build` writes the Railpack plan it rewrites and the second
 /// build's Dockerfile, so the plan folder keeps what the planner wrote.
 const NON_ROOT: &str = "/workspace/out/non-root";
 const GIT_CREDENTIALS: &str = "/etc/zeabur-builder/git";
 const BUILDKIT_TLS: &str = "/etc/zeabur-builder/buildkit";
 const REGISTRY_AUTH: &str = "/etc/zeabur-builder/registry";
+/// The build plan, from the Pod's [`annotations::BUILD_PLAN`].
+const BUILD_PLAN_DIR: &str = "/etc/zeabur-builder/build-plan";
+const BUILD_PLAN_FILE: &str = "plan.json";
 const MODEL_TOKEN_DIR: &str = "/var/run/secrets/zeabur.com/model";
 const MODEL_TOKEN: &str = "/var/run/secrets/zeabur.com/model/token";
 /// How long a projected model token lasts; the kubelet renews it before it expires.
@@ -330,7 +335,13 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     for container in &mut init_containers {
         container.resources = Some(resources.clone());
     }
-    let mut build = build_container(inputs, &resolved, &context, repo.as_ref());
+    let plan = build_plan(inputs, &resolved, &context, repo.as_ref());
+    let mut pod_annotations = annotations.clone();
+    pod_annotations.insert(
+        annotations::BUILD_PLAN.to_owned(),
+        serde_json::to_string(&plan).unwrap_or_default(),
+    );
+    let mut build = build_container(inputs);
     build.resources = Some(resources);
     let token = model_token(&resolved.plan);
 
@@ -353,7 +364,7 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
             name: Some(name.to_owned()),
             namespace: Some(namespace.to_owned()),
             labels: Some(labels.clone()),
-            annotations: Some(annotations.clone()),
+            annotations: Some(annotations),
             owner_references: Some(vec![OwnerReference {
                 api_version: format!("{}/v1alpha1", zeabur_builder_api::GROUP),
                 kind: "BuildRun".to_owned(),
@@ -371,7 +382,7 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
                     labels: Some(labels),
-                    annotations: Some(annotations),
+                    annotations: Some(pod_annotations),
                     ..ObjectMeta::default()
                 }),
                 spec: Some(pod),
@@ -729,53 +740,7 @@ fn token_volume(token: &ModelToken<'_>) -> Volume {
     }
 }
 
-fn build_container(
-    inputs: &JobInputs<'_>,
-    resolved: &Resolved<'_>,
-    context: &str,
-    repo: Option<&RepoKey>,
-) -> Container {
-    let non_root = matches!(resolved.frontend, Frontend::Railpack { .. });
-    let mut wrapper = vec!["zeabur-builder-job".to_owned(), "build".to_owned()];
-    if inputs.registry_http {
-        wrapper.push("--plain-http".to_owned());
-    }
-    let metadata = if non_root {
-        format!("{OUT}/railpack-metadata.json")
-    } else {
-        format!("{OUT}/metadata.json")
-    };
-    let mut buildctl = buildctl(inputs, &metadata);
-    buildctl.extend(["--local".to_owned(), format!("context={context}")]);
-    frontend_args(inputs, &resolved.frontend, &mut wrapper, &mut buildctl);
-    buildctl.extend(inputs.build.spec.env.iter().flat_map(|var| {
-        [
-            "--secret".to_owned(),
-            format!("id={},env={SECRET_ENV_PREFIX}{}", var.name, var.name),
-        ]
-    }));
-    if non_root {
-        buildctl.extend(output(inputs, repo, &[inputs.image.to_owned()], true));
-    } else {
-        buildctl.extend(output(inputs, repo, &tagged(inputs), false));
-    }
-    if non_root {
-        wrapper.extend([
-            "--non-root".to_owned(),
-            PLAN.to_owned(),
-            NON_ROOT.to_owned(),
-        ]);
-    }
-    if let Some(name) = saved_plan_name(inputs, &resolved.plan) {
-        wrapper.extend(["--save-plan".to_owned(), literal(&name)]);
-    }
-    wrapper.push("--build".to_owned());
-    wrapper.extend(buildctl.iter().map(|arg| literal(arg)));
-    if non_root {
-        wrapper.push("--build".to_owned());
-        wrapper.extend(non_root_build(inputs, repo).iter().map(|arg| literal(arg)));
-    }
-
+fn build_container(inputs: &JobInputs<'_>) -> Container {
     let mut env_vars = vec![env("HOME", "/tmp"), env("DOCKER_CONFIG", REGISTRY_AUTH)];
     if let Some(ca) = inputs.registry_ca {
         env_vars.push(env(REGISTRY_CA_ENV, &literal(ca)));
@@ -784,10 +749,15 @@ fn build_container(
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
     mounts.push(mount("registry-auth", REGISTRY_AUTH));
+    mounts.push(mount("build-plan", BUILD_PLAN_DIR));
     Container {
         name: "build".to_owned(),
         image: Some(inputs.job_image.to_owned()),
-        command: Some(wrapper),
+        command: Some(vec![
+            "zeabur-builder-job".to_owned(),
+            "build".to_owned(),
+            format!("{BUILD_PLAN_DIR}/{BUILD_PLAN_FILE}"),
+        ]),
         env: Some(env_vars),
         volume_mounts: Some(mounts),
         termination_message_policy: Some("File".to_owned()),
@@ -796,8 +766,53 @@ fn build_container(
     }
 }
 
+/// What `zeabur-builder-job build` runs.
+fn build_plan(
+    inputs: &JobInputs<'_>,
+    resolved: &Resolved<'_>,
+    context: &str,
+    repo: Option<&RepoKey>,
+) -> BuildPlan {
+    let non_root = matches!(resolved.frontend, Frontend::Railpack { .. });
+    let mut command = buildctl(inputs);
+    command.extend(["--local".to_owned(), format!("context={context}")]);
+    let secrets_hash_env = frontend_args(inputs, &resolved.frontend, &mut command);
+    command.extend(inputs.build.spec.env.iter().flat_map(|var| {
+        [
+            "--secret".to_owned(),
+            format!("id={},env={SECRET_ENV_PREFIX}{}", var.name, var.name),
+        ]
+    }));
+    let builds = if non_root {
+        vec![
+            build_plan::Build {
+                command,
+                metadata_file: format!("{OUT}/railpack-metadata.json"),
+                output: output(inputs, repo, Vec::new()),
+            },
+            non_root_build(inputs, repo),
+        ]
+    } else {
+        vec![build_plan::Build {
+            command,
+            metadata_file: format!("{OUT}/metadata.json"),
+            output: output(inputs, repo, inputs.tags.to_vec()),
+        }]
+    };
+    BuildPlan {
+        plain_http: inputs.registry_http,
+        secrets_hash_env,
+        non_root: non_root.then(|| NonRoot {
+            plan: PLAN.to_owned(),
+            out: NON_ROOT.to_owned(),
+        }),
+        save_plan: saved_plan(inputs, &resolved.plan),
+        builds,
+    }
+}
+
 /// `buildctl … build` up to the frontend.
-fn buildctl(inputs: &JobInputs<'_>, metadata: &str) -> Vec<String> {
+fn buildctl(inputs: &JobInputs<'_>) -> Vec<String> {
     vec![
         "buildctl".to_owned(),
         "--addr".to_owned(),
@@ -807,18 +822,16 @@ fn buildctl(inputs: &JobInputs<'_>, metadata: &str) -> Vec<String> {
         "build".to_owned(),
         "--progress".to_owned(),
         "rawjson".to_owned(),
-        "--metadata-file".to_owned(),
-        metadata.to_owned(),
     ]
 }
 
 /// The second build: the Railpack image, pushed by digest only, made to run as
-/// [`IMAGE_UID`](zeabur_builder_core::railpack::IMAGE_UID) by the Dockerfile `zeabur-builder-job
-/// --non-root` writes, and pushed with the tags. `{digest}` is the first build's digest.
-fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String> {
+/// [`IMAGE_UID`](zeabur_builder_core::railpack::IMAGE_UID) by the Dockerfile `zeabur-builder-job`
+/// writes for [`NonRoot`], and pushed with the tags.
+fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> build_plan::Build {
     let dir = NON_ROOT;
-    let mut buildctl = buildctl(inputs, &format!("{OUT}/metadata.json"));
-    buildctl.extend([
+    let mut command = buildctl(inputs);
+    command.extend([
         "--frontend".to_owned(),
         "dockerfile.v0".to_owned(),
         "--local".to_owned(),
@@ -826,30 +839,40 @@ fn non_root_build(inputs: &JobInputs<'_>, repo: Option<&RepoKey>) -> Vec<String>
         "--local".to_owned(),
         format!("dockerfile={dir}"),
         "--opt".to_owned(),
-        format!("context:app=docker-image://{}@{{digest}}", inputs.image),
+        format!(
+            "context:app=docker-image://{}@{PREVIOUS_DIGEST}",
+            inputs.image
+        ),
     ]);
-    buildctl.extend(output(inputs, repo, &tagged(inputs), false));
-    buildctl
+    build_plan::Build {
+        command,
+        metadata_file: format!("{OUT}/metadata.json"),
+        output: output(inputs, repo, inputs.tags.to_vec()),
+    }
 }
 
 /// Where a builder with a planner saves the plan it wrote ([`zeabur_builder_core::plan`]):
 /// `<image>:zeabur-plan-<Build uid>`. None for `dockerfile` and for a run that reused a plan.
-fn saved_plan_name(inputs: &JobInputs<'_>, plan: &Plan<'_>) -> Option<String> {
+fn saved_plan(inputs: &JobInputs<'_>, plan: &Plan<'_>) -> Option<Image> {
     match plan {
         Plan::None | Plan::Restore(_) => return None,
         Plan::Railpack(_) | Plan::Agent(_) => {}
     }
     let uid = inputs.build.metadata.uid.as_deref()?;
-    Some(format!("{}:{}", inputs.image, plan::saved_tag(uid)))
+    Some(Image {
+        repository: inputs.image.to_owned(),
+        tag: plan::saved_tag(uid),
+    })
 }
 
-/// `--frontend`, the plan's location and the frontend options.
+/// `--frontend`, the plan's location and the frontend options. Returns the variables whose
+/// values Railpack's cache depends on.
 fn frontend_args(
     inputs: &JobInputs<'_>,
     frontend: &Frontend<'_>,
-    wrapper: &mut Vec<String>,
     buildctl: &mut Vec<String>,
-) {
+) -> Vec<String> {
+    let mut secrets_hash_env = Vec::new();
     match frontend {
         Frontend::Dockerfile {
             image: None,
@@ -877,12 +900,14 @@ fn frontend_args(
             // Railpack reads build arguments only under `build-arg:`; the wrapper hashes the
             // secret values into `build-arg:secrets-hash` so a changed value invalidates the
             // cache without the value entering the cache key or image metadata.
-            wrapper.extend(inputs.build.spec.env.iter().flat_map(|var| {
-                [
-                    "--secrets-hash-env".to_owned(),
-                    format!("{SECRET_ENV_PREFIX}{}", var.name),
-                ]
-            }));
+            secrets_hash_env.extend(
+                inputs
+                    .build
+                    .spec
+                    .env
+                    .iter()
+                    .map(|var| format!("{SECRET_ENV_PREFIX}{}", var.name)),
+            );
             buildctl.extend([
                 "--opt".to_owned(),
                 format!("build-arg:cache-key={}", cache_key(inputs)),
@@ -897,52 +922,28 @@ fn frontend_args(
             .iter()
             .flat_map(|(key, value)| ["--opt".to_owned(), format!("{key}={value}")]),
     );
+    secrets_hash_env
 }
 
-/// `<image>:<tag>` for each tag.
-fn tagged(inputs: &JobInputs<'_>) -> Vec<String> {
-    inputs
-        .tags
-        .iter()
-        .map(|tag| format!("{}:{tag}", inputs.image))
-        .collect()
-}
-
-/// `--output`, pushing `names`; `by_digest` pushes the image without a tag.
-fn output(
-    inputs: &JobInputs<'_>,
-    repo: Option<&RepoKey>,
-    names: &[String],
-    by_digest: bool,
-) -> [String; 2] {
-    // `--output` is one CSV record. The source annotation is the repository key, never the URL,
-    // which may carry a token (`https://token@host/…`).
-    let mut output = vec![
-        "type=image".to_owned(),
-        format!("name={}", names.join(",")),
-        "push=true".to_owned(),
-    ];
-    if by_digest {
-        output.push("push-by-digest=true".to_owned());
-    }
-    output.push("oci-mediatypes=true".to_owned());
-    if let Some(repo) = repo {
-        output.push(format!(
-            "annotation.org.opencontainers.image.source=https://{repo}"
-        ));
-    }
-    output.extend([format!(
-        "annotation.org.opencontainers.image.revision={}",
-        inputs.build_run.spec.revision
+/// The image a build pushes, with `tags`; with none, it is pushed by digest only.
+fn output(inputs: &JobInputs<'_>, repo: Option<&RepoKey>, tags: Vec<String>) -> Output {
+    // The source annotation is the repository key, never the URL, which may carry a token
+    // (`https://token@host/…`).
+    let mut annotations = BTreeMap::from([(
+        "org.opencontainers.image.revision".to_owned(),
+        inputs.build_run.spec.revision.clone(),
     )]);
-    [
-        "--output".to_owned(),
-        output
-            .iter()
-            .map(|field| csv_field(field))
-            .collect::<Vec<_>>()
-            .join(","),
-    ]
+    if let Some(repo) = repo {
+        annotations.insert(
+            "org.opencontainers.image.source".to_owned(),
+            format!("https://{repo}"),
+        );
+    }
+    Output {
+        repository: inputs.image.to_owned(),
+        tags,
+        annotations,
+    }
 }
 
 /// Railpack's cache key: one per `Build`, so its cache mounts are shared by every run of the
@@ -956,16 +957,6 @@ fn cache_key(inputs: &JobInputs<'_>) -> String {
         .unwrap_or_default();
     let name = inputs.build.metadata.name.as_deref().unwrap_or_default();
     format!("{namespace}/{name}")
-}
-
-/// Quotes a CSV field when it holds a comma or quote, as `buildctl` parses `--output` with
-/// `encoding/csv`.
-fn csv_field(field: &str) -> String {
-    if field.contains([',', '"']) {
-        format!("\"{}\"", field.replace('"', "\"\""))
-    } else {
-        field.to_owned()
-    }
 }
 
 /// Doubles `$` so the kubelet passes the value through unexpanded.
@@ -1011,8 +1002,28 @@ fn volumes(inputs: &JobInputs<'_>, token: Option<&ModelToken<'_>>) -> Vec<Volume
             mode: None,
         }]),
     ));
+    volumes.push(build_plan_volume());
     volumes.extend(token.map(token_volume));
     volumes
+}
+
+/// The Pod's [`annotations::BUILD_PLAN`] as a file.
+fn build_plan_volume() -> Volume {
+    Volume {
+        name: "build-plan".to_owned(),
+        downward_api: Some(DownwardAPIVolumeSource {
+            items: Some(vec![DownwardAPIVolumeFile {
+                path: BUILD_PLAN_FILE.to_owned(),
+                field_ref: Some(ObjectFieldSelector {
+                    field_path: format!("metadata.annotations['{}']", annotations::BUILD_PLAN),
+                    ..ObjectFieldSelector::default()
+                }),
+                ..DownwardAPIVolumeFile::default()
+            }]),
+            ..DownwardAPIVolumeSource::default()
+        }),
+        ..Volume::default()
+    }
 }
 
 fn pod_security() -> PodSecurityContext {

@@ -31,6 +31,40 @@
     "template": {
       "metadata": {
         "annotations": {
+          "builder.zeabur.com/build-plan": {
+            "builds": [
+              {
+                "command": [
+                  "buildctl",
+                  "--addr",
+                  "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
+                  "--tlsdir",
+                  "/etc/zeabur-builder/buildkit",
+                  "build",
+                  "--progress",
+                  "rawjson",
+                  "--local",
+                  "context=/workspace/src/app",
+                  "--frontend",
+                  "dockerfile.v0",
+                  "--local",
+                  "dockerfile=/workspace/src/app",
+                  "--opt",
+                  "filename=Dockerfile"
+                ],
+                "metadataFile": "/workspace/out/metadata.json",
+                "output": {
+                  "annotations": {
+                    "org.opencontainers.image.revision": "sha256:5d2a8f1c0b9e7d6a4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d"
+                  },
+                  "repository": "registry.internal/team-a/api",
+                  "tags": [
+                    "archive-1761058800-5d2a8f1"
+                  ]
+                }
+              }
+            ]
+          },
           "builder.zeabur.com/image": "registry.internal/team-a/api",
           "builder.zeabur.com/revision": "sha256:5d2a8f1c0b9e7d6a4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d"
         },
@@ -48,27 +82,7 @@
             "command": [
               "zeabur-builder-job",
               "build",
-              "--build",
-              "buildctl",
-              "--addr",
-              "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
-              "--tlsdir",
-              "/etc/zeabur-builder/buildkit",
-              "build",
-              "--progress",
-              "rawjson",
-              "--metadata-file",
-              "/workspace/out/metadata.json",
-              "--local",
-              "context=/workspace/src/app",
-              "--frontend",
-              "dockerfile.v0",
-              "--local",
-              "dockerfile=/workspace/src/app",
-              "--opt",
-              "filename=Dockerfile",
-              "--output",
-              "type=image,name=registry.internal/team-a/api:archive-1761058800-5d2a8f1,push=true,oci-mediatypes=true,annotation.org.opencontainers.image.revision=sha256:5d2a8f1c0b9e7d6a4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d"
+              "/etc/zeabur-builder/build-plan/plan.json"
             ],
             "env": [
               {
@@ -122,6 +136,11 @@
               {
                 "mountPath": "/etc/zeabur-builder/registry",
                 "name": "registry-auth",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/etc/zeabur-builder/build-plan",
+                "name": "build-plan",
                 "readOnly": true
               }
             ]
@@ -229,6 +248,19 @@
               "optional": false,
               "secretName": "api-x7k2p-registry"
             }
+          },
+          {
+            "downwardAPI": {
+              "items": [
+                {
+                  "fieldRef": {
+                    "fieldPath": "metadata.annotations['builder.zeabur.com/build-plan']"
+                  },
+                  "path": "plan.json"
+                }
+              ]
+            },
+            "name": "build-plan"
           }
         ]
       }

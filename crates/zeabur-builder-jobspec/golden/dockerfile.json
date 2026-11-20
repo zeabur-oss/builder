@@ -31,6 +31,42 @@
     "template": {
       "metadata": {
         "annotations": {
+          "builder.zeabur.com/build-plan": {
+            "builds": [
+              {
+                "command": [
+                  "buildctl",
+                  "--addr",
+                  "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
+                  "--tlsdir",
+                  "/etc/zeabur-builder/buildkit",
+                  "build",
+                  "--progress",
+                  "rawjson",
+                  "--local",
+                  "context=/workspace/src/services/api",
+                  "--frontend",
+                  "dockerfile.v0",
+                  "--local",
+                  "dockerfile=/workspace/src/services/api/docker",
+                  "--opt",
+                  "filename=Dockerfile.prod"
+                ],
+                "metadataFile": "/workspace/out/metadata.json",
+                "output": {
+                  "annotations": {
+                    "org.opencontainers.image.revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+                    "org.opencontainers.image.source": "https://github.com/acme/mono"
+                  },
+                  "repository": "registry.internal/team-a/api",
+                  "tags": [
+                    "main-1761058800-3e1a9c2",
+                    "latest"
+                  ]
+                }
+              }
+            ]
+          },
           "builder.zeabur.com/image": "registry.internal/team-a/api",
           "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
         },
@@ -48,27 +84,7 @@
             "command": [
               "zeabur-builder-job",
               "build",
-              "--build",
-              "buildctl",
-              "--addr",
-              "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
-              "--tlsdir",
-              "/etc/zeabur-builder/buildkit",
-              "build",
-              "--progress",
-              "rawjson",
-              "--metadata-file",
-              "/workspace/out/metadata.json",
-              "--local",
-              "context=/workspace/src/services/api",
-              "--frontend",
-              "dockerfile.v0",
-              "--local",
-              "dockerfile=/workspace/src/services/api/docker",
-              "--opt",
-              "filename=Dockerfile.prod",
-              "--output",
-              "type=image,\"name=registry.internal/team-a/api:main-1761058800-3e1a9c2,registry.internal/team-a/api:latest\",push=true,oci-mediatypes=true,annotation.org.opencontainers.image.source=https://github.com/acme/mono,annotation.org.opencontainers.image.revision=3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
+              "/etc/zeabur-builder/build-plan/plan.json"
             ],
             "env": [
               {
@@ -118,6 +134,11 @@
               {
                 "mountPath": "/etc/zeabur-builder/registry",
                 "name": "registry-auth",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/etc/zeabur-builder/build-plan",
+                "name": "build-plan",
                 "readOnly": true
               }
             ]
@@ -226,6 +247,19 @@
               "optional": false,
               "secretName": "api-x7k2p-registry"
             }
+          },
+          {
+            "downwardAPI": {
+              "items": [
+                {
+                  "fieldRef": {
+                    "fieldPath": "metadata.annotations['builder.zeabur.com/build-plan']"
+                  },
+                  "path": "plan.json"
+                }
+              ]
+            },
+            "name": "build-plan"
           }
         ]
       }

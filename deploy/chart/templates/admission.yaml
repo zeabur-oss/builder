@@ -58,12 +58,14 @@ spec:
       message: a build Job uses no host network, PID, IPC or port
     - expression: >-
         !has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir) || has(v.secret) ||
+        (has(v.downwardAPI) && v.downwardAPI.items.all(i, has(i.fieldRef) &&
+        i.fieldRef.fieldPath == "metadata.annotations['builder.zeabur.com/build-plan']")) ||
         (has(v.projected) && v.projected.sources.all(s, has(s.serviceAccountToken) &&
         has(s.serviceAccountToken.audience) &&
         s.serviceAccountToken.audience in {{ include "builder.celList" $audiences }})))
       message: >-
-        a build Job mounts only emptyDir and Secret volumes, and service account tokens for a
-        model provider
+        a build Job mounts only emptyDir and Secret volumes, its build plan, and service account
+        tokens for a model provider
     - expression: >-
         has(variables.pod.automountServiceAccountToken) && !variables.pod.automountServiceAccountToken
       message: a build Job runs without its ServiceAccount's API server token

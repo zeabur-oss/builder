@@ -27,7 +27,7 @@ The Helm chart provides two ValidatingAdmissionPolicies that restrict which reso
 - Images are limited to `jobImage`, `railpackImage`, and `admissionPolicy.extraImages`.
 - Privileged mode, extra capabilities, and use of the host's network, PID, IPC, ports, or paths are prohibited.
 - Containers must run as non-root, without privilege escalation.
-- Jobs can mount only emptyDir and Secret volumes, and service account tokens for the audience of a model provider (Anthropic or OpenAI).
+- Jobs can mount only emptyDir and Secret volumes, their own build plan (a Pod annotation), and service account tokens for the audience of a model provider (Anthropic or OpenAI).
 - Jobs get no token for the Kubernetes API. Only an `agent` builder that signs in with federation runs Jobs as another ServiceAccount.
 - Jobs cannot be created in `kube-*` Namespaces, the controller's Namespace, the image registry's Namespace, or any Namespace in `admissionPolicy.extraDeniedNamespaces`.
 

@@ -14,6 +14,11 @@ use crate::common::{Condition, DURATION_PATTERN, MAX_NAME, SecretKeyRef};
 pub const MAX_IMAGE: usize = 512;
 /// Most frontend options.
 pub const MAX_OPTS: usize = 32;
+/// Longest frontend option name, in characters.
+pub const MAX_OPT_KEY: usize = 128;
+/// Longest frontend option value, in characters. With the other limits, the build plan of the
+/// largest Build stays under the 256 KiB a Pod's annotations may hold, even in 4-byte characters.
+pub const MAX_OPT_VALUE: usize = 512;
 /// Longest quantity in the status.
 pub const MAX_QUANTITY: usize = 64;
 /// Longest model provider id, such as a federation rule.
@@ -338,7 +343,14 @@ pub struct FrontendSpec {
     pub kind: Frontend,
     /// Frontend options added to every build, as `buildctl --opt key=value`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    #[schemars(extend("maxProperties" = MAX_OPTS, "additionalProperties" = {"type": "string", "maxLength": 4096}))]
+    #[schemars(extend(
+        "maxProperties" = MAX_OPTS,
+        "additionalProperties" = {"type": "string", "maxLength": MAX_OPT_VALUE},
+        "x-kubernetes-validations" = [{
+            "rule": format!("self.all(k, size(k) <= {MAX_OPT_KEY})"),
+            "message": format!("an option name is at most {MAX_OPT_KEY} characters"),
+        }],
+    ))]
     pub opts: BTreeMap<String, String>,
 }
 

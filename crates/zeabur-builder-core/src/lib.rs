@@ -8,6 +8,7 @@
 //!   `Build` agree on which repository they mean.
 //! - [`tag`]: the immutable, sortable image tag of a build.
 //! - [`daemon`]: the name and address of a build namespace's own buildkitd.
+//! - [`build_plan`]: the builds a Job runs, as `zeabur-builder-jobspec` writes them.
 //! - [`result`]: the build result a Job reports in its termination message.
 //! - [`plan`]: what the agent planner reports about a run.
 //! - [`progress`]: reading `buildctl --progress rawjson` output, its cached steps and its steps.
@@ -18,6 +19,7 @@
 //! clocks and randomness: the same inputs always give the same decision.
 
 pub mod archive;
+pub mod build_plan;
 pub mod daemon;
 pub mod git;
 pub mod hook;
