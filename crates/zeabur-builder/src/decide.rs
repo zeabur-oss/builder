@@ -19,7 +19,7 @@ use zeabur_builder_api::build_run::{
 };
 use zeabur_builder_api::cluster_builder::{
     BuildCeiling, BuildDefaults, BuildQuantities, ClusterBuilder, ClusterBuilderSpec,
-    ClusterBuilderStatus, Planner,
+    ClusterBuilderStatus, ModelAuth, Planner,
 };
 use zeabur_builder_api::common::{Condition, ConditionStatus, ConditionType, SecretKeyRef};
 use zeabur_builder_api::{annotations, labels};
@@ -1246,14 +1246,14 @@ pub(crate) fn keel_payload<'a>(image: &'a str, run: &'a BuildRun) -> Option<Keel
 /// The waits between notify attempts: three attempts with exponential backoff.
 pub(crate) const NOTIFY_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
 
-/// The Secret with the model API key a run needs: the one the builder's planner names, unless
-/// the run restores a saved plan and so calls no model.
-pub(crate) const fn model_key_ref(
+/// How a run signs in to the model API: the way the builder's planner names, unless the run
+/// restores a saved plan and so calls no model.
+pub(crate) const fn model_auth(
     builder: &ClusterBuilderSpec,
     restores_plan: bool,
-) -> Option<&SecretKeyRef> {
+) -> Option<&ModelAuth> {
     match &builder.planner {
-        Planner::Agent { agent } if !restores_plan => Some(&agent.model.api_key_secret),
+        Planner::Agent { agent } if !restores_plan => Some(&agent.model.auth),
         Planner::Agent { .. } | Planner::Dockerfile | Planner::Railpack { .. } => None,
     }
 }
@@ -1266,9 +1266,8 @@ pub(crate) fn model_key(
     secret: Option<&Secret>,
 ) -> Result<(), Refusal<Reason>> {
     let SecretKeyRef { name, key } = secret_ref;
-    let missing = |message: String| Refusal::new(Reason::ModelKeyMissing, message);
     let Some(secret) = secret else {
-        return Err(missing(format!(
+        return Err(model_key_missing(format!(
             "no Secret `{name}` in `{namespace}` for the model API key"
         )));
     };
@@ -1280,10 +1279,29 @@ pub(crate) fn model_key(
     if present {
         Ok(())
     } else {
-        Err(missing(format!(
+        Err(model_key_missing(format!(
             "Secret `{name}` has no key `{key}` with the model API key"
         )))
     }
+}
+
+/// Whether the service account whose token a federated run exchanges is in the run's namespace.
+pub(crate) fn model_service_account(
+    name: &str,
+    namespace: &str,
+    found: bool,
+) -> Result<(), Refusal<Reason>> {
+    if found {
+        Ok(())
+    } else {
+        Err(model_key_missing(format!(
+            "no ServiceAccount `{name}` in `{namespace}` for the model token"
+        )))
+    }
+}
+
+fn model_key_missing(message: String) -> Refusal<Reason> {
+    Refusal::new(Reason::ModelKeyMissing, message)
 }
 
 /// What the Job and its Pod say about a run.

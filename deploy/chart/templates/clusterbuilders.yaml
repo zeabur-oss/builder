@@ -40,9 +40,10 @@ spec:
       {{- with .baseUrl }}
       baseUrl: {{ . | quote }}
       {{- end }}
-      apiKeySecret:
-        name: {{ required "agent.apiKeySecret.name is required" .apiKeySecret.name | quote }}
-        key: {{ required "agent.apiKeySecret.key is required" .apiKeySecret.key | quote }}
+      {{- if not .auth.type }}
+      {{- fail "agent.auth.type is required" }}
+      {{- end }}
+      auth: {{- toYaml .auth | nindent 8 }}
   frontend: {type: dockerfile.v0}
 {{- end }}
 {{- end }}

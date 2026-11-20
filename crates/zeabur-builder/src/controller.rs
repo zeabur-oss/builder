@@ -44,7 +44,9 @@ use jiff::Timestamp;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{ConfigMap, Namespace, ObjectReference, Pod, Secret};
+use k8s_openapi::api::core::v1::{
+    ConfigMap, Namespace, ObjectReference, Pod, Secret, ServiceAccount,
+};
 use kube::api::{
     Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams, PropagationPolicy,
 };
@@ -62,7 +64,7 @@ use zeabur_builder_api::build::{
 use zeabur_builder_api::build_run::{
     BuildRun, BuildRunSpec, BuildRunStatus, Phase, Reason, Trigger,
 };
-use zeabur_builder_api::cluster_builder::ClusterBuilder;
+use zeabur_builder_api::cluster_builder::{ClusterBuilder, Credential};
 use zeabur_builder_api::common::{ConditionStatus, ConditionType};
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::refusal::Refusal;
@@ -1706,21 +1708,35 @@ fn registry_missing(message: String) -> Refusal<Reason> {
     Refusal::new(Reason::RegistryCredentialsMissing, message)
 }
 
-/// For a run whose planner calls a model, whether its model API key is in the run's namespace.
-/// A run that restores a saved plan calls no model.
+/// For a run whose planner calls a model, whether the Secret or the service account it signs in
+/// with is in the run's namespace. A run that restores a saved plan calls no model.
 async fn model_key(
     ctx: &Context,
     builder: &ClusterBuilder,
     restores_plan: bool,
     namespace: &str,
 ) -> Result<Result<(), Refusal<Reason>>, ControllerError> {
-    let Some(secret_ref) = decide::model_key_ref(&builder.spec, restores_plan) else {
+    let Some(auth) = decide::model_auth(&builder.spec, restores_plan) else {
         return Ok(Ok(()));
     };
-    let secret = Api::<Secret>::namespaced(ctx.client.clone(), namespace)
-        .get_opt(&secret_ref.name)
-        .await?;
-    Ok(decide::model_key(secret_ref, namespace, secret.as_ref()))
+    match auth.credential() {
+        Credential::Secret(secret_ref) => {
+            let secret = Api::<Secret>::namespaced(ctx.client.clone(), namespace)
+                .get_opt(&secret_ref.name)
+                .await?;
+            Ok(decide::model_key(secret_ref, namespace, secret.as_ref()))
+        }
+        Credential::ServiceAccount(name) => {
+            let account = Api::<ServiceAccount>::namespaced(ctx.client.clone(), namespace)
+                .get_metadata_opt(name)
+                .await?;
+            Ok(decide::model_service_account(
+                name,
+                namespace,
+                account.is_some(),
+            ))
+        }
+    }
 }
 
 /// The `.dockerconfigjson` of the Secret that `spec.output.pushSecretRef` names, in the `Build`'s

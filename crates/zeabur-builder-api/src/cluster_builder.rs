@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::build::MAX_CONDITIONS;
-use crate::common::{Condition, DURATION_PATTERN, SecretKeyRef};
+use crate::common::{Condition, DURATION_PATTERN, MAX_NAME, SecretKeyRef};
 
 /// Longest image reference.
 pub const MAX_IMAGE: usize = 512;
@@ -16,6 +16,8 @@ pub const MAX_IMAGE: usize = 512;
 pub const MAX_OPTS: usize = 32;
 /// Longest quantity in the status.
 pub const MAX_QUANTITY: usize = 64;
+/// Longest model provider id, such as a federation rule.
+const MAX_ID: usize = 256;
 
 /// A way to build. Every builder reduces to the same shape: an optional planner that writes files
 /// into `/workspace/plan`, then a `BuildKit` frontend with options that reads them.
@@ -165,6 +167,16 @@ pub struct AgentPlanner {
 /// The model of the `agent` planner.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[schemars(extend("x-kubernetes-validations" = [
+    {
+        "rule": "self.auth.type != 'anthropicFederation' || self.provider == 'anthropic'",
+        "message": "anthropicFederation needs provider anthropic",
+    },
+    {
+        "rule": "self.auth.type != 'openaiFederation' || self.provider == 'openai'",
+        "message": "openaiFederation needs provider openai",
+    },
+]))]
 pub struct ModelSpec {
     /// The provider, by Rig's name, such as `anthropic`, `openai`, `gcp.gemini` or `openrouter`.
     /// It sets the endpoint and the API format.
@@ -177,9 +189,121 @@ pub struct ModelSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = 2048))]
     pub base_url: Option<String>,
-    /// The Secret key that holds the model API key, in each `Build`'s own namespace. A run
-    /// waits with `ModelKeyMissing` while it is missing.
-    pub api_key_secret: SecretKeyRef,
+    /// How the run signs in to the model API.
+    pub auth: ModelAuth,
+}
+
+/// How a run signs in to the model API. A run waits with `ModelKeyMissing` while the Secret or
+/// the service account it names is missing from the `Build`'s namespace.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[schemars(transform = crate::union::tagged)]
+pub enum ModelAuth {
+    /// An API key in a Secret.
+    ApiKey {
+        /// The Secret key that holds the model API key, in each `Build`'s own namespace.
+        api_key: SecretKeyRef,
+    },
+    /// Anthropic's workload identity federation: a service account token for a short-lived
+    /// access token.
+    AnthropicFederation {
+        /// The federation rule, and the service account whose token the run exchanges.
+        anthropic_federation: AnthropicFederation,
+    },
+    /// OpenAI's workload identity federation: a service account token for a short-lived access
+    /// token.
+    OpenaiFederation {
+        /// The identity provider, and the service account whose token the run exchanges.
+        openai_federation: OpenAiFederation,
+    },
+}
+
+impl ModelAuth {
+    /// What the run reads from its namespace to sign in.
+    #[must_use]
+    pub const fn credential(&self) -> Credential<'_> {
+        match self {
+            Self::ApiKey { api_key } => Credential::Secret(api_key),
+            Self::AnthropicFederation {
+                anthropic_federation:
+                    AnthropicFederation {
+                        service_account_name,
+                        ..
+                    },
+            }
+            | Self::OpenaiFederation {
+                openai_federation:
+                    OpenAiFederation {
+                        service_account_name,
+                        ..
+                    },
+            } => Credential::ServiceAccount(service_account_name.as_str()),
+        }
+    }
+}
+
+/// What a run signs in to the model API with, in the `Build`'s namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Credential<'a> {
+    /// A Secret key with an API key.
+    Secret(&'a SecretKeyRef),
+    /// A service account whose projected token the run exchanges.
+    ServiceAccount(&'a str),
+}
+
+/// Anthropic's federation rule. The projected token's audience is `https://api.anthropic.com`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AnthropicFederation {
+    /// The Kubernetes service account, in each `Build`'s own namespace, whose token the run
+    /// exchanges.
+    #[schemars(length(min = 1, max = MAX_NAME))]
+    pub service_account_name: String,
+    /// The federation rule, `fdrl_…`.
+    #[schemars(length(min = 1, max = MAX_ID))]
+    pub federation_rule_id: String,
+    /// The organization.
+    #[schemars(length(min = 1, max = MAX_ID))]
+    pub organization_id: String,
+    /// The workspace, `wrkspc_…`, needed when the rule has several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_ID))]
+    pub workspace_id: Option<String>,
+    /// Anthropic's service account, `svac_…`, when the rule does not name one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_ID))]
+    pub service_account_id: Option<String>,
+}
+
+impl AnthropicFederation {
+    /// The audience Anthropic takes service account tokens for.
+    pub const AUDIENCE: &str = "https://api.anthropic.com";
+}
+
+/// OpenAI's workload identity provider. The projected token's audience is
+/// `https://api.openai.com/v1`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenAiFederation {
+    /// The Kubernetes service account, in each `Build`'s own namespace, whose token the run
+    /// exchanges.
+    #[schemars(length(min = 1, max = MAX_NAME))]
+    pub service_account_name: String,
+    /// The workload identity provider.
+    #[schemars(length(min = 1, max = MAX_ID))]
+    pub identity_provider_id: String,
+    /// OpenAI's service account the token maps to.
+    #[schemars(length(min = 1, max = MAX_ID))]
+    pub service_account_id: String,
+}
+
+impl OpenAiFederation {
+    /// The audience OpenAI takes service account tokens for.
+    pub const AUDIENCE: &str = "https://api.openai.com/v1";
 }
 
 /// CPU and memory, as Kubernetes quantities.

@@ -31,6 +31,10 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create, update, delete]
+  # The ServiceAccount a federated agent run exchanges a token of.
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get]
   - apiGroups: [events.k8s.io]
     resources: [events]
     verbs: [create, patch]

@@ -116,6 +116,8 @@ With Anthropic and OpenAI, the tool can exchange a Kubernetes service account to
 
 These steps work for a cluster whose service account issuer cannot be reached from the internet, such as a default k3s cluster.
 
+For the `agent` builder, do the first two steps, then follow [Build a repository without a Dockerfile](../builds/no-dockerfile.mdx) instead of the third: the builder mounts the token and sets the variables.
+
 <Steps>
 
 <Step>

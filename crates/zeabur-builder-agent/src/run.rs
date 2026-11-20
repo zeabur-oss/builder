@@ -8,7 +8,7 @@ use zeabur_builder_core::refusal::Refusal;
 
 use crate::agent::Agent;
 use crate::budget::{Limits, Spent};
-use crate::federation::Federation;
+use crate::federation;
 use crate::http::HyperClient;
 use crate::output::{self, WriteError};
 use crate::plan::{Details, Info, Outcome, Plan, Reason, Source};
@@ -137,7 +137,7 @@ async fn read_previous(dir: &Path) -> Option<Files> {
 
 /// `model` of `provider`, sending through [`HyperClient`], with `key`. Without it, Rig reads the
 /// key from the provider's own variable, such as `ANTHROPIC_API_KEY`; without that, an Anthropic
-/// or OpenAI run can exchange a service account token instead ([`Federation`]). A model its
+/// or OpenAI run can exchange a service account token instead ([`federation`]). A model its
 /// catalogue does not list still connects.
 async fn connect(
     provider: &str,
@@ -164,9 +164,9 @@ async fn connect(
     );
     let http = HyperClient::new().map_err(|e| Refusal::new(Reason::ModelFailed, e.to_string()))?;
     if key.is_none()
-        && let Some(federation) = Federation::from_env(provider.vendor())?
+        && let Some(source) = federation::from_env(provider.vendor())?
     {
-        return federation.connect(catalog, &spec, http, base_url).await;
+        return federation::connect(source, catalog, &spec, http, base_url).await;
     }
     let mut options = ConnectOptions::new().http(http);
     if let Some(key) = key {

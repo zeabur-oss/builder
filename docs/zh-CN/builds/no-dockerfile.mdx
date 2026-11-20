@@ -31,7 +31,7 @@ kubectl -n team-a create secret generic model --from-file=anthropic=./model-key
 helm upgrade builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
   -n builder-system --reuse-values \
   --set agent.enabled=true --set agent.provider=anthropic --set agent.model=claude-sonnet-5-5 \
-  --set agent.apiKeySecret.name=model --set agent.apiKeySecret.key=anthropic
+  --set agent.auth.type=apiKey --set agent.auth.apiKey.name=model --set agent.auth.apiKey.key=anthropic
 ```
 
 chart 会安装名为 `agent` 的 ClusterBuilder。要改用同一个 API 的其他端点，例如代理服务器，再设置 `agent.baseUrl`。
@@ -56,6 +56,48 @@ spec:
 </Step>
 
 </Steps>
+
+## 不用 API 密钥登录
+
+使用 Anthropic 和 OpenAI 时，run 可以用 Kubernetes 服务账号令牌换取短期访问令牌，Namespace 里就不用存放 API 密钥。先按照 [用 AI 写 Dockerfile](../reference/ai-dockerfile.mdx) 中“用服务账号令牌代替 API 密钥”一节，在提供商处登记集群。subject 填 `system:serviceaccount:<namespace>:builder-agent`。
+
+在每个有 Build 使用 `agent` 构建器的 Namespace 创建这个 ServiceAccount：
+
+```sh
+kubectl -n team-a create serviceaccount builder-agent
+```
+
+在 chart 配置值中设置 `agent.auth`。Anthropic 的写法：
+
+```yaml
+agent:
+  enabled: true
+  provider: anthropic
+  model: claude-sonnet-5-5
+  auth:
+    type: anthropicFederation
+    anthropicFederation:
+      serviceAccountName: builder-agent
+      federationRuleId: fdrl_…
+      organizationId: …
+```
+
+规则涵盖多个工作区时，再加上 `workspaceId`。`serviceAccountId` 可以不填。OpenAI 的写法：
+
+```yaml
+agent:
+  enabled: true
+  provider: openai
+  model: gpt-5.5
+  auth:
+    type: openaiFederation
+    openaiFederation:
+      serviceAccountName: builder-agent
+      identityProviderId: …
+      serviceAccountId: …
+```
+
+只有 plan 容器会挂载令牌，而且令牌只用于提供商的 audience。run 拿不到 Kubernetes API 的令牌。ServiceAccount 不存在时，run 会停在 `ModelKeyMissing` 等待。
 
 ## 查看结果
 
@@ -124,9 +166,9 @@ mkdir plan && oras blob fetch --output - "${plan%@*}@$layer" | tar -xz -C plan
 
 | 看到的情况 | 接下来怎么做 |
 | --- | --- |
-| run 停在 `ModelKeyMissing` 等待，消息说找不到 `model` Secret 或 `anthropic` 键 | 在 Build 所在的 Namespace 创建 Secret 或补上键。补好后 run 会自己开始，等待时不会创建 Job。 |
+| run 停在 `ModelKeyMissing` 等待，消息说找不到 Secret、键或 ServiceAccount | 在 Build 所在的 Namespace 创建它，或补上键。补好后 run 会自己开始，等待时不会创建 Job。 |
 | run 以 `PlanFailed` 失败 | 从 `status.plan.stopped` 看停止原因，从 `status.message` 看怎么处理。 |
-| `stopped` 是 `ModelKeyMissing` 或 `ModelFailed` | 检查密钥和 `status.message`。密钥缺失或被拒绝是 `ModelKeyMissing`；模型 API 拒绝请求或请求失败是 `ModelFailed`。 |
+| `stopped` 是 `ModelKeyMissing` 或 `ModelFailed` | 检查密钥或工作负载身份联合配置，以及 `status.message`。密钥或服务账号令牌缺失或被拒绝是 `ModelKeyMissing`；模型 API 拒绝请求或请求失败是 `ModelFailed`。 |
 | `stopped` 是 `SeveralApps` | 在 `spec.source.contextDir` 指定应用所在的目录。 |
 | `stopped` 是 `NeedsBuildVariable` | 试构建拿不到 Build 的变量，所以 agent 写不完这个 Dockerfile。请自己写 Dockerfile，用 `RUN --mount=type=secret,id=NAME,env=NAME` 读取变量，提交进仓库，把 `builderRef` 改成 `dockerfile`，再在 `spec.env` 设置变量。 |
 | `stopped` 是 `NoAppFound`、`NeedsPrivateDependency` 或 `UnsupportedPlatform` | `status.message` 会说明应用、私有依赖或平台需要什么。 |

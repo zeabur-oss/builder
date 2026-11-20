@@ -31,7 +31,7 @@ Upgrade the chart, keep your values and turn on `agent`:
 helm upgrade builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
   -n builder-system --reuse-values \
   --set agent.enabled=true --set agent.provider=anthropic --set agent.model=claude-sonnet-5-5 \
-  --set agent.apiKeySecret.name=model --set agent.apiKeySecret.key=anthropic
+  --set agent.auth.type=apiKey --set agent.auth.apiKey.name=model --set agent.auth.apiKey.key=anthropic
 ```
 
 The chart installs a ClusterBuilder named `agent`. To send requests to another endpoint of the same API, such as a proxy, also set `agent.baseUrl`.
@@ -56,6 +56,48 @@ spec:
 </Step>
 
 </Steps>
+
+## Sign in without an API key
+
+With Anthropic and OpenAI, a run can exchange a Kubernetes service account token for a short-lived access token, so no Namespace stores an API key. First register the cluster with the provider as in "Use a service account token instead of an API key" in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx). Use the subject `system:serviceaccount:<namespace>:builder-agent`.
+
+Create that ServiceAccount in each Namespace with a Build on the `agent` builder:
+
+```sh
+kubectl -n team-a create serviceaccount builder-agent
+```
+
+Set `agent.auth` in the chart values. For Anthropic:
+
+```yaml
+agent:
+  enabled: true
+  provider: anthropic
+  model: claude-sonnet-5-5
+  auth:
+    type: anthropicFederation
+    anthropicFederation:
+      serviceAccountName: builder-agent
+      federationRuleId: fdrl_…
+      organizationId: …
+```
+
+Add `workspaceId` when the rule has several workspaces. `serviceAccountId` is optional. For OpenAI:
+
+```yaml
+agent:
+  enabled: true
+  provider: openai
+  model: gpt-5.5
+  auth:
+    type: openaiFederation
+    openaiFederation:
+      serviceAccountName: builder-agent
+      identityProviderId: …
+      serviceAccountId: …
+```
+
+Only the plan container mounts the token, and only for the provider's audience. The run gets no token for the Kubernetes API. While the ServiceAccount is missing, the run waits with `ModelKeyMissing`.
 
 ## Read the result
 
@@ -124,9 +166,9 @@ Commit both `plan/Dockerfile` and `plan/Dockerfile.dockerignore` to the reposito
 
 | What you see | What to do |
 | --- | --- |
-| The run waits with `ModelKeyMissing`, and its message names a missing `model` Secret or `anthropic` key. | Create the Secret, or add the key, in the Build's Namespace. The run starts by itself; no Job is created while it waits. |
+| The run waits with `ModelKeyMissing`, and its message names a missing Secret, key or ServiceAccount. | Create it, or add the key, in the Build's Namespace. The run starts by itself; no Job is created while it waits. |
 | The run fails with `PlanFailed`. | Read `status.plan.stopped` for the reason and `status.message` for what to do. |
-| `stopped` is `ModelKeyMissing` or `ModelFailed`. | Check the key and `status.message`. A missing or refused key is `ModelKeyMissing`; a refused or failed request to the model API is `ModelFailed`. |
+| `stopped` is `ModelKeyMissing` or `ModelFailed`. | Check the key or the federation, and `status.message`. A missing or refused key or service account token is `ModelKeyMissing`; a refused or failed request to the model API is `ModelFailed`. |
 | `stopped` is `SeveralApps`. | Set the app's folder in `spec.source.contextDir`. |
 | `stopped` is `NeedsBuildVariable`. | Trial builds run without the Build's variables, so the agent cannot finish this Dockerfile. Write it yourself, read the variable with `RUN --mount=type=secret,id=NAME,env=NAME`, commit it, set `builderRef` to `dockerfile` and the variable in `spec.env`. |
 | `stopped` is `NoAppFound`, `NeedsPrivateDependency` or `UnsupportedPlatform`. | `status.message` says what the app, its private dependency or its platform needs. |

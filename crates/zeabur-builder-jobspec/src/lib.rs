@@ -39,15 +39,17 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
     Capabilities, Container, EmptyDirVolumeSource, EnvVar, EnvVarSource, KeyToPath,
-    PodSecurityContext, PodSpec, PodTemplateSpec, ResourceRequirements, SeccompProfile,
-    SecretKeySelector, SecretVolumeSource, SecurityContext, Toleration, Volume, VolumeMount,
+    PodSecurityContext, PodSpec, PodTemplateSpec, ProjectedVolumeSource, ResourceRequirements,
+    SeccompProfile, SecretKeySelector, SecretVolumeSource, SecurityContext,
+    ServiceAccountTokenProjection, Toleration, Volume, VolumeMount, VolumeProjection,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar, SourceKind};
 use zeabur_builder_api::build_run::BuildRun;
 use zeabur_builder_api::cluster_builder::{
-    AgentPlanner, ClusterBuilderSpec, Frontend as FrontendKind, Planner, PlannerSpec,
+    AgentPlanner, AnthropicFederation, ClusterBuilderSpec, Frontend as FrontendKind, ModelAuth,
+    OpenAiFederation, Planner, PlannerSpec,
 };
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::repo::{RepoKey, RepoUrlError};
@@ -67,6 +69,10 @@ const NON_ROOT: &str = "/workspace/out/non-root";
 const GIT_CREDENTIALS: &str = "/etc/zeabur-builder/git";
 const BUILDKIT_TLS: &str = "/etc/zeabur-builder/buildkit";
 const REGISTRY_AUTH: &str = "/etc/zeabur-builder/registry";
+const MODEL_TOKEN_DIR: &str = "/var/run/secrets/zeabur.com/model";
+const MODEL_TOKEN: &str = "/var/run/secrets/zeabur.com/model/token";
+/// How long a projected model token lasts; the kubelet renews it before it expires.
+const MODEL_TOKEN_SECONDS: i64 = 3600;
 /// The registry's CA, PEM, in the `fetch` container of an archive source.
 pub const REGISTRY_CA_ENV: &str = "ZB_REGISTRY_CA";
 /// Prefix of the build container's variables that carry `Build.spec.env`, so a variable named
@@ -326,25 +332,17 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     }
     let mut build = build_container(inputs, &resolved, &context, repo.as_ref());
     build.resources = Some(resources);
+    let token = model_token(&resolved.plan);
 
     let pod = PodSpec {
         restart_policy: Some("Never".to_owned()),
         automount_service_account_token: Some(false),
+        service_account_name: token.as_ref().map(|token| token.service_account.to_owned()),
         enable_service_links: Some(false),
-        security_context: Some(PodSecurityContext {
-            run_as_non_root: Some(true),
-            run_as_user: Some(RUN_AS),
-            run_as_group: Some(RUN_AS),
-            fs_group: Some(RUN_AS),
-            seccomp_profile: Some(SeccompProfile {
-                type_: "RuntimeDefault".to_owned(),
-                ..SeccompProfile::default()
-            }),
-            ..PodSecurityContext::default()
-        }),
+        security_context: Some(pod_security()),
         init_containers: Some(init_containers),
         containers: vec![build],
-        volumes: Some(volumes(inputs)),
+        volumes: Some(volumes(inputs, token.as_ref())),
         node_selector: inputs.placement.node_selector(),
         tolerations: inputs.placement.tolerations(),
         ..PodSpec::default()
@@ -609,6 +607,10 @@ fn agent_container(inputs: &JobInputs<'_>, agent: &AgentPlanner, context: &str) 
     }
     let mut mounts = workspace_mounts();
     mounts.push(mount("buildkit-client-tls", BUILDKIT_TLS));
+    let sign_in = sign_in(&model.auth);
+    if sign_in.token.is_some() {
+        mounts.push(mount("model-token", MODEL_TOKEN_DIR));
+    }
     Container {
         name: "plan".to_owned(),
         image: Some(agent.planner.image.clone()),
@@ -619,24 +621,111 @@ fn agent_container(inputs: &JobInputs<'_>, agent: &AgentPlanner, context: &str) 
             "plan".to_owned(),
         ]),
         args: Some(args),
-        env: Some(vec![
-            env("HOME", "/tmp"),
-            EnvVar {
+        env: Some([vec![env("HOME", "/tmp")], sign_in.env].concat()),
+        volume_mounts: Some(mounts),
+        termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
+        ..hardened()
+    }
+}
+
+/// How an agent run signs in to the model API: its variables, and the projected token it
+/// exchanges, if any.
+struct SignIn<'a> {
+    env: Vec<EnvVar>,
+    token: Option<ModelToken<'a>>,
+}
+
+/// A service account token for a model provider's audience.
+struct ModelToken<'a> {
+    service_account: &'a str,
+    audience: &'static str,
+}
+
+/// The variables each provider's SDKs read, so the agent needs no flags of its own.
+fn sign_in(auth: &ModelAuth) -> SignIn<'_> {
+    match auth {
+        ModelAuth::ApiKey { api_key } => SignIn {
+            env: vec![EnvVar {
                 name: "ZB_MODEL_API_KEY".to_owned(),
                 value: None,
                 value_from: Some(EnvVarSource {
                     secret_key_ref: Some(SecretKeySelector {
-                        name: model.api_key_secret.name.clone(),
-                        key: model.api_key_secret.key.clone(),
+                        name: api_key.name.clone(),
+                        key: api_key.key.clone(),
                         optional: Some(false),
                     }),
                     ..EnvVarSource::default()
                 }),
-            },
-        ]),
-        volume_mounts: Some(mounts),
-        termination_message_policy: Some("FallbackToLogsOnError".to_owned()),
-        ..hardened()
+            }],
+            token: None,
+        },
+        ModelAuth::AnthropicFederation {
+            anthropic_federation: federation,
+        } => {
+            let mut vars = vec![
+                env(
+                    "ANTHROPIC_FEDERATION_RULE_ID",
+                    &federation.federation_rule_id,
+                ),
+                env("ANTHROPIC_ORGANIZATION_ID", &federation.organization_id),
+                env("ANTHROPIC_IDENTITY_TOKEN_FILE", MODEL_TOKEN),
+            ];
+            if let Some(workspace) = &federation.workspace_id {
+                vars.push(env("ANTHROPIC_WORKSPACE_ID", workspace));
+            }
+            if let Some(account) = &federation.service_account_id {
+                vars.push(env("ANTHROPIC_SERVICE_ACCOUNT_ID", account));
+            }
+            SignIn {
+                env: vars,
+                token: Some(ModelToken {
+                    service_account: &federation.service_account_name,
+                    audience: AnthropicFederation::AUDIENCE,
+                }),
+            }
+        }
+        ModelAuth::OpenaiFederation {
+            openai_federation: federation,
+        } => SignIn {
+            env: vec![
+                env(
+                    "OPENAI_IDENTITY_PROVIDER_ID",
+                    &federation.identity_provider_id,
+                ),
+                env("OPENAI_SERVICE_ACCOUNT_ID", &federation.service_account_id),
+                env("OPENAI_IDENTITY_TOKEN_FILE", MODEL_TOKEN),
+            ],
+            token: Some(ModelToken {
+                service_account: &federation.service_account_name,
+                audience: OpenAiFederation::AUDIENCE,
+            }),
+        },
+    }
+}
+
+/// The projected token an agent run exchanges, if it signs in with federation.
+fn model_token<'a>(plan: &Plan<'a>) -> Option<ModelToken<'a>> {
+    match plan {
+        Plan::Agent(agent) => sign_in(&agent.model.auth).token,
+        Plan::None | Plan::Restore(_) | Plan::Railpack(_) => None,
+    }
+}
+
+fn token_volume(token: &ModelToken<'_>) -> Volume {
+    Volume {
+        name: "model-token".to_owned(),
+        projected: Some(ProjectedVolumeSource {
+            sources: Some(vec![VolumeProjection {
+                service_account_token: Some(ServiceAccountTokenProjection {
+                    audience: Some(token.audience.to_owned()),
+                    expiration_seconds: Some(MODEL_TOKEN_SECONDS),
+                    path: "token".to_owned(),
+                }),
+                ..VolumeProjection::default()
+            }]),
+            default_mode: Some(0o440),
+        }),
+        ..Volume::default()
     }
 }
 
@@ -898,7 +987,9 @@ fn context_path(inputs: &JobInputs<'_>) -> String {
     }
 }
 
-fn volumes(inputs: &JobInputs<'_>) -> Vec<Volume> {
+/// The pod's volumes. Its only service account token is `token`, for a model provider's
+/// audience.
+fn volumes(inputs: &JobInputs<'_>, token: Option<&ModelToken<'_>>) -> Vec<Volume> {
     let mut volumes = vec![empty_dir("workspace"), empty_dir("tmp")];
     match inputs.git_auth {
         GitAuth::Anonymous => {}
@@ -920,7 +1011,22 @@ fn volumes(inputs: &JobInputs<'_>) -> Vec<Volume> {
             mode: None,
         }]),
     ));
+    volumes.extend(token.map(token_volume));
     volumes
+}
+
+fn pod_security() -> PodSecurityContext {
+    PodSecurityContext {
+        run_as_non_root: Some(true),
+        run_as_user: Some(RUN_AS),
+        run_as_group: Some(RUN_AS),
+        fs_group: Some(RUN_AS),
+        seccomp_profile: Some(SeccompProfile {
+            type_: "RuntimeDefault".to_owned(),
+            ..SeccompProfile::default()
+        }),
+        ..PodSecurityContext::default()
+    }
 }
 
 fn workspace_mounts() -> Vec<VolumeMount> {
