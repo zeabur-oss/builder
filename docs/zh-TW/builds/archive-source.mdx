@@ -7,7 +7,7 @@ description: 將資料夾上傳為 OCI artifact，再將 manifest digest 填入 
 
 ## 開始前
 
-- 準備要建置的資料夾。上傳工作由持有資料夾的用戶端負責，例如 Zeabur 或 `zeaburctl`。
+- 準備要建置的資料夾。上傳工作由持有資料夾的用戶端負責，例如 Zeabur 開源版或 `zeaburctl`。
 - 準備 `Build` 的上傳權杖。用戶端要先在 `Build` 加上 `builder.zeabur.com/upload-token-request` annotation，要求取得權杖，再用這個權杖推送。取得方式見 [Registry 權杖](../operations/registry-tokens.mdx)。
 - 若要使用下方指令，請先準備 [ORAS](https://oras.land) 和 `Build` 上傳用 Secret 中的 `auth.json`。
 
