@@ -5,7 +5,7 @@ description: 用 Helm chart 安装 Zeabur Builder，配置构建器推送镜像�
 
 <Callout type="info">
 
-使用 Zeabur 开源版时，不需要看这一页：zeabur-installer 会安装 Zeabur Builder，没装时，**集群** → **组件**会列出安装命令，见[查看和安装集群组件](https://oss.zeabur.com/zh-CN/docs/zeabur/cluster/components/)。
+使用 Zeabur 开源版时，不需要看这一页：改从**集群** → **组件**安装 Zeabur Builder，见[查看和安装集群组件](https://oss.zeabur.com/zh-CN/docs/zeabur/cluster/components/)。
 
 </Callout>
 
@@ -124,7 +124,7 @@ clusterbuilder.builder.zeabur.com/railpack condition met
 
 ## 用 Zeabur Catalog 连同 zot 一起安装
 
-[Zeabur Catalog](https://github.com/zeabur-oss/catalog) 的 `builds/zeabur-builder` 组件会一起安装 Zeabur Builder 和 zot，并填好上面的 registry 配置。zot 只接受使用 `zot-token-signer` 签署的令牌推送镜像。用 zeabur-installer 移除这个组件时，zot 也会一起移除。`zeaburctl components export builds/zeabur-builder --format helm` 会依次输出安装命令，其中 Builder 的配置如下：
+[Zeabur Catalog](https://github.com/zeabur-oss/catalog) 的 `builds/zeabur-builder` 组件会一起安装 Zeabur Builder 和 zot，并填好上面的 registry 配置。zot 只接受使用 `zot-token-signer` 签署的令牌推送镜像。在**集群** → **组件**移除这个组件时，zot 也会一起移除。`zeaburctl components export builds/zeabur-builder --format helm` 会依次输出安装命令，其中 Builder 的配置如下：
 
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \

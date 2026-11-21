@@ -16,8 +16,7 @@
 
 不需要另外安装这个仓库里的任何东西。
 
-- **zeabur-installer** 默认安装 Zeabur Builder。个人版安装时，在“选择组件”中勾选 **Zeabur Builder**。
-- **已经在用 Zeabur 开源版，但还没装**？打开**集群** → **组件**，找到 Zeabur Builder 后点击**安装**，页面会列出需要在服务器上运行的命令。
+- **Zeabur Builder 是 Zeabur Catalog 里的组件**：打开**集群** → **组件**，找到 Zeabur Builder 后点击**安装**。还没装时，**新增**菜单的**从 Git 部署**也会列出它。
 
 部署时，在项目中选择**新增** → **从 Git 部署**，见[从 Git 构建并部署服务](https://oss.zeabur.com/zh-CN/docs/zeabur/deploy/git/)。安装 Zeabur 开源版和管理服务的方法，见 [Zeabur 开源版文档](https://oss.zeabur.com/zh-CN/docs/zeabur/)。
 

@@ -5,7 +5,7 @@ description: Install Zeabur Builder with a Helm chart, configure the registry th
 
 <Callout type="info">
 
-If you use Zeabur, you don't need this page: zeabur-installer installs Zeabur Builder, and **Cluster** → **Components** shows the command when it's missing. See [View and install cluster components](https://oss.zeabur.com/docs/zeabur/cluster/components/).
+If you use Zeabur, you don't need this page: install Zeabur Builder from **Cluster** → **Components** instead. See [View and install cluster components](https://oss.zeabur.com/docs/zeabur/cluster/components/).
 
 </Callout>
 
@@ -124,7 +124,7 @@ Next, [create your first Build](first-build.mdx).
 
 ## Install with zot from Zeabur Catalog
 
-The `builds/zeabur-builder` component of [Zeabur Catalog](https://github.com/zeabur-oss/catalog) installs Zeabur Builder and zot together, with the registry settings above filled in. zot only accepts image pushes with tokens signed by `zot-token-signer`. When zeabur-installer removes the component, zot goes with it. `zeaburctl components export builds/zeabur-builder --format helm` prints the install commands in order; Builder's settings among them are:
+The `builds/zeabur-builder` component of [Zeabur Catalog](https://github.com/zeabur-oss/catalog) installs Zeabur Builder and zot together, with the registry settings above filled in. zot only accepts image pushes with tokens signed by `zot-token-signer`. When you remove the component in **Cluster** → **Components**, zot goes with it. `zeaburctl components export builds/zeabur-builder --format helm` prints the install commands in order; Builder's settings among them are:
 
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \

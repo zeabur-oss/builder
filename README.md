@@ -15,10 +15,9 @@ it, and builds again when the branch changes.
 
 You don't need to install anything from this repository.
 
-- **zeabur-installer** installs Zeabur Builder by default. On a personal installation, select
-  **Zeabur Builder** in “Choose components.”
-- **Already running Zeabur without it?** Open **Cluster** → **Components**, find Zeabur Builder and
-  click **Install**. Zeabur shows the command to run on your server.
+- **Zeabur Builder is a component from the Zeabur Catalog.** Open **Cluster** → **Components**,
+  find Zeabur Builder and click **Install**. When it's missing, the **Add** menu also lists it
+  under **Deploy from Git**.
 
 To deploy, open a project and select **Add** → **Deploy from Git**:
 [Build and deploy a service from Git](https://oss.zeabur.com/docs/zeabur/deploy/git/). The rest of

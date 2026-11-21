@@ -16,8 +16,7 @@
 
 不需要另外安裝這個儲存庫的任何東西。
 
-- **zeabur-installer** 預設就會安裝 Zeabur Builder。個人安裝時，在「選擇元件」勾選 **Zeabur Builder**。
-- **已經在用 Zeabur 開源版，但還沒有裝**？打開**叢集** → **元件**，找到 Zeabur Builder 後按**安裝**，畫面會列出要在伺服器上執行的指令。
+- **Zeabur Builder 是 Zeabur Catalog 裡的元件**：打開**叢集** → **元件**，找到 Zeabur Builder 後按**安裝**。還沒裝時，**新增**選單的**從 Git 部署**也會列出它。
 
 要部署時，在專案裡選**新增** → **從 Git 部署**，見[從 Git 建置並部署服務](https://oss.zeabur.com/zh-TW/docs/zeabur/deploy/git/)。安裝 Zeabur 開源版和管理服務的方式，見 [Zeabur 開源版文件](https://oss.zeabur.com/zh-TW/docs/zeabur/)。
 
