@@ -71,7 +71,7 @@ registry:
     namespace: ""
     secret: ""
   # The CA that signed the registry's certificate (PEM), when a public CA did not. buildkitd and
-  # the archive download trust it.
+  # the archive download trust it, and each upload Secret carries it in ca.crt.
   ca: ""
   # Copy the CA from a Secret at install time, such as the catalog Zot's zot-tls in zot. Used when
   # ca is empty. `helm template` cannot read the cluster and leaves it out.

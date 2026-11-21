@@ -20,7 +20,7 @@ registry 只信任一把 Ed25519 金鑰，只有控制器能讀取這把金鑰�
 
 - 準備 `kubectl` 和 [ORAS](https://oras.land)。
 - 確認你有編輯目標 Build 的權限。
-- 確認 ORAS 能連到 `zot.zot.svc:5000`，並信任 Secret `zot/zot-tls` 中的 CA。從叢集外上傳時，請使用下方的 port-forward。
+- 確認 ORAS 能連到 `zot.zot.svc:5000`，並信任上傳 Secret 的 `ca.crt` 欄位裡的 CA。從叢集外上傳時，請使用下方的 port-forward。
 
 <Steps>
 
@@ -64,7 +64,7 @@ kubectl -n zot port-forward svc/zot 5000:5000
 ```sh
 printf '{"auths":{"localhost:5000":{"registrytoken":"%s"}}}' \
   "$(kubectl -n team-a get secret api-upload -o jsonpath='{.data.token}' | base64 -d)" > auth.json
-kubectl -n zot get secret zot-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+kubectl -n team-a get secret api-upload -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
 oras push --registry-config auth.json --plain-http=false --ca-file ca.crt \
   localhost:5000/team-a/api/source:upload-1 ...
 ```
