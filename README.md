@@ -7,11 +7,11 @@
 
 # Zeabur Builder
 
-**Push your code to GitHub and Zeabur deploys it, as on zeabur.com.** Zeabur Builder is the part of Zeabur
+**Push your code to GitHub and Zeabur OSS deploys it, as on Zeabur.** Zeabur Builder is the part of Zeabur OSS
 that turns a Git repository into an app that can run: it finds the language your code is in, builds
 it, and builds again when the branch changes.
 
-## Using Zeabur?
+## Using Zeabur OSS?
 
 You don't need to install anything from this repository.
 
@@ -21,15 +21,15 @@ You don't need to install anything from this repository.
 
 To deploy, open a project and select **Add** → **Deploy from Git**:
 [Build and deploy a service from Git](https://oss.zeabur.com/docs/zeabur/deploy/git/). The rest of
-Zeabur, from installing it on a server to running your services, is in the
-[Zeabur documentation](https://oss.zeabur.com/docs/zeabur/).
+Zeabur OSS, from installing it on a server to running your services, is in the
+[Zeabur OSS documentation](https://oss.zeabur.com/docs/zeabur/).
 
 ## What it does for you
 
 - **Finds your language.** With [Railpack](https://railpack.com), it builds Node.js, Python, Go,
   PHP, Ruby, Java, Rust, Elixir, Deno, .NET, Gleam, C++ and Zig apps, static sites and shell
   scripts without a Dockerfile. If your repository has a Dockerfile, it builds that instead.
-- **Rebuilds when the branch changes.** Push to the branch and a new version is built. With Zeabur and Keel,
+- **Rebuilds when the branch changes.** Push to the branch and a new version is built. With Zeabur OSS and Keel,
   the service then switches to it.
 - **Keeps build secrets out of the image.** Build variables, such as a token for private packages,
   reach the build as secrets, so they aren't stored in the image unless your build copies them
@@ -38,7 +38,7 @@ Zeabur, from installing it on a server to running your services, is in the
 
 ## Use it on its own
 
-Zeabur Builder also works without Zeabur. It is a Kubernetes operator that builds container images
+Zeabur Builder also works without Zeabur OSS. It is a Kubernetes operator that builds container images
 from Git with BuildKit and hands the digest to your rollout tool.
 
 A `Build` names a Git repository and a builder:
@@ -83,7 +83,7 @@ pipeline, rollout tool and log collector.
 
 ## Documentation
 
-For Zeabur users:
+For Zeabur OSS users:
 
 - [Build and deploy a service from Git](https://oss.zeabur.com/docs/zeabur/deploy/git/)
 - [View and install cluster components](https://oss.zeabur.com/docs/zeabur/cluster/components/)

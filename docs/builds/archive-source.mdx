@@ -7,7 +7,7 @@ Package a folder and push it to a container registry, then set the OCI artifact'
 
 ## Before you begin
 
-- Prepare the folder to build. The client that holds the folder, such as Zeabur or `zeaburctl`, handles the upload.
+- Prepare the folder to build. The client that holds the folder, such as Zeabur OSS or `zeaburctl`, handles the upload.
 - Prepare an upload token for the `Build`. The client requests a token by adding the `builder.zeabur.com/upload-token-request` annotation to the `Build`, then uses that token to push. See [Registry tokens](../operations/registry-tokens.mdx) for instructions.
 - To run the commands below, prepare [ORAS](https://oras.land) and the `auth.json` from the Secret used for `Build` uploads.
 
