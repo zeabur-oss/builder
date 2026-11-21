@@ -158,6 +158,7 @@ mod tests {
 
     #[test]
     fn counts_each_step_once() {
+        // NDJSON as BuildKit prints it, with lines that are not JSON.
         let stream = r#"
 #1 [internal] load build definition
 {"vertexes":[{"digest":"sha256:a","name":"[1/3] FROM node","started":"2026-10-22T00:00:00Z"}]}
@@ -182,6 +183,7 @@ not json
 
     #[test]
     fn steps_follow_vertices_in_the_order_they_start() {
+        // NDJSON as BuildKit prints it, with a line that is not JSON.
         let stream = r#"{"vertexes":[{"digest":"sha256:a","name":"[1/3] FROM node","started":"2026-10-22T00:00:00.123456789Z"}]}
 {"vertexes":[{"digest":"sha256:a","name":"[1/3] FROM node","started":"2026-10-22T00:00:00Z","completed":"2026-10-22T00:00:01Z","cached":true}]}
 {"vertexes":[{"digest":"sha256:b","name":"[2/3] RUN npm ci","started":"2026-10-22T00:00:01Z"},{"digest":"sha256:c","name":"[3/3] COPY . .","started":"2026-10-22T00:00:01Z"}]}
@@ -228,7 +230,13 @@ not json"#;
 
     #[test]
     fn a_vertex_of_the_next_run_is_a_new_step() {
-        let line = r#"{"vertexes":[{"digest":"sha256:a","name":"load metadata","completed":"2026-10-22T00:00:01Z"}]}"#;
+        let line = serde_json::json!({"vertexes": [{
+            "digest": "sha256:a",
+            "name": "load metadata",
+            "completed": "2026-10-22T00:00:01Z",
+        }]})
+        .to_string();
+        let line = line.as_str();
         let mut log = StepLog::default();
         log.line(line);
         log.line(line);

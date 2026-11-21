@@ -215,6 +215,9 @@ mod tests {
         };
         let json = serde_json::to_string(&plan).unwrap();
         assert_eq!(serde_json::from_str::<BuildPlan>(&json).unwrap(), plan);
-        assert!(serde_json::from_str::<BuildPlan>(r#"{"builds":[],"extra":1}"#).is_err());
+        assert!(
+            serde_json::from_value::<BuildPlan>(serde_json::json!({"builds": [], "extra": 1}))
+                .is_err()
+        );
     }
 }

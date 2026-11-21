@@ -837,6 +837,7 @@ mod tests {
     use http_body_util::Full;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
+    use serde_json::json;
     use zeabur_builder_core::archive::{
         ARTIFACT_TYPE, EMPTY_CONFIG_MEDIA_TYPE, LAYER_MEDIA_TYPE, sha256,
     };
@@ -846,12 +847,17 @@ mod tests {
     const NAME: &str = "team-a/api/source";
     const BASIC: &str = "Basic dGVhbS1hOnNlY3JldA==";
 
+    fn bytes(value: &impl Serialize) -> Vec<u8> {
+        serde_json::to_vec(value).unwrap()
+    }
+
     #[test]
     fn credentials_for_the_registry_host() {
-        let config = br#"{"auths":{
-            "https://index.docker.io/v1/":{"auth":"aHViOmh1Yg=="},
-            "zot.zot.svc:5000":{"username":"team-a","password":"secret"},
-            "registry.example":{"registrytoken":"eyJ.x.y","username":"u","password":"p"}}}"#;
+        let config = &bytes(&json!({"auths": {
+            "https://index.docker.io/v1/": {"auth": "aHViOmh1Yg=="},
+            "zot.zot.svc:5000": {"username": "team-a", "password": "secret"},
+            "registry.example": {"registrytoken": "eyJ.x.y", "username": "u", "password": "p"},
+        }}));
         assert_eq!(
             credentials(config, "zot.zot.svc:5000").unwrap(),
             Some(Credentials::Basic(BASIC.to_owned()))
@@ -865,7 +871,10 @@ mod tests {
             Some(Credentials::Bearer("Bearer eyJ.x.y".to_owned()))
         );
         assert_eq!(credentials(config, "zot.zot.svc").unwrap(), None);
-        assert_eq!(credentials(br#"{"auths":{}}"#, "zot").unwrap(), None);
+        assert_eq!(
+            credentials(&bytes(&json!({"auths": {}})), "zot").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -924,7 +933,7 @@ mod tests {
                 && query.contains(&scope)
                 && query.contains("service=fake")
             {
-                reply(StatusCode::OK, &[], br#"{"token":"t0k"}"#.to_vec())
+                reply(StatusCode::OK, &[], bytes(&json!({"token": "t0k"})))
             } else {
                 reply(StatusCode::FORBIDDEN, &[], Vec::new())
             };
@@ -995,15 +1004,13 @@ mod tests {
     }
 
     fn manifest(blob: &[u8]) -> Vec<u8> {
-        format!(
-            r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_MEDIA_TYPE}","artifactType":"{ARTIFACT_TYPE}",
-            "config":{{"mediaType":"{EMPTY_CONFIG_MEDIA_TYPE}","digest":"{}","size":2}},
-            "layers":[{{"mediaType":"{LAYER_MEDIA_TYPE}","digest":"{}","size":{}}}]}}"#,
-            sha256(b"{}"),
-            sha256(blob),
-            blob.len()
-        )
-        .into_bytes()
+        bytes(&json!({
+            "schemaVersion": 2,
+            "mediaType": MANIFEST_MEDIA_TYPE,
+            "artifactType": ARTIFACT_TYPE,
+            "config": {"mediaType": EMPTY_CONFIG_MEDIA_TYPE, "digest": sha256(b"{}"), "size": 2},
+            "layers": [{"mediaType": LAYER_MEDIA_TYPE, "digest": sha256(blob), "size": blob.len()}],
+        }))
     }
 
     async fn pull(addr: SocketAddr, digest: &str, to: &Path) -> Result<(), RegistryError> {
@@ -1062,17 +1069,19 @@ mod tests {
 
     #[test]
     fn exposed_ports_of_a_config() {
-        let config = br#"{"config":{"ExposedPorts":{"53/udp":{},"8000-8010/tcp":{},"3000/tcp":{},"../x":{},"80":{}}}}"#;
+        let config = json!({"config": {"ExposedPorts": {
+            "53/udp": {}, "8000-8010/tcp": {}, "3000/tcp": {}, "../x": {}, "80": {},
+        }}});
         assert_eq!(
-            exposed_ports(config).unwrap(),
+            exposed_ports(&bytes(&config)).unwrap(),
             ["3000/tcp", "53/udp", "8000-8010/tcp"]
         );
         assert_eq!(
-            exposed_ports(br#"{"config":{}}"#).unwrap(),
+            exposed_ports(&bytes(&json!({"config": {}}))).unwrap(),
             Vec::<String>::new()
         );
         assert_eq!(
-            exposed_ports(br#"{"config":{"ExposedPorts":null}}"#).unwrap(),
+            exposed_ports(&bytes(&json!({"config": {"ExposedPorts": null}}))).unwrap(),
             Vec::<String>::new()
         );
         assert_eq!(exposed_ports(b"{}").unwrap(), Vec::<String>::new());
@@ -1129,22 +1138,30 @@ mod tests {
 
     #[tokio::test]
     async fn reads_the_ports_of_an_image_and_of_an_index_past_attestations() {
-        let config = br#"{"config":{"ExposedPorts":{"3000/tcp":{},"53/udp":{}}}}"#.to_vec();
+        let config = bytes(&json!({"config": {"ExposedPorts": {"3000/tcp": {}, "53/udp": {}}}}));
         let config_digest = sha256(&config);
-        let image = format!(
-            r#"{{"schemaVersion":2,"config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{}}},"layers":[]}}"#,
-            config.len()
-        )
-        .into_bytes();
+        let image = bytes(&json!({
+            "schemaVersion": 2,
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config_digest,
+                "size": config.len(),
+            },
+            "layers": [],
+        }));
         let image_digest = sha256(&image);
-        let attestation = br#"{"schemaVersion":2,"config":{"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#.to_vec();
+        let attestation = bytes(&json!({
+            "schemaVersion": 2,
+            "config": {"digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+        }));
         let attestation_digest = sha256(&attestation);
-        let index = format!(
-            r#"{{"schemaVersion":2,"manifests":[
-            {{"digest":"{attestation_digest}","platform":{{"os":"unknown","architecture":"unknown"}}}},
-            {{"digest":"{image_digest}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#
-        )
-        .into_bytes();
+        let index = bytes(&json!({
+            "schemaVersion": 2,
+            "manifests": [
+                {"digest": attestation_digest, "platform": {"os": "unknown", "architecture": "unknown"}},
+                {"digest": image_digest, "platform": {"os": "linux", "architecture": "amd64"}},
+            ],
+        }));
         let index_digest = sha256(&index);
         let addr = serve_images(vec![
             (config_digest, config),
@@ -1161,16 +1178,18 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_a_config_that_does_not_match() {
-        let config = br#"{"config":{"ExposedPorts":{"3000/tcp":{}}}}"#.to_vec();
+        let config = bytes(&json!({"config": {"ExposedPorts": {"3000/tcp": {}}}}));
         let config_digest = sha256(&config);
-        let image =
-            format!(r#"{{"schemaVersion":2,"config":{{"digest":"{config_digest}"}},"layers":[]}}"#)
-                .into_bytes();
+        let image = bytes(&json!({
+            "schemaVersion": 2,
+            "config": {"digest": config_digest},
+            "layers": [],
+        }));
         let image_digest = sha256(&image);
         let addr = serve_images(vec![
             (
                 config_digest,
-                br#"{"config":{"ExposedPorts":{"22/tcp":{}}}}"#.to_vec(),
+                bytes(&json!({"config": {"ExposedPorts": {"22/tcp": {}}}})),
             ),
             (image_digest.clone(), image),
         ])
@@ -1253,7 +1272,7 @@ mod tests {
         if path == "/token" {
             let scope = format!("scope={}", encode(&format!("repository:{NAME}:pull,push")));
             return if auth.as_deref() == Some(BASIC) && query.contains(&scope) {
-                reply(StatusCode::OK, &[], br#"{"token":"t0k"}"#.to_vec())
+                reply(StatusCode::OK, &[], bytes(&json!({"token": "t0k"})))
             } else {
                 reply(StatusCode::FORBIDDEN, &[], Vec::new())
             };

@@ -208,31 +208,40 @@ pub fn link_stays_inside(entry: &Path, target: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     const LAYER: &str = "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae";
 
-    fn manifest(artifact_type: &str, layers: &str) -> String {
-        format!(
-            r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_MEDIA_TYPE}","artifactType":"{artifact_type}",
-            "config":{{"mediaType":"{EMPTY_CONFIG_MEDIA_TYPE}","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2,"data":"e30="}},
-            "layers":[{layers}]}}"#
-        )
+    fn manifest(artifact_type: &str, layers: &[(&str, u64)]) -> String {
+        json!({
+            "schemaVersion": 2,
+            "mediaType": MANIFEST_MEDIA_TYPE,
+            "artifactType": artifact_type,
+            "config": {
+                "mediaType": EMPTY_CONFIG_MEDIA_TYPE,
+                "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "size": 2,
+                "data": "e30=",
+            },
+            "layers": layers
+                .iter()
+                .map(|&(media_type, size)| json!({"mediaType": media_type, "digest": LAYER, "size": size}))
+                .collect::<Vec<_>>(),
+        })
+        .to_string()
     }
 
     fn digest(bytes: &[u8]) -> String {
         sha256(bytes)
     }
 
-    fn layer_json(media_type: &str, size: u64) -> String {
-        format!(r#"{{"mediaType":"{media_type}","digest":"{LAYER}","size":{size}}}"#)
-    }
-
     #[test]
     fn a_saved_plan_and_a_source_are_not_read_as_each_other() {
         let plan = crate::plan::ARTIFACT_TYPE;
-        let saved = manifest(plan, &layer_json(LAYER_MEDIA_TYPE, 1234));
-        let source = manifest(ARTIFACT_TYPE, &layer_json(LAYER_MEDIA_TYPE, 1234));
+        let saved = manifest(plan, &[(LAYER_MEDIA_TYPE, 1234)]);
+        let source = manifest(ARTIFACT_TYPE, &[(LAYER_MEDIA_TYPE, 1234)]);
 
         assert!(layer(saved.as_bytes(), &digest(saved.as_bytes()), plan).is_ok());
         assert!(layer(saved.as_bytes(), &digest(saved.as_bytes()), ARTIFACT_TYPE).is_err());
@@ -246,7 +255,7 @@ mod tests {
 
     #[test]
     fn an_oras_artifact_gives_its_layer() {
-        let body = manifest(ARTIFACT_TYPE, &layer_json(LAYER_MEDIA_TYPE, 1234));
+        let body = manifest(ARTIFACT_TYPE, &[(LAYER_MEDIA_TYPE, 1234)]);
         assert_eq!(
             layer(body.as_bytes(), &digest(body.as_bytes()), ARTIFACT_TYPE),
             Ok(Layer {
@@ -258,7 +267,7 @@ mod tests {
 
     #[test]
     fn a_manifest_that_does_not_hash_to_the_digest_is_refused() {
-        let body = manifest(ARTIFACT_TYPE, &layer_json(LAYER_MEDIA_TYPE, 1));
+        let body = manifest(ARTIFACT_TYPE, &[(LAYER_MEDIA_TYPE, 1)]);
         let other = digest(b"another manifest");
         assert_eq!(
             layer(body.as_bytes(), &other, ARTIFACT_TYPE),
@@ -274,34 +283,27 @@ mod tests {
                 "an image",
                 manifest(
                     "application/vnd.oci.image.config.v1+json",
-                    &layer_json(LAYER_MEDIA_TYPE, 1),
+                    &[(LAYER_MEDIA_TYPE, 1)],
                 ),
             ),
             (
                 "an uncompressed layer",
                 manifest(
                     ARTIFACT_TYPE,
-                    &layer_json("application/vnd.oci.image.layer.v1.tar", 1),
+                    &[("application/vnd.oci.image.layer.v1.tar", 1)],
                 ),
             ),
             (
                 "two layers",
                 manifest(
                     ARTIFACT_TYPE,
-                    &format!(
-                        "{},{}",
-                        layer_json(LAYER_MEDIA_TYPE, 1),
-                        layer_json(LAYER_MEDIA_TYPE, 1)
-                    ),
+                    &[(LAYER_MEDIA_TYPE, 1), (LAYER_MEDIA_TYPE, 1)],
                 ),
             ),
-            ("no layer", manifest(ARTIFACT_TYPE, "")),
+            ("no layer", manifest(ARTIFACT_TYPE, &[])),
             (
                 "too large",
-                manifest(
-                    ARTIFACT_TYPE,
-                    &layer_json(LAYER_MEDIA_TYPE, MAX_LAYER_BYTES + 1),
-                ),
+                manifest(ARTIFACT_TYPE, &[(LAYER_MEDIA_TYPE, MAX_LAYER_BYTES + 1)]),
             ),
             ("not JSON", "{".to_owned()),
         ];

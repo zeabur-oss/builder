@@ -362,7 +362,13 @@ pub fn ref_matches(followed: &str, resolved: Option<&str>, pushed: &str) -> bool
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    fn bytes(value: &impl serde::Serialize) -> Vec<u8> {
+        serde_json::to_vec(value).unwrap()
+    }
 
     fn key(url: &str) -> RepoKey {
         RepoKey::parse(url).unwrap()
@@ -370,7 +376,7 @@ mod tests {
 
     #[test]
     fn github_push() {
-        let body = br#"{
+        let body = bytes(&json!({
             "ref": "refs/heads/main",
             "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
             "deleted": false,
@@ -379,8 +385,8 @@ mod tests {
                 "ssh_url": "git@github.com:Acme/API.git",
                 "html_url": "https://github.com/Acme/API"
             }
-        }"#;
-        let delivery = parse(Provider::GitHub, Some("push"), body).unwrap();
+        }));
+        let delivery = parse(Provider::GitHub, Some("push"), &body).unwrap();
         assert_eq!(delivery.event, Event::Push);
         assert_eq!(delivery.repositories, [key("https://github.com/acme/api")]);
         assert_eq!(delivery.refs, ["refs/heads/main"]);
@@ -388,17 +394,25 @@ mod tests {
 
     #[test]
     fn deleted_refs_wake_nothing() {
-        let deleted = br#"{"ref": "refs/heads/x", "deleted": true, "after": "0000000000000000000000000000000000000000",
-            "repository": {"clone_url": "https://github.com/acme/api.git"}}"#;
+        let deleted = bytes(&json!({
+            "ref": "refs/heads/x",
+            "deleted": true,
+            "after": "0000000000000000000000000000000000000000",
+            "repository": {"clone_url": "https://github.com/acme/api.git"},
+        }));
         assert_eq!(
-            parse(Provider::GitHub, Some("push"), deleted).unwrap().refs,
+            parse(Provider::GitHub, Some("push"), &deleted)
+                .unwrap()
+                .refs,
             Vec::<String>::new()
         );
-        let gitlab =
-            br#"{"ref": "refs/heads/x", "after": "0000000000000000000000000000000000000000",
-            "project": {"git_http_url": "https://gitlab.com/acme/api.git"}}"#;
+        let gitlab = bytes(&json!({
+            "ref": "refs/heads/x",
+            "after": "0000000000000000000000000000000000000000",
+            "project": {"git_http_url": "https://gitlab.com/acme/api.git"},
+        }));
         assert_eq!(
-            parse(Provider::GitLab, Some("Push Hook"), gitlab)
+            parse(Provider::GitLab, Some("Push Hook"), &gitlab)
                 .unwrap()
                 .refs,
             Vec::<String>::new()
@@ -407,12 +421,16 @@ mod tests {
 
     #[test]
     fn gitlab_gitea_and_generic() {
-        let gitlab =
-            br#"{"ref": "refs/tags/v1.0.0", "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-            "project": {"git_http_url": "https://gitlab.example.com/Group/Sub/App.git",
-                        "git_ssh_url": "git@gitlab.example.com:Group/Sub/App.git",
-                        "web_url": "https://gitlab.example.com/Group/Sub/App"}}"#;
-        let d = parse(Provider::GitLab, Some("Tag Push Hook"), gitlab).unwrap();
+        let gitlab = bytes(&json!({
+            "ref": "refs/tags/v1.0.0",
+            "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+            "project": {
+                "git_http_url": "https://gitlab.example.com/Group/Sub/App.git",
+                "git_ssh_url": "git@gitlab.example.com:Group/Sub/App.git",
+                "web_url": "https://gitlab.example.com/Group/Sub/App",
+            },
+        }));
+        let d = parse(Provider::GitLab, Some("Tag Push Hook"), &gitlab).unwrap();
         assert_eq!(d.event, Event::Push);
         assert_eq!(
             d.repositories,
@@ -420,11 +438,15 @@ mod tests {
         );
         assert_eq!(d.refs, ["refs/tags/v1.0.0"]);
 
-        let gitea =
-            br#"{"ref": "refs/heads/main", "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
-            "repository": {"clone_url": "http://localhost:3000/forgejo/webhooks.git",
-                           "ssh_url": "ssh://forgejo@localhost:2222/forgejo/webhooks.git"}}"#;
-        let d = parse(Provider::Gitea, Some("push"), gitea).unwrap();
+        let gitea = bytes(&json!({
+            "ref": "refs/heads/main",
+            "after": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+            "repository": {
+                "clone_url": "http://localhost:3000/forgejo/webhooks.git",
+                "ssh_url": "ssh://forgejo@localhost:2222/forgejo/webhooks.git",
+            },
+        }));
+        let d = parse(Provider::Gitea, Some("push"), &gitea).unwrap();
         assert_eq!(
             d.repositories,
             [
@@ -433,30 +455,40 @@ mod tests {
             ]
         );
 
-        let generic = br#"{"repository": "https://git.example.com/team/app.git", "ref": "main"}"#;
-        let d = parse(Provider::Generic, None, generic).unwrap();
+        let generic = bytes(&json!({
+            "repository": "https://git.example.com/team/app.git",
+            "ref": "main",
+        }));
+        let d = parse(Provider::Generic, None, &generic).unwrap();
         assert_eq!(d.refs, ["refs/heads/main"]);
         assert_eq!(d.repositories, [key("https://git.example.com/team/app")]);
     }
 
     #[test]
     fn bitbucket_changes() {
-        let body = br#"{"repository": {"full_name": "team/app",
-                "links": {"html": {"href": "https://bitbucket.org/team/app"}}},
+        let body = bytes(&json!({
+            "repository": {
+                "full_name": "team/app",
+                "links": {"html": {"href": "https://bitbucket.org/team/app"}},
+            },
             "push": {"changes": [
                 {"new": {"type": "branch", "name": "main"}},
                 {"new": null, "old": {"type": "branch", "name": "gone"}},
-                {"new": {"type": "tag", "name": "v2"}}
-            ]}}"#;
-        let d = parse(Provider::Bitbucket, Some("repo:push"), body).unwrap();
+                {"new": {"type": "tag", "name": "v2"}},
+            ]},
+        }));
+        let d = parse(Provider::Bitbucket, Some("repo:push"), &body).unwrap();
         assert_eq!(d.repositories, [key("https://bitbucket.org/team/app")]);
         assert_eq!(d.refs, ["refs/heads/main", "refs/tags/v2"]);
     }
 
     #[test]
     fn other_events_name_no_refs() {
-        let body = br#"{"zen": "Keep it logically awesome.", "hook_id": 1,
-            "repository": {"clone_url": "https://github.com/acme/api.git"}}"#;
+        let body = &bytes(&json!({
+            "zen": "Keep it logically awesome.",
+            "hook_id": 1,
+            "repository": {"clone_url": "https://github.com/acme/api.git"},
+        }));
         let d = parse(Provider::GitHub, Some("ping"), body).unwrap();
         assert_eq!(d.event, Event::Ping);
         assert_eq!(d.refs, Vec::<String>::new());
@@ -474,34 +506,36 @@ mod tests {
             parse(Provider::GitHub, Some("push"), b"not json"),
             Err(HookError::Json)
         );
+        let repository = json!({"clone_url": "https://github.com/a/b"});
         for body in [
-            &br#"{"repository": {"clone_url": "https://github.com/a/b"}}"#[..],
-            br#"{"ref": "main", "repository": {"clone_url": "https://github.com/a/b"}}"#,
-            br#"{"ref": "refs/heads/a b", "repository": {"clone_url": "https://github.com/a/b"}}"#,
-            br#"{"ref": "refs/remotes/x", "repository": {"clone_url": "https://github.com/a/b"}}"#,
-            br#"{"ref": 7, "repository": {"clone_url": "https://github.com/a/b"}}"#,
+            json!({"repository": repository}),
+            json!({"ref": "main", "repository": repository}),
+            json!({"ref": "refs/heads/a b", "repository": repository}),
+            json!({"ref": "refs/remotes/x", "repository": repository}),
+            json!({"ref": 7, "repository": repository}),
         ] {
             assert_eq!(
-                parse(Provider::GitHub, Some("push"), body),
+                parse(Provider::GitHub, Some("push"), &bytes(&body)),
                 Err(HookError::Ref),
-                "{}",
-                String::from_utf8_lossy(body)
+                "{body}"
             );
         }
-        let local = br#"{"ref": "refs/heads/main",
-            "repository": {"clone_url": "file:///etc", "ssh_url": "ext::sh -c id"}}"#;
+        let local = bytes(&json!({
+            "ref": "refs/heads/main",
+            "repository": {"clone_url": "file:///etc", "ssh_url": "ext::sh -c id"},
+        }));
         assert_eq!(
-            parse(Provider::GitHub, Some("push"), local)
+            parse(Provider::GitHub, Some("push"), &local)
                 .unwrap()
                 .repositories,
             Vec::<RepoKey>::new()
         );
-        let many = format!(
-            r#"{{"repository": {{"full_name": "t/a"}}, "push": {{"changes": [{}]}}}}"#,
-            vec![r#"{"new": {"type": "branch", "name": "x"}}"#; 100].join(",")
-        );
+        let many = bytes(&json!({
+            "repository": {"full_name": "t/a"},
+            "push": {"changes": vec![json!({"new": {"type": "branch", "name": "x"}}); 100]},
+        }));
         assert_eq!(
-            parse(Provider::Bitbucket, Some("repo:push"), many.as_bytes())
+            parse(Provider::Bitbucket, Some("repo:push"), &many)
                 .unwrap()
                 .refs
                 .len(),

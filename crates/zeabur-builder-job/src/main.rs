@@ -615,14 +615,25 @@ mod tests {
     #[test]
     fn reads_the_plan() {
         let plan = parse_plan(
-            r#"{"plainHttp":true,"builds":[{"command":["buildctl","build"],"metadataFile":"/m.json","output":{"repository":"r/a"}}]}"#,
+            &serde_json::json!({
+                "plainHttp": true,
+                "builds": [{
+                    "command": ["buildctl", "build"],
+                    "metadataFile": "/m.json",
+                    "output": {"repository": "r/a"},
+                }],
+            })
+            .to_string(),
         )
         .unwrap();
         assert!(plan.plain_http);
         assert_eq!(plan.builds[0].command, strings(&["buildctl", "build"]));
-        assert_eq!(parse_plan(r#"{"builds":[]}"#), Err(UsageError::NoBuild));
+        assert_eq!(
+            parse_plan(&serde_json::json!({"builds": []}).to_string()),
+            Err(UsageError::NoBuild)
+        );
         assert!(matches!(
-            parse_plan(r#"{"builds":[],"commands":[]}"#),
+            parse_plan(&serde_json::json!({"builds": [], "commands": []}).to_string()),
             Err(UsageError::Plan(_))
         ));
         assert_eq!(read_plan(&[]), Err(UsageError::Build));

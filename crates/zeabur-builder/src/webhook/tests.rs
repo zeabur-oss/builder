@@ -479,7 +479,8 @@ async fn the_app_wakes_its_builds_with_its_own_secret() {
         StatusCode::UNAUTHORIZED
     );
     // GitHub pings the App's webhook when the App is created; it names no repository.
-    let ping = br#"{"zen": "Keep it logically awesome.", "hook_id": 9}"#;
+    let ping =
+        &serde_json::to_vec(&json!({"zen": "Keep it logically awesome.", "hook_id": 9})).unwrap();
     assert_eq!(
         post(
             &w,
@@ -621,7 +622,9 @@ async fn bitbucket_signature() {
 #[tokio::test]
 async fn generic_standard_webhooks() {
     let w = world();
-    let generic = br#"{"repository": "https://github.com/acme/api", "ref": "main"}"#;
+    let generic =
+        &serde_json::to_vec(&json!({"repository": "https://github.com/acme/api", "ref": "main"}))
+            .unwrap();
     let h = standard_headers(SECRET, "msg_1", now().as_second(), generic);
     assert_eq!(
         post(&w, Provider::Generic, h.clone(), generic).await.1,
