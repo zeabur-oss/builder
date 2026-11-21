@@ -7,7 +7,7 @@ description: 将文件夹上传为 OCI artifact，并在 Build 中指定 manifes
 
 ## 开始前
 
-- 准备要构建的文件夹。持有文件夹的客户端，例如 Zeabur 或 `zeaburctl`，负责上传。
+- 准备要构建的文件夹。持有文件夹的客户端，例如 Zeabur 开源版或 `zeaburctl`，负责上传。
 - 准备 `Build` 的上传令牌（token）。客户端在 `Build` 上添加 `builder.zeabur.com/upload-token-request` annotation 来请求令牌，再用这个令牌推送。获取方式见 [Registry 令牌](../operations/registry-tokens.mdx)。
 - 要使用下方命令，你需要准备 [ORAS](https://oras.land)，以及 `Build` 上传用 Secret 中的 `auth.json`。
 
