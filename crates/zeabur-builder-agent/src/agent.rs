@@ -529,7 +529,10 @@ mod tests {
 
     fn agent(replay: &Replay, script: Script, limits: Limits) -> (Dir, Agent<Script>) {
         let dir = Dir::new();
-        dir.write("package.json", r#"{"name":"app"}"#);
+        dir.write(
+            "package.json",
+            &serde_json::json!({"name": "app"}).to_string(),
+        );
         dir.write(
             "index.js",
             "require('http').createServer().listen(process.env.PORT);\n",

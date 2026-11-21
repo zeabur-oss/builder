@@ -312,7 +312,7 @@ mod tests {
         let dir = crate::testing::Dir::new();
         dir.write(
             "package.json",
-            r#"{"name":"app","scripts":{"start":"node index.js"}}"#,
+            &serde_json::json!({"name": "app", "scripts": {"start": "node index.js"}}).to_string(),
         );
         dir.write("index.js", "const port = process.env.PORT;\n");
         dir.write("src/lib.js", "export const port = 3000;\n");

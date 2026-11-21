@@ -102,6 +102,7 @@ const TOKEN_MARGIN: Duration = Duration::from_mins(10);
 const UPLOAD_TTL: Duration = Duration::from_mins(15);
 /// How long a token for deleting repositories lasts.
 const DELETE_TTL: Duration = Duration::from_mins(5);
+// The bytes written into the Secret as they are.
 const EMPTY_DOCKER_CONFIG: &[u8] = br#"{"auths":{}}"#;
 
 /// Settings, from the command line.

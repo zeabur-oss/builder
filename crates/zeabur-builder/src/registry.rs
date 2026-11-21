@@ -245,6 +245,7 @@ impl Signer {
                 actions: access.actions(),
             })
             .collect();
+        // The header is signed as these exact bytes.
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
         let claims = Claims {
             iss: "zeabur-builder",
@@ -677,11 +678,15 @@ mod tests {
 
     #[test]
     fn a_token_replaces_the_hosts_entry() {
-        let config = br#"{"auths":{
-            "https://zot.zot.svc:5000":{"auth":"dTpw"},
-            "ghcr.io":{"auth":"Z2g6cA=="}}}"#;
-        let config: serde_json::Value =
-            serde_json::from_slice(&with_token(config, "zot.zot.svc:5000", "t").unwrap()).unwrap();
+        let config = json!({"auths": {
+            "https://zot.zot.svc:5000": {"auth": "dTpw"},
+            "ghcr.io": {"auth": "Z2g6cA=="},
+        }})
+        .to_string();
+        let config: serde_json::Value = serde_json::from_slice(
+            &with_token(config.as_bytes(), "zot.zot.svc:5000", "t").unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             config,
             json!({"auths": {
@@ -712,7 +717,8 @@ mod tests {
             )])),
             ..Secret::default()
         };
-        let config = r#"{"auths":{"ghcr.io":{"auth":"Z2g6cA=="}}}"#;
+        let config = json!({"auths": {"ghcr.io": {"auth": "Z2g6cA=="}}}).to_string();
+        let config = config.as_str();
         assert_eq!(
             push_config("push", &secret(Some("true"), DOCKER_CONFIG_JSON, config)).unwrap(),
             config.as_bytes()

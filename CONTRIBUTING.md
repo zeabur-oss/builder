@@ -81,6 +81,15 @@ and set `RUSTC_WRAPPER=kache` in your shell profile; `nix develop` keeps it. The
 scripts compile (aws-lc-sys) goes through kache too, with no further setup.
 `scripts/build-images.sh` unsets `RUSTC_WRAPPER`, so image binaries are always compiled.
 
+## JSON in tests
+
+- **`json!`, not raw strings.** Tests build JSON with `serde_json::json!`. They compare whole
+  objects (`assert_eq!(serde_json::to_value(&typed)?, json!({ … }))`) or deserialize one
+  (`serde_json::from_value::<Typed>(json!({ … }))`), and never index into a `Value`.
+- **A raw string only where the exact bytes are the subject**: malformed or byte-exact parser
+  input, a signature over a body, a golden file, NDJSON. A one-line comment says why.
+- **Production code** reads and writes a known shape through a typed struct, not `json!`.
+
 ## Tests against a cluster
 
 `scripts/ci/kubernetes.sh` is the cluster job of CI, which runs in the merge queue. It creates

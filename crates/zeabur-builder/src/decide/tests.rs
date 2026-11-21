@@ -1125,9 +1125,13 @@ fn phases_follow_the_pod() {
 
 #[test]
 fn exposed_ports_reach_the_build_status_from_the_newest_success() {
-    let message = format!(
-        r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"],"exposedPorts":["3000/tcp","53/udp"]}}"#
-    );
+    let message = serde_json::json!({
+        "result": "succeeded",
+        "digest": DIGEST,
+        "tags": ["main-1-3e1a9c2"],
+        "exposedPorts": ["3000/tcp", "53/udp"],
+    })
+    .to_string();
     let done = pod(
         vec![container("fetch", terminated(0, None))],
         vec![container("build", terminated(0, Some(&message)))],
@@ -1154,9 +1158,13 @@ fn exposed_ports_reach_the_build_status_from_the_newest_success() {
 
 #[test]
 fn the_plan_a_run_saved_stays_until_a_newer_one() {
-    let message = format!(
-        r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"],"planDigest":"{PLAN}"}}"#
-    );
+    let message = serde_json::json!({
+        "result": "succeeded",
+        "digest": DIGEST,
+        "tags": ["main-1-3e1a9c2"],
+        "planDigest": PLAN,
+    })
+    .to_string();
     let done = pod(
         vec![container("fetch", terminated(0, None))],
         vec![container("build", terminated(0, Some(&message)))],
@@ -1266,9 +1274,14 @@ fn a_run_reuses_the_saved_plan_of_the_same_builder_unless_asked_to_plan_again() 
 
 #[test]
 fn success_carries_the_digest() {
-    let message = format!(
-        r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"],"phases":{{"fetch":1.0,"build":12.34}},"cache":{{"total":5,"cached":3}}}}"#
-    );
+    let message = serde_json::json!({
+        "result": "succeeded",
+        "digest": DIGEST,
+        "tags": ["main-1-3e1a9c2"],
+        "phases": {"fetch": 1.0, "build": 12.34},
+        "cache": {"total": 5, "cached": 3},
+    })
+    .to_string();
     let done = pod(
         vec![container("fetch", terminated(0, None))],
         vec![container("build", terminated(0, Some(&message)))],
@@ -1398,7 +1411,14 @@ fn the_agent_s_plan_report_reaches_the_status() {
                 terminated(
                     1,
                     Some(
-                        r#"{"reason":"NeedsBuildVariable","detail":"Set DATABASE_URL.","modelCalled":true,"inputTokens":1200,"outputTokens":300}"#,
+                        &serde_json::json!({
+                            "reason": "NeedsBuildVariable",
+                            "detail": "Set DATABASE_URL.",
+                            "modelCalled": true,
+                            "inputTokens": 1200,
+                            "outputTokens": 300,
+                        })
+                        .to_string(),
                     ),
                 ),
             ),
@@ -1435,11 +1455,25 @@ fn the_agent_s_plan_report_reaches_the_status() {
     );
 
     let long = "x".repeat(300);
-    let planned = format!(
-        r#"{{"source":"agent","details":{{"port":3000,"language":"node","version":"24.9","buildVariables":["NPM_TOKEN","{long}"]}},"modelCalled":true,"inputTokens":9000,"outputTokens":800}}"#
-    );
-    let built =
-        format!(r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1-3e1a9c2"]}}"#);
+    let planned = serde_json::json!({
+        "source": "agent",
+        "details": {
+            "port": 3000,
+            "language": "node",
+            "version": "24.9",
+            "buildVariables": ["NPM_TOKEN", long],
+        },
+        "modelCalled": true,
+        "inputTokens": 9000,
+        "outputTokens": 800,
+    })
+    .to_string();
+    let built = serde_json::json!({
+        "result": "succeeded",
+        "digest": DIGEST,
+        "tags": ["main-1-3e1a9c2"],
+    })
+    .to_string();
     let done = pod(
         vec![
             container("fetch", terminated(0, None)),
@@ -1504,7 +1538,14 @@ fn failures_name_their_phase() {
             "build",
             terminated(
                 1,
-                Some(r#"{"result":"failed","reason":"BuildFailed","message":"denied"}"#),
+                Some(
+                    &serde_json::json!({
+                        "result": "failed",
+                        "reason": "BuildFailed",
+                        "message": "denied",
+                    })
+                    .to_string(),
+                ),
             ),
         )],
     );
@@ -1938,13 +1979,22 @@ fn a_build_is_stalled_while_its_source_or_builder_is_not_ready() {
 fn steps_reach_the_run_within_the_crd_bounds() {
     let long = "錯".repeat(300);
     let step = |i: usize| {
-        format!(r#"{{"name":"{i} {long}","state":"succeeded","startTime":"2026-10-22T00:00:00Z"}}"#)
+        serde_json::json!({
+            "name": format!("{i} {long}"),
+            "state": "succeeded",
+            "startTime": "2026-10-22T00:00:00Z",
+        })
     };
-    let steps: Vec<String> = (0..25).map(step).collect();
-    let message = format!(
-        r#"{{"result":"failed","reason":"BuildFailed","message":"exit code: 1","omittedSteps":3,"steps":[{}],"failedStep":{{"name":"0 {long}","state":"failed","message":"{long}"}}}}"#,
-        steps.join(",")
-    );
+    let steps: Vec<_> = (0..25).map(step).collect();
+    let message = serde_json::json!({
+        "result": "failed",
+        "reason": "BuildFailed",
+        "message": "exit code: 1",
+        "omittedSteps": 3,
+        "steps": steps,
+        "failedStep": {"name": format!("0 {long}"), "state": "failed", "message": long},
+    })
+    .to_string();
     let decoded = BuildResult::decode(&message);
     // Larger than a termination message holds; the controller must still bound what it copies.
     assert!(decoded.is_err());

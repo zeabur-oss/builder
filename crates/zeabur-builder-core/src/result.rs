@@ -302,11 +302,16 @@ mod tests {
 
     #[test]
     fn reads_the_documented_example() {
-        let message = format!(
-            r#"{{"result":"succeeded","digest":"{DIGEST}","tags":["main-1761058800-3e1a9c2"],
-            "planSource":"generated","baseImages":["docker.io/library/node:24-alpine@{DIGEST}"],
-            "phases":{{"fetch":3.1,"plan":0.4,"build":82.0,"push":6.2}},"cache":{{"total":41,"cached":37}}}}"#
-        );
+        let message = serde_json::json!({
+            "result": "succeeded",
+            "digest": DIGEST,
+            "tags": ["main-1761058800-3e1a9c2"],
+            "planSource": "generated",
+            "baseImages": [format!("docker.io/library/node:24-alpine@{DIGEST}")],
+            "phases": {"fetch": 3.1, "plan": 0.4, "build": 82.0, "push": 6.2},
+            "cache": {"total": 41, "cached": 37},
+        })
+        .to_string();
         let result = BuildResult::decode(&message).unwrap();
         assert_eq!(result.result, Outcome::Succeeded);
         assert_eq!(
@@ -323,19 +328,23 @@ mod tests {
     #[test]
     fn rejects_inconsistent_messages() {
         assert!(matches!(
-            BuildResult::decode(r#"{"result":"succeeded"}"#),
+            BuildResult::decode(&serde_json::json!({"result": "succeeded"}).to_string()),
             Err(DecodeError::Digest)
         ));
         assert!(matches!(
-            BuildResult::decode(r#"{"result":"succeeded","digest":"sha256:abc"}"#),
+            BuildResult::decode(
+                &serde_json::json!({"result": "succeeded", "digest": "sha256:abc"}).to_string()
+            ),
             Err(DecodeError::Digest)
         ));
         assert!(matches!(
-            BuildResult::decode(r#"{"result":"failed"}"#),
+            BuildResult::decode(&serde_json::json!({"result": "failed"}).to_string()),
             Err(DecodeError::Reason)
         ));
         assert!(matches!(
-            BuildResult::decode(r#"{"result":"failed","reason":"Timeout"}"#),
+            BuildResult::decode(
+                &serde_json::json!({"result": "failed", "reason": "Timeout"}).to_string()
+            ),
             Err(DecodeError::Json(_))
         ));
         assert!(matches!(
@@ -371,10 +380,13 @@ mod tests {
             exposed_ports: vec!["3000/tcp".to_owned(), "53/udp".to_owned()],
             ..BuildResult::default()
         };
-        assert!(
-            result
-                .encode()
-                .contains(r#""exposedPorts":["3000/tcp","53/udp"]"#)
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::json!({
+                "result": "succeeded",
+                "digest": DIGEST,
+                "exposedPorts": ["3000/tcp", "53/udp"],
+            })
         );
         assert_eq!(BuildResult::decode(&result.encode()).unwrap(), result);
 
@@ -402,6 +414,7 @@ mod tests {
     #[test]
     fn decode_takes_4096_bytes_and_refuses_4097() {
         let message = |len: usize| {
+            // The message is sized to the byte, so the text around the padding is written out.
             let head = r#"{"result":"failed","reason":"BuildFailed","message":""#;
             let tail = r#""}"#;
             format!("{head}{}{tail}", "x".repeat(len - head.len() - tail.len()))

@@ -182,6 +182,7 @@ impl AppConfig {
     /// A JWT for the App, valid from a minute before `now` to nine minutes after.
     pub(crate) fn jwt(&self, now: Timestamp) -> Result<String, AppError> {
         let now = now.as_second();
+        // The header is signed as these exact bytes.
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
         let claims = Claims {
             iat: now - 60,
@@ -803,7 +804,7 @@ mod tests {
 
     #[test]
     fn a_github_error_message_is_cut_to_200_characters() {
-        let long = format!(r#"{{"message":"{}"}}"#, "é".repeat(300));
+        let long = json!({"message": "é".repeat(300)}).to_string();
         assert_eq!(github_message(long.as_bytes()).chars().count(), 200);
         assert_eq!(github_message(b"not json"), "");
     }

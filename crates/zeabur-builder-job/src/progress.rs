@@ -204,6 +204,7 @@ mod tests {
 
     #[test]
     fn renders_cached_failed_and_stderr_steps() {
+        // NDJSON as BuildKit prints it, ending in a line that is not JSON.
         let stream = r#"{"vertexes":[{"digest":"sha256:a","name":"[1/3] FROM alpine","started":"2026-10-22T00:00:00Z"}]}
 {"vertexes":[{"digest":"sha256:a","name":"[1/3] FROM alpine","cached":true}]}
 {"vertexes":[{"digest":"sha256:b","name":"[2/3] RUN make","started":"2026-10-22T00:00:01Z"}]}
@@ -237,12 +238,27 @@ error: failed to solve: exit code: 2"#;
 
     #[test]
     fn a_second_run_continues_the_numbering() {
-        let first = r#"{"vertexes":[{"digest":"sha256:a","name":"load metadata","started":"2026-10-22T00:00:00Z","completed":"2026-10-22T00:00:01Z"}]}"#;
-        let second = r#"{"vertexes":[{"digest":"sha256:a","name":"load metadata","started":"2026-10-22T00:01:00Z","completed":"2026-10-22T00:01:01Z"},{"digest":"sha256:b","name":"RUN x","cached":true}]}"#;
+        let first = json!({"vertexes": [{
+            "digest": "sha256:a",
+            "name": "load metadata",
+            "started": "2026-10-22T00:00:00Z",
+            "completed": "2026-10-22T00:00:01Z",
+        }]})
+        .to_string();
+        let second = json!({"vertexes": [
+            {
+                "digest": "sha256:a",
+                "name": "load metadata",
+                "started": "2026-10-22T00:01:00Z",
+                "completed": "2026-10-22T00:01:01Z",
+            },
+            {"digest": "sha256:b", "name": "RUN x", "cached": true},
+        ]})
+        .to_string();
         let mut renderer = Renderer::default();
-        render(&mut renderer, first);
+        render(&mut renderer, &first);
         renderer.next_run();
-        let out = render(&mut renderer, second);
+        let out = render(&mut renderer, &second);
         assert_eq!(
             out,
             [
