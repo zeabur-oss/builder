@@ -2,6 +2,76 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.2.4 (2026-11-21)
+
+### Features
+
+#### The agent's trial builds get the Build's variables
+
+A variable in `spec.env` reaches the agent's trial builds as a BuildKit secret, as it reaches the final build, so a run that stopped with `NeedsBuildVariable` can finish after you set the variable. The model reads the variable names, not their values: the agent replaces a value in a trial build's output with the variable's name. `zeabur-builder-agent` takes `--secret NAME` with the value in `ZB_SECRET_NAME`.
+
+#### The chart installs the agent ClusterBuilder when agent.enabled is true
+
+Set `agent.provider`, `agent.model` and `agent.auth`, and create the Secret or ServiceAccount it names in each Build's namespace. The planner runs from the Job image, which now holds `zeabur-builder-agent`.
+
+#### A ClusterBuilder of type agent writes the Dockerfile for a repository that has none
+
+`agent.model` names the model provider, the model and how a run signs in: `auth.type: apiKey` with the Secret that holds the API key, or `anthropicFederation` or `openaiFederation` with the ServiceAccount whose token the run exchanges, in the Build's namespace. A run waits with `ModelKeyMissing` while the Secret, its key or the ServiceAccount is missing. `BuildRun.status.plan` shows where the Dockerfile came from, why the planner stopped, and the tokens it used.
+
+#### A Build reuses its last plan instead of running the planner
+
+After a run of a builder with a planner (`railpack` or `agent`) plans and builds, the build step pushes the plan folder (`/workspace/plan`) beside the Build's images, tagged `zeabur-plan-<Build uid>`, and the controller records it in `Build.status.plan` with the builder and repository of that run's Job, which the run reports in the new `BuildRun.status.builder` and `BuildRun.status.image`. Later runs build with that plan: when the controller creates a run's Job, it hands the Job the saved plan, and the Job unpacks it instead of running the planner, so the `agent` builder calls no model. Such a run reports `planSource: saved` and the plan's digest in `planDigest`. A Build with the annotation `builder.zeabur.com/plan: fresh`, or one that names another builder, plans every run, and so does a Build whose output repository changed. A run that reuses a plan does not need the `agent` builder's model key. If the saved plan no longer builds, the run fails; set the annotation to plan again. Railpack's non-root rewrite now goes to `/workspace/out/non-root`, and the agent's trial builds to a temporary folder, so the plan folder holds only the plan.
+
+#### zeabur-builder-api builds without schemars when its schema feature is off
+
+The default feature `schema` adds `JsonSchema` to every type and `definitions()`. A crate that only reads and writes the objects can set `default-features = false` and leaves out schemars, dyn-clone and ref-cast.
+
+#### A Build's Ready follows its spec generation, and a run finds its Job by owner
+
+A `BuildRun` records the `Build` generation it was created for, and editing a `Build`'s spec builds again. `Ready` is `True` only when the newest run of the current generation succeeded, `Reconciling` shows while one is unfinished, and `Stalled` shows while `SourceReady` or `BuilderReady` is `False`. After the upgrade, each `Build` builds once more.
+
+A run adopts a Job at once when the Job names the run's uid as its controller, and reads its Pod by the Job's controller uid. Runs waiting for a buildkitd or a slot wake on changes of that buildkitd or of other runs, and a daemon Pod the scheduler cannot place counts as short of resources whatever its message.
+
+#### One reason vocabulary and typed errors
+
+A `BuildRun` waiting for the previous run to stop now reports the reason `PreviousRunRunning` instead of `QuotaExceeded`, and the `Ready` condition repeats the run's reason without a second vocabulary. Every error in the builder crates is a typed enum, and one `Refusal` carries a reason and a message.
+
+#### A ClusterBuilder's planner and frontend name their type
+
+`spec.type` is `dockerfile`, `railpack` with `railpack: {image, timeout, resources}`, or `agent` with `agent: {image, timeout, resources, model}`, in place of `spec.planner`. `spec.frontend.type` is `dockerfile.v0`, or `gateway.v0` with `source`. A `dockerfile` or `agent` builder with a `gateway.v0` frontend now reads the Dockerfile it names, as a Dockerfile frontend image. Rewrite custom ClusterBuilders in the new shape after the upgrade; the chart's own are already.
+
+#### Iterator chains and shorter doc comments
+
+Loops that only filter, map or fold are iterator chains, and long doc comments are shorter. Behaviour is unchanged.
+
+#### A Build's source names its type
+
+`spec.source` is a union: `type: git` with `git: {url, ref, credentialsRef, githubApp}`, or `type: archive` with `archive: {}`. `contextDir` and `dockerfile` stay beside `type`. Rewrite each Build in the new shape after the upgrade.
+
+#### Conditions carry a typed type, and status times keep their precision
+
+`zeabur-builder-api` is now published. A condition's `type` is the enum `ConditionType`, `ConditionReason` can be read back with an `Unknown` fallback, and every status time is a `jiff::Timestamp`. The CRD schema lists the allowed condition types.
+
+#### The build container reads a typed plan
+
+`zeabur-builder-job build` reads the builds as JSON from a file, instead of `buildctl` command lines it parsed again. The file is the Pod's `builder.zeabur.com/build-plan` annotation, mounted with a downward API volume, which the admission policy now allows for that annotation only.
+
+A ClusterBuilder's `frontend.opts` now takes names of at most 128 characters and values of at most 512, so the largest plan fits in the 256 KiB a Pod's annotations hold. Shorten longer options before the upgrade.
+
+### Fixes
+
+#### The agent builder can sign in without a model API key
+
+With Anthropic and OpenAI, a ClusterBuilder's `agent.model.auth` can be `anthropicFederation` or `openaiFederation`: the run exchanges a projected service account token for a short-lived access token (workload identity federation). The build Job runs as the ServiceAccount the builder names, and only the plan container mounts its token, for the provider's audience. The chart's Job admission policy allows such tokens and no API server token, and the controller can read ServiceAccounts. Run by hand, `zeabur-builder-agent` reads the same variables as the provider's SDKs, such as `ANTHROPIC_FEDERATION_RULE_ID` or `OPENAI_IDENTITY_PROVIDER_ID`; an API key still comes first.
+
+#### A Build written with zeabur-builder-api leaves out default triggers and concurrency
+
+A client no longer writes `triggers: {}` and `concurrency: Replace` when it sets neither, so it does not own those fields under server-side apply. The API server still fills in both defaults.
+
+#### Typed JSON everywhere
+
+Webhook bodies, Railpack plans, registry replies and the objects the daemon writes are read and built through typed structs. A webhook whose repository fields are not strings is refused with 400, like a body that is not JSON. clippy refuses `serde_json::Value`, `DynamicObject` and their accessors outside the few places that pass through JSON of any shape.
+
 ## 0.2.3 (2026-11-18)
 
 ### Features
