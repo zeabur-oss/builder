@@ -1812,7 +1812,7 @@ async fn signer(ctx: &Context) -> Result<Signer, registry::RegistryError> {
 }
 
 /// Writes the `Build`'s upload Secret: a token that pushes to and pulls from its archive
-/// repository, as a Docker config and in the key `token`.
+/// repository, as a Docker config and in the key `token`, and the registry's CA.
 async fn upload_token(
     ctx: &Context,
     build: &Build,
@@ -1828,13 +1828,7 @@ async fn upload_token(
     let token = signer.token(&[(source.as_str(), registry::Access::PUSH)], at, UPLOAD_TTL);
     let host = decide::registry_host(&ctx.settings.default_registry);
     let secret_name = format!("{name}-upload");
-    let data = BTreeMap::from([
-        (
-            ".dockerconfigjson".to_owned(),
-            ByteString(registry::docker_config(host, &token)),
-        ),
-        ("token".to_owned(), ByteString(token.into_bytes())),
-    ]);
+    let data = upload_data(host, token, ctx.settings.registry_ca.as_deref());
     let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
     if let Some(mut secret) = secrets.get_opt(&secret_name).await? {
         if secret.labels().get(labels::BUILD) != Some(&name) {
@@ -1868,6 +1862,22 @@ async fn upload_token(
         secret_name,
         expires_at: expires,
     })
+}
+
+/// The upload Secret's data: `token` for `host` as a Docker config and bare, and `ca` in
+/// `ca.crt` so the uploader can trust a registry with its own CA.
+fn upload_data(host: &str, token: String, ca: Option<&str>) -> BTreeMap<String, ByteString> {
+    let mut data = BTreeMap::from([
+        (
+            ".dockerconfigjson".to_owned(),
+            ByteString(registry::docker_config(host, &token)),
+        ),
+        ("token".to_owned(), ByteString(token.into_bytes())),
+    ]);
+    if let Some(ca) = ca {
+        data.insert("ca.crt".to_owned(), ByteString(ca.as_bytes().to_vec()));
+    }
+    data
 }
 
 /// The records, in the controller's namespace.
@@ -2080,6 +2090,20 @@ async fn ensure_registry_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_upload_secret_carries_the_registry_ca_when_there_is_one() {
+        let ca = "-----BEGIN CERTIFICATE-----\nzot-ca\n-----END CERTIFICATE-----\n";
+        let data = upload_data("zot.zot.svc:5000", "t".to_owned(), Some(ca));
+        assert_eq!(
+            data.get("ca.crt"),
+            Some(&ByteString(ca.as_bytes().to_vec()))
+        );
+        assert_eq!(data.get("token"), Some(&ByteString(b"t".to_vec())));
+
+        let plain = upload_data("registry:5000", "t".to_owned(), None);
+        assert!(!plain.contains_key("ca.crt"));
+    }
 
     #[test]
     fn jitter_stays_within_ten_percent() {

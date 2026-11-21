@@ -20,7 +20,7 @@ If a Build's image is hosted at `registry.host` but its repository path doesn't 
 
 - Have `kubectl` and [ORAS](https://oras.land) ready.
 - Make sure you have permission to edit the target Build.
-- Make sure ORAS can connect to `zot.zot.svc:5000` and trusts the CA in the Secret `zot/zot-tls`. To upload from outside the cluster, use the port-forward method below.
+- Make sure ORAS can connect to `zot.zot.svc:5000` and trusts the CA in the upload Secret's `ca.crt` field. To upload from outside the cluster, use the port-forward method below.
 
 <Steps>
 
@@ -64,7 +64,7 @@ Supply the Secret's `token` field to `localhost:5000` and keep TLS enabled:
 ```sh
 printf '{"auths":{"localhost:5000":{"registrytoken":"%s"}}}' \
   "$(kubectl -n team-a get secret api-upload -o jsonpath='{.data.token}' | base64 -d)" > auth.json
-kubectl -n zot get secret zot-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+kubectl -n team-a get secret api-upload -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
 oras push --registry-config auth.json --plain-http=false --ca-file ca.crt \
   localhost:5000/team-a/api/source:upload-1 ...
 ```
