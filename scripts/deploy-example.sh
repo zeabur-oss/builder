@@ -27,9 +27,16 @@ registry=registry.builder-registry.svc.cluster.local:5000
 k() { kubectl --context "$context" "$@"; }
 ensure_namespace() { k create namespace "$1" --dry-run=client -o yaml | k apply -f - >/dev/null; }
 
+# Not `k3d image import`: k3d 5.9.0 can take an exec that has not started for one that exited 0,
+# remove the tarball and report success. `docker exec` returns ctr's exit status.
 if [[ -n ${K3D_CLUSTER:-} ]]; then
-  k3d image import --cluster "$K3D_CLUSTER" \
-    "$prefix/builder:$tag" "$prefix/builder-job:$tag" "$prefix/builder-railpack:$tag"
+  images=("$prefix/builder:$tag" "$prefix/builder-job:$tag" "$prefix/builder-railpack:$tag")
+  nodes=$(docker ps --filter "label=k3d.cluster=$K3D_CLUSTER" --filter label=k3d.role=server --format '{{.Names}}'
+    docker ps --filter "label=k3d.cluster=$K3D_CLUSTER" --filter label=k3d.role=agent --format '{{.Names}}')
+  [[ -n $nodes ]] || { echo "k3d cluster $K3D_CLUSTER has no nodes" >&2; exit 1; }
+  for node in $nodes; do
+    docker image save "${images[@]}" | docker exec -i "$node" ctr image import --all-platforms -
+  done
 fi
 
 for ns in builder-system builder-registry "${namespaces[@]}"; do ensure_namespace "$ns"; done
