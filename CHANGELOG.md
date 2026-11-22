@@ -2,6 +2,14 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.2.5 (2026-11-22)
+
+### Fixes
+
+#### Upload Secrets carry the registry's CA
+
+When the default registry has a CA of its own (`registry.ca` or `registry.caFrom`), each upload Secret holds it in `ca.crt`. An uploader that may read the Secret can now trust the registry without reading the registry's own Secret in another namespace.
+
 ## 0.2.4 (2026-11-21)
 
 ### Features
