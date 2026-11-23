@@ -72,6 +72,20 @@ pub const REGISTRY_CA_SECRET: &str = "registry-ca";
 /// ([`annotations::REGISTRY_CA_HASH`]).
 pub const REGISTRY_CA_DIR: &str = "/etc/buildkit-registry-ca";
 
+/// The Pod volume of [`REGISTRY_CA_SECRET`].
+const REGISTRY_CA_VOLUME: &str = "registry-ca";
+
+/// Whether the Pods of `set` mount [`REGISTRY_CA_SECRET`]. Daemons made by releases before it
+/// do not, and cannot read the CA that the buildkitd config names.
+#[must_use]
+pub fn mounts_registry_ca(set: &StatefulSet) -> bool {
+    set.spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|p| p.volumes.as_ref())
+        .is_some_and(|v| v.iter().any(|v| v.name == REGISTRY_CA_VOLUME))
+}
+
 /// How the container starts buildkitd (`sh -c START buildkitd <args>`): first, the TCP
 /// connections of `RUN` steps get a maximum segment size that fits the Pod's interface, since
 /// buildkit's bridge network has an MTU of 1500 and the Pod's is often smaller (1450 under
@@ -443,7 +457,7 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
             volume_mounts: Some(vec![
                 mount("config", "/etc/buildkit", true),
                 mount("certs", "/certs", true),
-                mount("registry-ca", REGISTRY_CA_DIR, true),
+                mount(REGISTRY_CA_VOLUME, REGISTRY_CA_DIR, true),
                 mount(CACHE, "/var/lib/buildkit", false),
             ]),
             ..Container::default()
@@ -477,7 +491,7 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
             },
             // Optional: a registry with a public CA has no such Secret.
             Volume {
-                name: "registry-ca".to_owned(),
+                name: REGISTRY_CA_VOLUME.to_owned(),
                 secret: Some(SecretVolumeSource {
                     secret_name: Some(REGISTRY_CA_SECRET.to_owned()),
                     optional: Some(true),

@@ -44,7 +44,7 @@ pub(crate) struct Source {
 pub(crate) type Current = watch::Receiver<Option<String>>;
 
 /// Follows `source` until the watch ends. Each CA it reads is published in [`PUBLISHED`] of
-/// `namespace`, then sent to `current`. A Secret without a certificate in the key keeps the last CA.
+/// `namespace`, then sent to `current`. A Secret with no certificate in the key keeps the last CA.
 pub(crate) async fn follow(
     client: Client,
     source: Source,

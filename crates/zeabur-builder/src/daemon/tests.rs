@@ -540,6 +540,36 @@ async fn a_running_daemon_restarts_with_a_new_registry_ca_and_keeps_its_cache() 
 }
 
 #[tokio::test]
+async fn a_running_daemon_without_the_registry_ca_volume_is_replaced() {
+    let cluster = daemon_at(1, true).await;
+    let mut set = stored_set(&cluster);
+    if let Some(pod) = set.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+        pod.volumes
+            .get_or_insert_default()
+            .retain(|v| v.name != "registry-ca");
+    }
+    lock(&cluster).put(&set_key(), Object::StatefulSet(Box::new(set)));
+
+    let woken = super::wake(&client(&cluster), &settings(), NAMESPACE, &limits(), None).await;
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    assert!(deletes(&cluster).is_empty(), "no CA: it keeps running");
+
+    let woken = super::wake(
+        &client(&cluster),
+        &settings(),
+        NAMESPACE,
+        &limits(),
+        Some("CA"),
+    )
+    .await;
+    assert!(
+        matches!(&woken, Ok(Wake::Starting(m)) if m.contains("new settings")),
+        "{woken:?}"
+    );
+    assert_eq!(deletes(&cluster).len(), 1);
+}
+
+#[tokio::test]
 async fn a_daemon_scaled_to_zero_with_old_settings_is_replaced() {
     let cluster = daemon_at(0, true).await;
     let old = lock(&cluster).uid(&set_key());
