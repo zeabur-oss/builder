@@ -103,6 +103,8 @@ if wait_until 60 follows; then
 else
   wrong "registry-ca still holds the first CA after 60s"
 fi
+# The example registry keeps its data in an emptyDir, so the plan saved before the restart is gone.
+k -n "$a" annotate build/hello-python --overwrite builder.zeabur.com/plan=fresh >/dev/null
 result=$(rebuild "ca-$(date +%s)-after")
 if [[ $result == Succeeded ]]; then
   ok "A/hello-python builds with the new CA"

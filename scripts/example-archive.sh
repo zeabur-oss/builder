@@ -161,7 +161,9 @@ admin=$(k -n builder-system exec deploy/zeabur-builder -- /zeabur-builder regist
 k -n "$a" run registry-check --restart Never --image docker.io/curlimages/curl:8.11.1 \
   --command -- sleep 1800 >/dev/null
 k -n "$a" wait pod/registry-check --for=condition=Ready --timeout 120s >/dev/null
-k -n "$a" exec -i registry-check -- sh -c 'cat > /tmp/ca.crt' <<<"$ca"
+# An argument, not stdin: once, a file written from `exec -i` stdin was not there for curl.
+# shellcheck disable=SC2016 # expanded in the Pod
+k -n "$a" exec registry-check -- sh -c 'printf "%s\n" "$0" > /tmp/ca.crt' "$ca"
 check() {
   k -n "$a" exec -i registry-check -- env "AUTH=Authorization: Bearer $admin" \
     "BASE=https://$registry" CURL_CA_BUNDLE=/tmp/ca.crt "$@"
