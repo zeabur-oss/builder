@@ -4419,6 +4419,7 @@ dependencies = [
 name = "zeabur-builder-job"
 version = "0.2.5"
 dependencies = [
+ "backon",
  "base64 0.23.1",
  "bytes",
  "flate2",

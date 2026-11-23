@@ -47,9 +47,7 @@ use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{
     ConfigMap, Namespace, ObjectReference, Pod, Secret, ServiceAccount,
 };
-use kube::api::{
-    Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams, PropagationPolicy,
-};
+use kube::api::{Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PropagationPolicy};
 use kube::runtime::WatchStreamExt as _;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
@@ -79,8 +77,8 @@ use crate::leader::{self, Leader};
 use crate::notify::{self, Credentials};
 use crate::registry::{self, Registry, Signer};
 use crate::remote::{self, HttpClient, Resolver};
-use crate::tls::MANAGER;
 use crate::webhook::{self, Lookup, Receiver};
+use crate::write::{self, Created, MANAGER};
 use crate::{daemon, record, tls};
 
 /// The field manager of `status.lastWebhookAt`, apart from [`MANAGER`] so neither removes the
@@ -874,9 +872,8 @@ async fn create_run(
         },
         status: None,
     };
-    match api.create(&PostParams::default(), &run).await {
-        Err(kube::Error::Api(e)) if e.code == 409 => {}
-        created => return Ok(created?),
+    if let Created::New(created) = write::create_once(api, &run).await? {
+        return Ok(created);
     }
     if let Some(existing) = api.get_opt(&run_name).await?
         && existing.spec.revision == run.spec.revision
@@ -893,7 +890,12 @@ async fn create_run(
     }
     run.metadata.name = None;
     run.metadata.generate_name = Some(format!("{}-", run.spec.build_ref));
-    Ok(api.create(&PostParams::default(), &run).await?)
+    match write::create_once(api, &run).await? {
+        Created::New(created) => Ok(created),
+        Created::Exists => Err(ControllerError::Kube(kube::Error::Service(
+            "a BuildRun has the generated name; the next reconcile tries again".into(),
+        ))),
+    }
 }
 
 async fn cancel_run(ctx: &Context, build: &Build, name: &str) -> Result<(), ControllerError> {
@@ -1309,11 +1311,8 @@ async fn create_if_missing<K>(api: &Api<K>, object: &K) -> Result<(), Controller
 where
     K: kube::Resource + Clone + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + Sync,
 {
-    match api.create(&PostParams::default(), object).await {
-        Ok(_) => Ok(()),
-        Err(kube::Error::Api(e)) if e.code == 409 => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    write::create_once(api, object).await?;
+    Ok(())
 }
 
 /// The namespace's limits: the controller's, as its annotations change them.

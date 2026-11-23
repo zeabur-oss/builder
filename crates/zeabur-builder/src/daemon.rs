@@ -26,7 +26,8 @@ use zeabur_builder_jobspec::buildkitd::{self, DaemonInputs, Resources};
 
 use crate::decide;
 use crate::leader::Leader;
-use crate::tls::{self, MANAGER, Pems};
+use crate::tls::{self, Pems};
+use crate::write::MANAGER;
 
 /// How often idle daemons are looked for.
 const SWEEP: Duration = Duration::from_secs(30);
