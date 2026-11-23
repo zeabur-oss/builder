@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
-use kube::api::{Api, ObjectMeta, PostParams};
+use kube::api::{Api, ObjectMeta, Patch, PatchParams, PostParams};
 use kube::{Client, ResourceExt as _};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
@@ -163,43 +163,20 @@ pub(crate) async fn ensure(
     }
 }
 
-/// Writes `data` to the Secret `name` in `namespace`, when missing or different.
-pub(crate) async fn put_secret(
-    client: &Client,
-    namespace: &str,
-    name: &str,
-    type_: Option<String>,
-    data: BTreeMap<String, ByteString>,
-) -> Result<(), kube::Error> {
-    let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let mut wanted = Secret {
-        metadata: ObjectMeta {
-            name: Some(name.to_owned()),
-            namespace: Some(namespace.to_owned()),
-            labels: Some(BTreeMap::from([(
-                labels::MANAGED_BY.to_owned(),
-                labels::MANAGER.to_owned(),
-            )])),
-            ..ObjectMeta::default()
-        },
-        data: Some(data),
-        type_,
-        ..Secret::default()
-    };
-    match api.get_opt(name).await? {
-        Some(existing) if existing.data == wanted.data => Ok(()),
-        Some(existing) => {
-            wanted.metadata.resource_version = existing.metadata.resource_version;
-            api.replace(name, &PostParams::default(), &wanted)
-                .await
-                .map(drop)
-        }
-        // Runs started together race to create the copy; the loser finds it there.
-        None => match api.create(&PostParams::default(), &wanted).await {
-            Err(kube::Error::Api(status)) if status.is_already_exists() => Ok(()),
-            result => result.map(drop),
-        },
-    }
+/// The field manager the controller writes as.
+pub(crate) const MANAGER: &str = "zeabur-builder";
+
+/// Writes `secret` with server-side apply as [`MANAGER`], taking over fields another manager
+/// set. Runs that write the same Secret at once end with the same object, whichever goes last.
+pub(crate) async fn apply_secret(client: &Client, secret: &Secret) -> Result<(), kube::Error> {
+    let api: Api<Secret> = Api::namespaced(client.clone(), &secret.namespace().unwrap_or_default());
+    api.patch(
+        &secret.name_any(),
+        &PatchParams::apply(MANAGER).force(),
+        &Patch::Apply(secret),
+    )
+    .await
+    .map(drop)
 }
 
 /// Copies the client files into the build namespace as `name`.
@@ -209,7 +186,20 @@ pub(crate) async fn put_client(
     name: &str,
     pems: &Pems,
 ) -> Result<(), kube::Error> {
-    put_secret(client, namespace, name, None, data(pems)).await
+    let secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(name.to_owned()),
+            namespace: Some(namespace.to_owned()),
+            labels: Some(BTreeMap::from([(
+                labels::MANAGED_BY.to_owned(),
+                labels::MANAGER.to_owned(),
+            )])),
+            ..ObjectMeta::default()
+        },
+        data: Some(data(pems)),
+        ..Secret::default()
+    };
+    apply_secret(client, &secret).await
 }
 
 #[cfg(test)]
@@ -248,6 +238,90 @@ mod tests {
         };
         assert_eq!(client_pems(&secret), Some(client));
         assert_eq!(client_pems(&Secret::default()), None);
+    }
+
+    /// 64 runs write one Secret at once with server-side apply on a real kube-apiserver: every
+    /// write succeeds, and the Secret ends as one of them, with the controller as its only
+    /// manager.
+    #[tokio::test]
+    #[ignore = "needs a disposable cluster in KUBECONFIG (scripts/ci/kubernetes.sh)"]
+    async fn runs_that_write_one_secret_at_once_all_succeed() {
+        use k8s_openapi::api::core::v1::Namespace;
+        use kube::api::{DeleteParams, PostParams};
+
+        const RUNS: usize = 64;
+        let client = Client::try_default().await.unwrap();
+        let namespaces: Api<Namespace> = Api::all(client.clone());
+        let namespace = format!(
+            "apply-secret-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let created = Namespace {
+            metadata: ObjectMeta {
+                name: Some(namespace.clone()),
+                ..ObjectMeta::default()
+            },
+            ..Namespace::default()
+        };
+        namespaces
+            .create(&PostParams::default(), &created)
+            .await
+            .unwrap();
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(RUNS));
+        let mut runs = tokio::task::JoinSet::new();
+        for run in 0..RUNS {
+            let (client, namespace, barrier) = (
+                client.clone(),
+                namespace.clone(),
+                std::sync::Arc::clone(&barrier),
+            );
+            runs.spawn(async move {
+                let secret = Secret {
+                    metadata: ObjectMeta {
+                        name: Some("client".to_owned()),
+                        namespace: Some(namespace),
+                        ..ObjectMeta::default()
+                    },
+                    data: Some(BTreeMap::from([(
+                        "run".to_owned(),
+                        ByteString(run.to_string().into_bytes()),
+                    )])),
+                    ..Secret::default()
+                };
+                barrier.wait().await;
+                apply_secret(&client, &secret).await
+            });
+        }
+        let results = runs.join_all().await;
+
+        let written: Api<Secret> = Api::namespaced(client.clone(), &namespace);
+        let secret = written.get("client").await;
+        namespaces
+            .delete(&namespace, &DeleteParams::default())
+            .await
+            .unwrap();
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let secret = secret.unwrap();
+        let run: usize = std::str::from_utf8(&secret.data.unwrap()["run"].0)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(run < RUNS);
+        let managers: Vec<_> = secret
+            .metadata
+            .managed_fields
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| (f.manager, f.operation))
+            .collect();
+        assert_eq!(
+            managers,
+            [(Some(MANAGER.to_owned()), Some("Apply".to_owned()))]
+        );
     }
 
     /// The DER of the first PEM block, enough to search for a SAN.

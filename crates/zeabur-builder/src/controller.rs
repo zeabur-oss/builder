@@ -50,6 +50,7 @@ use k8s_openapi::api::core::v1::{
 use kube::api::{
     Api, DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams, PropagationPolicy,
 };
+use kube::runtime::WatchStreamExt as _;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::events::{Event, EventType, Recorder, Reporter};
 use kube::runtime::reflector::{ObjectRef, Store};
@@ -78,10 +79,10 @@ use crate::leader::{self, Leader};
 use crate::notify::{self, Credentials};
 use crate::registry::{self, Registry, Signer};
 use crate::remote::{self, HttpClient, Resolver};
+use crate::tls::MANAGER;
 use crate::webhook::{self, Lookup, Receiver};
 use crate::{daemon, record, tls};
 
-const MANAGER: &str = "zeabur-builder";
 /// The field manager of `status.lastWebhookAt`, apart from [`MANAGER`] so neither removes the
 /// other's fields.
 const WEBHOOK_MANAGER: &str = "zeabur-builder-webhook";
@@ -1830,32 +1831,28 @@ async fn upload_token(
     let secret_name = format!("{name}-upload");
     let data = upload_data(host, token, ctx.settings.registry_ca.as_deref());
     let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
-    if let Some(mut secret) = secrets.get_opt(&secret_name).await? {
-        if secret.labels().get(labels::BUILD) != Some(&name) {
-            return Err(ControllerError::UploadSecretForeign { name: secret_name });
-        }
-        secret.data = Some(data);
-        secrets
-            .replace(&secret_name, &PostParams::default(), &secret)
-            .await?;
-    } else {
-        let secret = Secret {
-            metadata: ObjectMeta {
-                name: Some(secret_name.clone()),
-                namespace: Some(namespace.clone()),
-                labels: Some(BTreeMap::from([
-                    (labels::BUILD.to_owned(), name.clone()),
-                    (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
-                ])),
-                owner_references: build.controller_owner_ref(&()).map(|o| vec![o]),
-                ..ObjectMeta::default()
-            },
-            type_: Some("kubernetes.io/dockerconfigjson".to_owned()),
-            data: Some(data),
-            ..Secret::default()
-        };
-        secrets.create(&PostParams::default(), &secret).await?;
+    // A Secret of that name that no Build of this name labelled is someone else's.
+    if let Some(found) = secrets.get_opt(&secret_name).await?
+        && found.labels().get(labels::BUILD) != Some(&name)
+    {
+        return Err(ControllerError::UploadSecretForeign { name: secret_name });
     }
+    let secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(secret_name.clone()),
+            namespace: Some(namespace.clone()),
+            labels: Some(BTreeMap::from([
+                (labels::BUILD.to_owned(), name.clone()),
+                (labels::MANAGED_BY.to_owned(), labels::MANAGER.to_owned()),
+            ])),
+            owner_references: build.controller_owner_ref(&()).map(|o| vec![o]),
+            ..ObjectMeta::default()
+        },
+        type_: Some("kubernetes.io/dockerconfigjson".to_owned()),
+        data: Some(data),
+        ..Secret::default()
+    };
+    tls::apply_secret(&ctx.client, &secret).await?;
     tracing::info!(build = %name, namespace = %namespace, request, "upload token issued");
     Ok(UploadToken {
         request: request.to_owned(),
@@ -1993,7 +1990,8 @@ async fn janitor(ctx: Arc<Context>) {
     let events = watcher(
         Api::<Build>::all(ctx.client.clone()),
         watcher::Config::default(),
-    );
+    )
+    .default_backoff();
     let mut events = std::pin::pin!(events);
     let mut next_sweep = tokio::time::Instant::now();
     loop {
@@ -2006,10 +2004,7 @@ async fn janitor(ctx: Arc<Context>) {
                         tracing::warn!(%error, namespace, build = name, "deleting repositories; the sweep tries again");
                     }
                 }
-                Some(Err(error)) => {
-                    tracing::warn!(%error, "watching Builds for deletion");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
+                Some(Err(error)) => tracing::warn!(%error, "watching Builds for deletion"),
                 None => return,
                 Some(Ok(_)) => {}
             },

@@ -6,6 +6,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use backon::{ExponentialBuilder, Retryable as _};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
@@ -13,7 +14,6 @@ use http::{Method, Request, header};
 use http_body_util::Full;
 use thiserror::Error;
 
-use crate::decide::NOTIFY_BACKOFF;
 use crate::remote::HttpClient;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,25 +69,27 @@ impl fmt::Debug for Credentials {
     }
 }
 
-/// POSTs `body` as JSON to `url`, at most three times; the last error when none got a 2xx.
+/// POSTs `body` as JSON to `url`, at most three times, waiting 1 s and then 4 s, each plus a
+/// random part up to as long again; the last error when none got a 2xx.
 pub(crate) async fn post(
     client: &HttpClient,
     url: &str,
     credentials: Option<&Credentials>,
     body: &[u8],
 ) -> Result<(), NotifyError> {
-    let mut waits = NOTIFY_BACKOFF.iter();
-    loop {
-        let error = match attempt(client, url, credentials, body).await {
-            Ok(()) => return Ok(()),
-            Err(e) => e,
-        };
-        let Some(wait) = waits.next() else {
-            return Err(error);
-        };
-        tracing::info!(url, %error, "notify failed; retrying");
-        tokio::time::sleep(*wait).await;
-    }
+    (|| attempt(client, url, credentials, body))
+        .retry(backoff())
+        .notify(|error, wait| tracing::info!(url, %error, ?wait, "notify failed; retrying"))
+        .await
+}
+
+/// Two retries after the first attempt.
+fn backoff() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_secs(1))
+        .with_factor(4.0)
+        .with_max_times(2)
+        .with_jitter()
 }
 
 async fn attempt(

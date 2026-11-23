@@ -4337,6 +4337,7 @@ name = "zeabur-builder"
 version = "0.2.5"
 dependencies = [
  "aws-lc-rs",
+ "backon",
  "base64 0.23.1",
  "bytes",
  "clap",

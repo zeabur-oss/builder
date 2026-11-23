@@ -45,6 +45,7 @@ zeabur-builder-jobspec = { path = "crates/zeabur-builder-jobspec" }
 # Third-party crates.
 # HMAC for webhook signatures and RS256 for GitHub App JWTs, from the backend rustls already uses.
 aws-lc-rs = { version = "1.18", default-features = false, features = ["aws-lc-sys", "alloc"] }
+backon = { version = "1.6", default-features = false, features = ["std", "tokio-sleep"] }
 base64 = "0.23"
 bytes = "1"
 # The decompressor of archive sources, in pure Rust.
