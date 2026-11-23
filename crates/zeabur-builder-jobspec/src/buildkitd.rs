@@ -75,15 +75,23 @@ pub const REGISTRY_CA_DIR: &str = "/etc/buildkit-registry-ca";
 /// The Pod volume of [`REGISTRY_CA_SECRET`].
 const REGISTRY_CA_VOLUME: &str = "registry-ca";
 
-/// Whether the Pods of `set` mount [`REGISTRY_CA_SECRET`]. Daemons made by releases before it
-/// do not, and cannot read the CA that the buildkitd config names.
+/// Whether the Pods of `set` trust `registry_ca`: they mount [`REGISTRY_CA_SECRET`] and started
+/// with that CA. Daemons made by releases before the Secret do not mount it.
 #[must_use]
-pub fn mounts_registry_ca(set: &StatefulSet) -> bool {
-    set.spec
-        .as_ref()
-        .and_then(|s| s.template.spec.as_ref())
+pub fn trusts_registry_ca(set: &StatefulSet, registry_ca: Option<&str>) -> bool {
+    let Some(ca) = registry_ca else {
+        return true;
+    };
+    let template = set.spec.as_ref().map(|s| &s.template);
+    let mounts = template
+        .and_then(|t| t.spec.as_ref())
         .and_then(|p| p.volumes.as_ref())
-        .is_some_and(|v| v.iter().any(|v| v.name == REGISTRY_CA_VOLUME))
+        .is_some_and(|v| v.iter().any(|v| v.name == REGISTRY_CA_VOLUME));
+    let started_with = template
+        .and_then(|t| t.metadata.as_ref())
+        .and_then(|m| m.annotations.as_ref())
+        .and_then(|a| a.get(annotations::REGISTRY_CA_HASH));
+    mounts && started_with == Some(&sha256(ca.as_bytes()))
 }
 
 /// How the container starts buildkitd (`sh -c START buildkitd <args>`): first, the TCP

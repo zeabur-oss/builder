@@ -127,7 +127,7 @@ pub(crate) enum Wake {
 /// Makes the namespace's certificates and applies its daemon with one replica. A daemon that
 /// started with another registry CA than `registry_ca` restarts and keeps its cache, since it
 /// would keep the old CA for the registries it pulled from. A running daemon with other settings
-/// is replaced only when idle, or at once when it does not mount the registry's CA.
+/// is replaced only when idle, or at once when it does not trust the registry's CA.
 pub(crate) async fn wake(
     client: &Client,
     settings: &Settings,
@@ -177,9 +177,9 @@ pub(crate) async fn wake(
         }
         Some(old) if spec_hash(&old) != spec_hash(desired) => {
             let replicas = old.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
-            // A running daemon keeps its old settings until it is idle, unless it cannot read the
-            // registry's CA: then its builds fail at the registry anyway.
-            if replicas > 0 && (registry_ca.is_none() || buildkitd::mounts_registry_ca(&old)) {
+            // A running daemon keeps its old settings until it is idle, unless it does not trust
+            // the registry's CA: then its builds fail at the registry anyway.
+            if replicas > 0 && buildkitd::trusts_registry_ca(&old, registry_ca) {
                 old
             } else {
                 replace(&sets, &old).await?;

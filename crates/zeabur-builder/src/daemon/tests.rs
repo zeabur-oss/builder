@@ -540,6 +540,35 @@ async fn a_running_daemon_restarts_with_a_new_registry_ca_and_keeps_its_cache() 
 }
 
 #[tokio::test]
+async fn a_running_daemon_with_old_settings_is_replaced_for_a_new_registry_ca() {
+    let cluster = daemon_at(1, false).await;
+    let wake = |ca| {
+        let client = client(&cluster);
+        async move { super::wake(&client, &settings(), NAMESPACE, &limits(), Some(ca)).await }
+    };
+    let woken = wake("first CA").await;
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    let mut set = stored_set(&cluster);
+    set.annotations_mut()
+        .insert("builder.zeabur.com/spec-hash".to_owned(), "old".to_owned());
+    lock(&cluster).put(&set_key(), Object::StatefulSet(Box::new(set)));
+
+    let woken = wake("first CA").await;
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    assert!(
+        deletes(&cluster).is_empty(),
+        "the same CA: it keeps running"
+    );
+
+    let woken = wake("second CA").await;
+    assert!(
+        matches!(&woken, Ok(Wake::Starting(m)) if m.contains("new settings")),
+        "{woken:?}"
+    );
+    assert_eq!(deletes(&cluster).len(), 1);
+}
+
+#[tokio::test]
 async fn a_running_daemon_without_the_registry_ca_volume_is_replaced() {
     let cluster = daemon_at(1, true).await;
     let mut set = stored_set(&cluster);
