@@ -1540,7 +1540,15 @@ async fn daemon_for(
     limits: &decide::Limits,
 ) -> Result<Result<daemon::Woken, Action>, ControllerError> {
     let namespace = run.namespace().unwrap_or_default();
-    let action = match daemon::wake(&ctx.client, &ctx.settings.daemon, &namespace, limits).await {
+    let registry_ca = current_ca(ctx)?;
+    let wake = daemon::wake(
+        &ctx.client,
+        &ctx.settings.daemon,
+        &namespace,
+        limits,
+        registry_ca.as_deref(),
+    );
+    let action = match wake.await {
         Ok(daemon::Wake::Ready(woken)) => return Ok(Ok(woken)),
         Ok(daemon::Wake::Starting(message)) => {
             pending(ctx, run, status, Reason::BuildkitdStarting, message).await?

@@ -64,8 +64,12 @@ const CACHE: &str = "cache";
 /// The Secret, in the builder's namespace, that holds the default registry's CA alone. The
 /// controller writes it when the registry has a CA of its own.
 pub const REGISTRY_CA_SECRET: &str = "registry-ca";
-/// Where buildkitd finds that Secret. A Secret volume, not a `subPath`, so the kubelet updates
-/// the file when the CA rotates, and buildkit reads it again for each registry it resolves.
+/// Where buildkitd finds that Secret.
+///
+/// A Secret volume, not a `subPath`, so the kubelet updates the file when the CA rotates.
+/// buildkitd reads it when it makes a TLS client for a registry and
+/// keeps pull clients across builds, so a new CA also restarts it
+/// ([`annotations::REGISTRY_CA_HASH`]).
 pub const REGISTRY_CA_DIR: &str = "/etc/buildkit-registry-ca";
 
 /// How the container starts buildkitd (`sh -c START buildkitd <args>`): first, the TCP
@@ -152,6 +156,8 @@ pub struct DaemonInputs<'a> {
     pub builds: u32,
     /// The nodes the daemon runs on.
     pub placement: &'a Placement,
+    /// The default registry's CA, PEM, when it has one of its own.
+    pub registry_ca: Option<&'a str>,
 }
 
 /// The resources of one build on the daemon.
@@ -231,7 +237,7 @@ pub fn daemon(inputs: &DaemonInputs<'_>) -> Daemon {
 
     let network_policy = network_policy(inputs.namespace, meta.clone(), selector.clone());
 
-    let spec = StatefulSetSpec {
+    let mut spec = StatefulSetSpec {
         service_name: Some(name),
         replicas: Some(inputs.replicas),
         pod_management_policy: Some("Parallel".to_owned()),
@@ -274,6 +280,13 @@ pub fn daemon(inputs: &DaemonInputs<'_>) -> Daemon {
         ..StatefulSetSpec::default()
     };
     let hash = sha256(&serde_json::to_vec(&spec).unwrap_or_default());
+    // Outside the spec hash, so a new CA rolls the Pod and keeps the cache volume.
+    if let (Some(ca), Some(template)) = (inputs.registry_ca, spec.template.metadata.as_mut()) {
+        template.annotations = Some(BTreeMap::from([(
+            annotations::REGISTRY_CA_HASH.to_owned(),
+            sha256(ca.as_bytes()),
+        )]));
+    }
     let stateful_set = StatefulSet {
         metadata: ObjectMeta {
             annotations: Some(BTreeMap::from([(annotations::SPEC_HASH.to_owned(), hash)])),
@@ -506,6 +519,7 @@ mod tests {
             resources,
             builds: 1,
             placement: &NOWHERE,
+            registry_ca: None,
         }
     }
 
@@ -513,6 +527,30 @@ mod tests {
         node_selector: BTreeMap::new(),
         tolerations: Vec::new(),
     };
+
+    #[test]
+    fn a_new_registry_ca_changes_the_pod_and_not_the_spec_hash() {
+        let resources = Resources::default();
+        let ca_of = |ca| {
+            let set = daemon(&DaemonInputs {
+                registry_ca: ca,
+                ..inputs(&resources)
+            })
+            .stateful_set;
+            let template = set
+                .spec
+                .and_then(|s| s.template.metadata)
+                .and_then(|m| m.annotations)
+                .and_then(|a| a.get(annotations::REGISTRY_CA_HASH).cloned());
+            (set.metadata.annotations, template)
+        };
+        let (none, no_ca) = ca_of(None);
+        let (first, first_ca) = ca_of(Some("first"));
+        let (second, second_ca) = ca_of(Some("second"));
+        assert_eq!(no_ca, None);
+        assert_ne!(first_ca, second_ca);
+        assert_eq!((&none, &first), (&second, &second));
+    }
 
     #[test]
     fn golden() {

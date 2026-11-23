@@ -3,10 +3,12 @@
 #   scripts/deploy-example.sh <context>
 #   scripts/example-registry-ca.sh <context>
 # The controller publishes the CA alone in builder-system/registry-ca, which any signed-in user may
-# read; the registry's own Secret, with its key, stays closed. A/whoami rebuilds with the first CA.
-# Then zot-tls gets a new CA and certificate and the registry restarts: registry-ca follows,
-# A's buildkitd sees the new file without a restart, and a rebuild pushes with it. The chart keeps
-# its revision, and the controller and buildkitd keep their Pods.
+# read; the registry's own Secret, with its key, stays closed. A/hello-python (Railpack) rebuilds
+# with the first CA: it pushes to the registry and pulls its first image back from it, so A's
+# buildkitd keeps a pull client of the registry. Then zot-tls gets a new CA and certificate and the
+# registry restarts: registry-ca follows, the next rebuild restarts A's buildkitd with the new CA,
+# keeping its cache, and pushes and pulls with it. The chart keeps its revision and the controller
+# its Pods.
 # Environment: A (team-a), TIMEOUT (600).
 set -euo pipefail
 
@@ -29,6 +31,7 @@ daemon_pod() {
   k -n builder-system get pod -l "app.kubernetes.io/name=buildkitd,builder.zeabur.com/namespace=$a" \
     -o jsonpath='{.items[0].metadata.name} {.items[0].metadata.uid}'
 }
+cache_claim() { k -n builder-system get pvc "cache-$1" -o jsonpath='{.metadata.uid}'; }
 # $1 = seconds, then a command that succeeds once the wait is over.
 wait_until() {
   local deadline=$(($(date +%s) + $1))
@@ -38,12 +41,12 @@ wait_until() {
     sleep 2
   done
 }
-# Asks for a rebuild of A/whoami and prints the phase its run ends in.
+# Asks for a rebuild of A/hello-python and prints the phase its run ends in.
 rebuild() { # $1 = the annotation value
-  k -n "$a" annotate build/whoami --overwrite "builder.zeabur.com/rebuild=$1" >/dev/null
+  k -n "$a" annotate build/hello-python --overwrite "builder.zeabur.com/rebuild=$1" >/dev/null
   local deadline=$(($(date +%s) + timeout)) phase
   while (($(date +%s) < deadline)); do
-    phase=$(k -n "$a" get buildrun -l builder.zeabur.com/build=whoami -o json |
+    phase=$(k -n "$a" get buildrun -l builder.zeabur.com/build=hello-python -o json |
       jq -r --arg v "$1" '.items[]
         | select(.metadata.annotations["builder.zeabur.com/rebuild"] == $v) | .status.phase // empty')
     case $phase in Succeeded | Failed)
@@ -77,14 +80,15 @@ fi
 echo "== rotation"
 result=$(rebuild "ca-$(date +%s)-before")
 if [[ $result == Succeeded ]]; then
-  ok "A/whoami builds with the first CA"
+  ok "A/hello-python builds with the first CA"
 else
-  wrong "A/whoami with the first CA: $result"
+  wrong "A/hello-python with the first CA: $result"
 fi
 revision=$(helm --kube-context "$context" -n builder-system status builder -o json | jq .version)
 controller=$(k -n builder-system get pod -l app.kubernetes.io/name=zeabur-builder \
   -o jsonpath='{.items[*].metadata.uid}')
 read -r pod daemon <<<"$(daemon_pod)"
+claim=$(cache_claim "$pod")
 old=$(published)
 
 "$root/scripts/registry-tls.sh" "$context"
@@ -99,19 +103,27 @@ if wait_until 60 follows; then
 else
   wrong "registry-ca still holds the first CA after 60s"
 fi
-# The kubelet updates a Secret volume within its sync period and cache TTL, a minute each by
-# default.
-mounted() { [[ $(k -n builder-system exec "$pod" -- cat /etc/buildkit-registry-ca/ca.crt) == "$new" ]]; }
-if wait_until 180 mounted; then
-  ok "A's buildkitd sees the new CA"
-else
-  wrong "A's buildkitd still sees the first CA after 180s"
-fi
 result=$(rebuild "ca-$(date +%s)-after")
 if [[ $result == Succeeded ]]; then
-  ok "A/whoami builds with the new CA"
+  ok "A/hello-python builds with the new CA"
 else
-  wrong "A/whoami with the new CA: $result"
+  wrong "A/hello-python with the new CA: $result"
+fi
+read -r _ restarted <<<"$(daemon_pod)"
+if [[ $restarted != "$daemon" ]]; then
+  ok "A's buildkitd restarted for the new CA"
+else
+  wrong "A's buildkitd kept its Pod, and its pull clients with the first CA"
+fi
+if [[ $(k -n builder-system exec "$pod" -- cat /etc/buildkit-registry-ca/ca.crt) == "$new" ]]; then
+  ok "A's buildkitd mounts the new CA"
+else
+  wrong "A's buildkitd mounts another CA"
+fi
+if [[ $(cache_claim "$pod") == "$claim" ]]; then
+  ok "A's buildkitd keeps its cache"
+else
+  wrong "A's buildkitd lost its cache"
 fi
 
 if [[ $(helm --kube-context "$context" -n builder-system status builder -o json | jq .version) == "$revision" ]]; then
@@ -124,11 +136,6 @@ if [[ $(k -n builder-system get pod -l app.kubernetes.io/name=zeabur-builder \
   ok "the controller keeps its Pods"
 else
   wrong "the controller restarted"
-fi
-if [[ $(daemon_pod) == "$pod $daemon" ]]; then
-  ok "A's buildkitd keeps its Pod"
-else
-  wrong "A's buildkitd restarted"
 fi
 
 if ((failures > 0)); then

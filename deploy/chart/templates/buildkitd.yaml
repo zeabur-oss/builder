@@ -45,8 +45,8 @@ data:
       http = true
       {{- end }}
       {{- if $ca }}
-      # The Secret registry-ca, which the controller keeps current. buildkit reads the file again
-      # for each registry it resolves, so a rotated CA needs no restart.
+      # The Secret registry-ca, which the controller keeps current. buildkit keeps the TLS clients
+      # it pulls with, so the controller restarts buildkitd when the CA changes.
       ca = ["/etc/buildkit-registry-ca/ca.crt"]
       {{- end }}
     {{- end }}

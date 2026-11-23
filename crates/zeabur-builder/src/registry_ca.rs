@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use backon::{ExponentialBuilder, Retryable as _};
+use base64::Engine as _;
+use base64::prelude::BASE64_STANDARD;
 use futures_util::StreamExt as _;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::Secret;
@@ -41,8 +43,8 @@ pub(crate) struct Source {
 /// The CA the controller read last, `None` until the first read.
 pub(crate) type Current = watch::Receiver<Option<String>>;
 
-/// Follows `source` until the watch ends. Each CA it reads is sent to `current` and published in
-/// [`PUBLISHED`] of `namespace`. A Secret without a certificate in the key keeps the last CA.
+/// Follows `source` until the watch ends. Each CA it reads is published in [`PUBLISHED`] of
+/// `namespace`, then sent to `current`. A Secret without a certificate in the key keeps the last CA.
 pub(crate) async fn follow(
     client: Client,
     source: Source,
@@ -70,7 +72,7 @@ pub(crate) async fn follow(
             );
             continue;
         };
-        current.send_replace(Some(ca.clone()));
+        // Published first: a buildkitd that restarts for the new CA must mount it.
         let published = published(&namespace, &ca);
         let applied = (|| tls::apply_secret(&client, &published))
             .retry(backoff())
@@ -81,6 +83,7 @@ pub(crate) async fn follow(
         if let Err(error) = applied {
             tracing::warn!(%error, "publishing the registry CA");
         }
+        current.send_replace(Some(ca));
     }
 }
 
@@ -92,13 +95,31 @@ fn backoff() -> ExponentialBuilder {
         .with_jitter()
 }
 
-/// The PEM in `key`, when every block in it is a certificate and there is one at least.
+/// The certificates in `key`, PEM, when there is one at least. Only the certificate blocks are
+/// encoded again, so another block in the key, such as a private key, is never published.
 fn ca_of(secret: &Secret, key: &str) -> Option<String> {
     let pem = secret.data.as_ref()?.get(key)?;
-    let pem = std::str::from_utf8(&pem.0).ok()?;
-    let mut certs = CertificateDer::pem_slice_iter(pem.as_bytes()).peekable();
-    certs.peek()?;
-    certs.all(|cert| cert.is_ok()).then(|| pem.to_owned())
+    let certs = CertificateDer::pem_slice_iter(&pem.0)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if certs.is_empty() {
+        return None;
+    }
+    Some(certs.iter().map(|cert| pem_of(cert)).collect())
+}
+
+/// `cert` as a PEM block: base64 in lines of 64 columns ([RFC 7468, section 2]).
+///
+/// [RFC 7468, section 2]: https://www.rfc-editor.org/rfc/rfc7468#section-2
+fn pem_of(cert: &CertificateDer<'_>) -> String {
+    let base64 = BASE64_STANDARD.encode(cert);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for line in base64.as_bytes().chunks(64) {
+        pem.push_str(&String::from_utf8_lossy(line));
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    pem
 }
 
 /// The Secret [`PUBLISHED`] with `ca`.
@@ -164,6 +185,14 @@ mod tests {
         let key = rcgen::KeyPair::generate().unwrap().serialize_pem();
         assert_eq!(ca_of(&secret("ca.crt", &key), "ca.crt"), None);
         assert_eq!(ca_of(&Secret::default(), "ca.crt"), None);
+    }
+
+    #[test]
+    fn a_key_next_to_the_certificate_is_not_published() {
+        let pem = ca("registry");
+        let key = rcgen::KeyPair::generate().unwrap().serialize_pem();
+        let combined = format!("{key}{pem}");
+        assert_eq!(ca_of(&secret("ca.crt", &combined), "ca.crt"), Some(pem));
     }
 
     #[test]
