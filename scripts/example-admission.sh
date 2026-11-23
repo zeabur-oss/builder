@@ -19,18 +19,18 @@ controller=system:serviceaccount:builder-system:zeabur-builder
 k() { kubectl --context "$context" "$@"; }
 failures=0
 check() { # $1 = pass or fail, $2 = what, $3 = "admin" for the context's own user; the object on stdin
-  local want=$1 what=$2 as=(--as "$controller") out got
+  local want=$1 what=$2 as=(--as "$controller") out got line
   [[ ${3:-} == admin ]] && as=()
   if out=$(k "${as[@]}" create --dry-run=server -f - 2>&1); then got=pass; else got=fail; fi
   # A refusal counts only when the policy made it, not schema validation or RBAC.
-  if [[ $got == fail ]] && ! grep -q 'denied request' <<<"$out"; then got="fail outside the policy"; fi
+  if [[ $got == fail ]] && ! rg -q 'denied request' <<<"$out"; then got="fail outside the policy"; fi
   if [[ $got == "$want" ]]; then
     echo "ok    $what"
   else
     echo "WRONG $what (expected $want, got $got)"
     failures=$((failures + 1))
   fi
-  tail -n 2 <<<"$out" | sed -e 's/^/      /'
+  tail -n 2 <<<"$out" | while IFS= read -r line; do echo "      $line"; done
 }
 
 job() { # $1 = namespace: a Job in the shape of a build Job

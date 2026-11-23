@@ -98,8 +98,9 @@ EOF
 save_pod_logs() {
   local ns pod
   mkdir -p "$artifacts/pods"
-  kubectl get pod -A --no-headers 2>/dev/null | awk '$1 != "kube-system" { print $1, $2 }' |
+  kubectl get pod -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name 2>/dev/null |
     while read -r ns pod; do
+      [[ $ns != kube-system ]] || continue
       kubectl -n "$ns" logs "$pod" --all-containers --prefix --timestamps >"$artifacts/pods/$ns.$pod.log" 2>&1 || true
       if [[ "${1:-}" == --print ]]; then
         echo "--- $ns/$pod"
@@ -122,12 +123,13 @@ cluster_failure_context() {
   done
   kubectl -n builder-system logs deployment/zeabur-builder --tail=100 || true
   save_pod_logs --print
-  local log
+  local log name
   # The build Pods that failed earlier and are gone by now.
   for log in "$artifacts"/pods/*.log; do
     [[ -e "$log" ]] || continue
-    if ! kubectl -n "$(basename "$log" | cut -d . -f 1)" get pod "$(basename "$log" .log | cut -d . -f 2-)" >/dev/null 2>&1; then
-      echo "--- $(basename "$log" .log) (gone)"
+    name=$(basename "$log" .log)
+    if ! kubectl -n "${name%%.*}" get pod "${name#*.}" >/dev/null 2>&1; then
+      echo "--- $name (gone)"
       tail -n 150 "$log"
     fi
   done

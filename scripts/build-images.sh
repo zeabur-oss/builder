@@ -9,7 +9,10 @@ set -euo pipefail
 prefix="${1:?usage: build-images.sh <prefix> <tag>}"
 tag="${2:?usage: build-images.sh <prefix> <tag>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-arch="$(uname -m | sed -e 's/^arm64$/aarch64/')"
+machine="$(uname -m)"
+arch=$machine platform=$machine
+[[ $machine != arm64 ]] || arch=aarch64
+[[ $machine != x86_64 ]] || platform=amd64
 target="$arch-unknown-linux-musl"
 profile="${ZEABUR_BUILDER_PROFILE:-release}"
 # Cargo writes the dev profile to target/<target>/debug.
@@ -26,7 +29,7 @@ if [[ $(uname -s) == Linux ]]; then
   bin="$root/target/$target/$dir"
 else
   # Named volumes keep the Nix store, the Cargo registry and the build cache between runs.
-  docker run --rm --platform "linux/$(uname -m | sed -e 's/^x86_64$/amd64/')" \
+  docker run --rm --platform "linux/$platform" \
     -v "$root:/src" -v zeabur-builder-nix:/nix -v zeabur-builder-cargo:/root/.cargo \
     -v zeabur-builder-target:/target -e CARGO_TARGET_DIR=/target -e ZEABUR_BUILDER_PROFILE -w /src \
     docker.io/nixos/nix:2.34.9 \

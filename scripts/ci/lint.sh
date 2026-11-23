@@ -24,7 +24,7 @@ cargo_checks() {
   cargo clippy -p zeabur-builder-api --no-default-features --all-targets --locked -- -D warnings
   # A crate that only reads and writes the objects turns the schema feature off to drop these.
   if cargo tree --locked -e normal --no-default-features -p zeabur-builder-api --prefix none |
-    grep -E '^(schemars|dyn-clone|ref-cast) '; then
+    rg '^(schemars|dyn-clone|ref-cast) '; then
     echo "zeabur-builder-api without its schema feature still depends on the crates above" >&2
     exit 1
   fi
