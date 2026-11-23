@@ -488,7 +488,8 @@ pub struct UploadToken {
     #[cfg_attr(feature = "schema", schemars(length(max = MAX_UPLOAD_REQUEST)))]
     pub request: String,
     /// The `kubernetes.io/dockerconfigjson` Secret, in the `Build`'s namespace. Its key `token`
-    /// holds the bare token, and `ca.crt` the registry's CA when the registry has one.
+    /// holds the bare token. A registry with a CA of its own publishes the CA in the Secret
+    /// `registry-ca` of the builder's namespace.
     #[cfg_attr(feature = "schema", schemars(length(max = MAX_NAME)))]
     pub secret_name: String,
     /// When the token expires.

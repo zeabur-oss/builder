@@ -15,6 +15,8 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{
 };
 use kube::{Client, ResourceExt as _};
 use serde::Serialize;
+use zeabur_builder_api::annotations;
+use zeabur_builder_core::archive::sha256;
 use zeabur_builder_jobspec::buildkitd::Resources;
 use zeabur_builder_jobspec::{JobMemory, Placement};
 
@@ -358,7 +360,7 @@ fn writes(cluster: &Shared) -> Vec<Call> {
 }
 
 async fn wake_namespace(cluster: &Shared) -> Result<Wake, kube::Error> {
-    super::wake(&client(cluster), &settings(), NAMESPACE, &limits()).await
+    super::wake(&client(cluster), &settings(), NAMESPACE, &limits(), None).await
 }
 
 #[tokio::test]
@@ -508,6 +510,92 @@ async fn a_running_daemon_keeps_its_old_settings() {
     assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
     assert_eq!(object(&cluster, &set_key()), before);
     assert!(deletes(&cluster).is_empty());
+}
+
+#[tokio::test]
+async fn a_running_daemon_restarts_with_a_new_registry_ca_and_keeps_its_cache() {
+    let cluster = daemon_at(1, false).await;
+    let ca_of = |cluster: &Shared| {
+        stored_set(cluster)
+            .spec
+            .and_then(|s| s.template.metadata)
+            .and_then(|m| m.annotations)
+            .and_then(|a| a.get(annotations::REGISTRY_CA_HASH).cloned())
+    };
+    assert_eq!(ca_of(&cluster), None);
+
+    for ca in ["first CA", "second CA"] {
+        let woken = super::wake(
+            &client(&cluster),
+            &settings(),
+            NAMESPACE,
+            &limits(),
+            Some(ca),
+        )
+        .await;
+        assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+        assert_eq!(ca_of(&cluster), Some(sha256(ca.as_bytes())));
+    }
+    assert!(deletes(&cluster).is_empty());
+}
+
+#[tokio::test]
+async fn a_running_daemon_with_old_settings_is_replaced_for_a_new_registry_ca() {
+    let cluster = daemon_at(1, false).await;
+    let wake = |ca| {
+        let client = client(&cluster);
+        async move { super::wake(&client, &settings(), NAMESPACE, &limits(), Some(ca)).await }
+    };
+    let woken = wake("first CA").await;
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    let mut set = stored_set(&cluster);
+    set.annotations_mut()
+        .insert("builder.zeabur.com/spec-hash".to_owned(), "old".to_owned());
+    lock(&cluster).put(&set_key(), Object::StatefulSet(Box::new(set)));
+
+    let woken = wake("first CA").await;
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    assert!(
+        deletes(&cluster).is_empty(),
+        "the same CA: it keeps running"
+    );
+
+    let woken = wake("second CA").await;
+    assert!(
+        matches!(&woken, Ok(Wake::Starting(m)) if m.contains("new settings")),
+        "{woken:?}"
+    );
+    assert_eq!(deletes(&cluster).len(), 1);
+}
+
+#[tokio::test]
+async fn a_running_daemon_without_the_registry_ca_volume_is_replaced() {
+    let cluster = daemon_at(1, true).await;
+    let mut set = stored_set(&cluster);
+    if let Some(pod) = set.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+        pod.volumes
+            .get_or_insert_default()
+            .retain(|v| v.name != "registry-ca");
+    }
+    lock(&cluster).put(&set_key(), Object::StatefulSet(Box::new(set)));
+
+    let woken = super::wake(&client(&cluster), &settings(), NAMESPACE, &limits(), None).await;
+    assert!(matches!(woken, Ok(Wake::Starting(_))), "{woken:?}");
+    assert!(deletes(&cluster).is_empty(), "no CA: it keeps running");
+
+    let woken = super::wake(
+        &client(&cluster),
+        &settings(),
+        NAMESPACE,
+        &limits(),
+        Some("CA"),
+    )
+    .await;
+    assert!(
+        matches!(&woken, Ok(Wake::Starting(m)) if m.contains("new settings")),
+        "{woken:?}"
+    );
+    assert_eq!(deletes(&cluster).len(), 1);
 }
 
 #[tokio::test]

@@ -27,8 +27,7 @@ registry=registry.builder-registry.svc.cluster.local:5000
 k() { kubectl --context "$context" "$@"; }
 ensure_namespace() { k create namespace "$1" --dry-run=client -o yaml | k apply -f - >/dev/null; }
 
-# Not `k3d image import`: k3d 5.9.0 can take an exec that has not started for one that exited 0,
-# remove the tarball and report success. `docker exec` returns ctr's exit status.
+# `docker exec` returns ctr's exit status (scripts/ci/patterns.sh, k3d-image-import).
 if [[ -n ${K3D_CLUSTER:-} ]]; then
   images=("$prefix/builder:$tag" "$prefix/builder-job:$tag" "$prefix/builder-railpack:$tag")
   nodes=$(docker ps --filter "label=k3d.cluster=$K3D_CLUSTER" --filter label=k3d.role=server --format '{{.Names}}'
@@ -51,6 +50,11 @@ if ! k -n builder-registry get secret zot-token-signer >/dev/null 2>&1; then
     --key "$keys/tls.key" >/dev/null
   rm -rf "$keys"
 fi
+# The registry's certificate, from a CA of its own, as the Zeabur Catalog's zot-tls. A rerun keeps
+# it; scripts/example-registry-ca.sh rotates it.
+if ! k -n builder-registry get secret zot-tls >/dev/null 2>&1; then
+  "$root/scripts/registry-tls.sh" "$context"
+fi
 k apply -f "$manifests/registry.yaml"
 # A changed config needs a restart.
 k -n builder-registry patch deployment registry --type merge -p \
@@ -64,7 +68,8 @@ helm --kube-context "$context" upgrade --install builder "$root/deploy/chart" -n
   --set image.repository="$prefix/builder" --set image.tag="$tag" \
   --set jobImage.repository="$prefix/builder-job" --set jobImage.tag="$tag" \
   --set railpackImage.repository="$prefix/builder-railpack" --set railpackImage.tag="$tag" \
-  --set registry.host="$registry" --set registry.http=true \
+  --set registry.host="$registry" \
+  --set registry.caSecret.namespace=builder-registry --set registry.caSecret.secret=zot-tls \
   --set registry.inCluster.namespace=builder-registry \
   --set registry.inCluster.podLabels.app\\.kubernetes\\.io/name=registry \
   --set registry.tokenKey.namespace=builder-registry --set registry.tokenKey.secret=zot-token-signer \

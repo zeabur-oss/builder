@@ -23,15 +23,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end }}
 
-{{- /* The registry's CA: registry.ca, else the key of registry.caFrom's Secret, else nothing. */ -}}
+{{- /* The Secret with the registry's CA, <namespace>/<name>, or nothing when the registry has a public CA. */ -}}
 {{- define "builder.registryCA" -}}
-{{- $registry := .Values.registry -}}
-{{- if $registry.ca -}}
-{{ $registry.ca }}
-{{- else if and $registry.caFrom.namespace $registry.caFrom.secret -}}
-{{- $secret := lookup "v1" "Secret" $registry.caFrom.namespace $registry.caFrom.secret -}}
-{{- if $secret -}}
-{{ index $secret.data $registry.caFrom.key | default "" | b64dec }}
+{{- with .Values.registry.caSecret -}}
+{{- if or .namespace .secret -}}
+{{ required "registry.caSecret.namespace is required with registry.caSecret.secret" .namespace }}/{{ required "registry.caSecret.secret is required with registry.caSecret.namespace" .secret }}
 {{- end -}}
 {{- end -}}
 {{- end }}

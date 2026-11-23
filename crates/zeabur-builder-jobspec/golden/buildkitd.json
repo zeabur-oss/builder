@@ -39,7 +39,7 @@
     "kind": "StatefulSet",
     "metadata": {
       "annotations": {
-        "builder.zeabur.com/spec-hash": "sha256:c7f71de15c34bd4ad12955f2f32f0ddb1d779bc0e408ea2617b1b95e4170c61d"
+        "builder.zeabur.com/spec-hash": "sha256:b3349a56cdca79358d1ecd97254412ce8b9ac733e8e7870adb29412eb7bb9682"
       },
       "labels": {
         "app.kubernetes.io/managed-by": "zeabur-builder",
@@ -157,6 +157,11 @@
                   "readOnly": true
                 },
                 {
+                  "mountPath": "/etc/buildkit-registry-ca",
+                  "name": "registry-ca",
+                  "readOnly": true
+                },
+                {
                   "mountPath": "/var/lib/buildkit",
                   "name": "cache"
                 }
@@ -191,6 +196,13 @@
                   }
                 ],
                 "secretName": "buildkitd-team-a-tls"
+              }
+            },
+            {
+              "name": "registry-ca",
+              "secret": {
+                "optional": true,
+                "secretName": "registry-ca"
               }
             }
           ]

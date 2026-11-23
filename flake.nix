@@ -58,6 +58,8 @@
               cargo-auditable
               cargo-deny
               cargo-nextest
+              # Pattern rules (scripts/ci/patterns.sh)
+              ripgrep
 
               # Kubernetes and BuildKit integration tests
               kind

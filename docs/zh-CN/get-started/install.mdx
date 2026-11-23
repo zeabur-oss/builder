@@ -39,7 +39,7 @@ kubectl version
 | --- | --- |
 | `registry.host` | 镜像推送的目标地址，路径格式为 `<host>/<namespace>/<build>`。 |
 | `registry.tokenKey` | 必填。指定 Secret，其中的密钥用于签署 registry 信任的令牌。详见 [Registry 令牌](../operations/registry-tokens.mdx)。 |
-| `registry.ca` 或 `registry.caFrom` | registry 使用私有证书时，提供其 CA。 |
+| `registry.caSecret` | registry 使用私有证书时，指定存放其 CA 的 Secret（`namespace`、`secret`、`key`）。控制器会把 CA 单独发布到自己 Namespace 的 Secret `registry-ca`，所有已登录的用户都能读取。Secret 换上新的 CA 后，无需重新安装即可生效。 |
 | `registry.inCluster` | registry 在集群内运行时，指定其 Namespace、Pod 标签和端口，让出站网络策略允许 buildkitd 访问。 |
 
 缺少 `registry.tokenKey.namespace` 或 `registry.tokenKey.secret` 时，chart 无法安装或渲染。
@@ -129,7 +129,7 @@ clusterbuilder.builder.zeabur.com/railpack condition met
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
   -n builder-system --create-namespace --set registry.host=zot.zot.svc:5000 \
-  --set registry.caFrom.namespace=zot --set registry.caFrom.secret=zot-tls \
+  --set registry.caSecret.namespace=zot --set registry.caSecret.secret=zot-tls \
   --set registry.inCluster.namespace=zot \
   --set registry.inCluster.podLabels.app\\.kubernetes\\.io/name=zot \
   --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer

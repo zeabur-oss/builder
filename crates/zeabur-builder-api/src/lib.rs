@@ -95,6 +95,9 @@ pub mod annotations {
     pub const PLAN_FRESH: &str = "fresh";
     /// On a buildkitd `StatefulSet`: the SHA-256 of the spec the controller applied.
     pub const SPEC_HASH: &str = "builder.zeabur.com/spec-hash";
+    /// On a buildkitd Pod template: the SHA-256 of the default registry's CA. buildkitd keeps the
+    /// TLS clients of the registries it pulls from, with the CA they read, so a new CA restarts it.
+    pub const REGISTRY_CA_HASH: &str = "builder.zeabur.com/registry-ca-hash";
 }
 
 /// Every custom resource definition, in a stable order.

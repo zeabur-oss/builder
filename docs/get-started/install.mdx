@@ -39,7 +39,7 @@ The `Server Version` line must show `v1.33.0` or later.
 | --- | --- |
 | `registry.host` | The destination for image pushes. Paths use the format `<host>/<namespace>/<build>`. |
 | `registry.tokenKey` | Required. Specifies the Secret containing the key used to sign tokens the registry trusts. See [Registry tokens](../operations/registry-tokens.mdx). |
-| `registry.ca` or `registry.caFrom` | Provides the registry's CA if the registry uses a private certificate. |
+| `registry.caSecret` | The Secret (`namespace`, `secret`, `key`) that holds the registry's CA, if the registry uses a private certificate. The controller publishes the CA alone in the Secret `registry-ca` of its Namespace, which every signed-in user can read. A new CA in the Secret takes effect without a reinstall. |
 | `registry.inCluster` | Specifies the Namespace, Pod labels, and port of a registry running inside the cluster so the egress policy permits buildkitd to access it. |
 
 The chart can't install or render if `registry.tokenKey.namespace` or `registry.tokenKey.secret` is missing.
@@ -129,7 +129,7 @@ The `builds/zeabur-builder` component of [Zeabur Catalog](https://github.com/zea
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
   -n builder-system --create-namespace --set registry.host=zot.zot.svc:5000 \
-  --set registry.caFrom.namespace=zot --set registry.caFrom.secret=zot-tls \
+  --set registry.caSecret.namespace=zot --set registry.caSecret.secret=zot-tls \
   --set registry.inCluster.namespace=zot \
   --set registry.inCluster.podLabels.app\\.kubernetes\\.io/name=zot \
   --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer

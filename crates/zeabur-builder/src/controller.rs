@@ -76,6 +76,7 @@ use crate::github::{self, Access, GitHub, State};
 use crate::leader::{self, Leader};
 use crate::notify::{self, Credentials};
 use crate::registry::{self, Registry, Signer};
+use crate::registry_ca::{self, Current};
 use crate::remote::{self, HttpClient, Resolver};
 use crate::webhook::{self, Lookup, Receiver};
 use crate::write::{self, Created, MANAGER};
@@ -121,8 +122,9 @@ pub(crate) struct Settings {
     pub(crate) pending_grace: Duration,
     /// The registry for `Build`s without `spec.output.image`.
     pub(crate) default_registry: String,
-    /// The default registry's CA, PEM, for the `fetch` container of an archive source.
-    pub(crate) registry_ca: Option<String>,
+    /// The Secret key that holds the default registry's CA, when a public CA did not sign the
+    /// registry's certificate.
+    pub(crate) registry_ca: Option<registry_ca::Source>,
     /// Whether the default registry speaks plain HTTP.
     pub(crate) registry_http: bool,
     /// The Secret, as namespace and name, whose `tls.key` signs tokens for the default registry.
@@ -148,7 +150,9 @@ struct Context {
     client: Client,
     leader: Leader,
     http: HttpClient,
-    registry: Registry,
+    /// The default registry's CA as the controller read it last; `None` when the registry needs
+    /// none.
+    registry_ca: Option<Current>,
     resolver: Resolver,
     recorder: Recorder,
     settings: Settings,
@@ -242,6 +246,9 @@ pub(crate) enum ControllerError {
     /// The Secret named for the upload token belongs to something else.
     #[error("Secret `{name}` exists and is not this Build's upload token")]
     UploadSecretForeign { name: String },
+    /// The registry has a CA of its own that the controller has not read yet.
+    #[error("the registry CA's Secret has not been read yet")]
+    RegistryCaUnread,
     #[error(transparent)]
     Leader(#[from] leader::LeaderError),
     #[error(transparent)]
@@ -380,11 +387,15 @@ async fn run_replica(
     leader: Leader,
 ) -> Result<(), ControllerError> {
     let http = remote::http_client()?;
-    let registry = Registry::new(
-        remote::http_client_with(settings.registry_ca.as_deref())?,
-        decide::registry_host(&settings.default_registry),
-        settings.registry_http,
-    );
+    let (registry_ca, follow_ca): (_, BoxFuture<'static, ()>) = match settings.registry_ca.clone() {
+        Some(source) => {
+            let (sender, current) = tokio::sync::watch::channel(None);
+            let namespace = settings.namespace.clone();
+            let follow = registry_ca::follow(client.clone(), source, namespace, sender);
+            (Some(current), Box::pin(follow))
+        }
+        None => (None, Box::pin(std::future::pending())),
+    };
     let github = Arc::new(GitHub::new(
         &client,
         http.clone(),
@@ -409,7 +420,7 @@ async fn run_replica(
         ),
         resolver: Resolver::new(http.clone()),
         http,
-        registry,
+        registry_ca,
         client: client.clone(),
         settings,
     });
@@ -459,6 +470,7 @@ async fn run_replica(
         ((), (), ()) = async { tokio::join!(builds, runs, builders) } => {}
         () = sweep => {}
         () = janitor => {}
+        () = follow_ca => {}
         served = receive => served?,
     }
     Ok(())
@@ -1528,7 +1540,15 @@ async fn daemon_for(
     limits: &decide::Limits,
 ) -> Result<Result<daemon::Woken, Action>, ControllerError> {
     let namespace = run.namespace().unwrap_or_default();
-    let action = match daemon::wake(&ctx.client, &ctx.settings.daemon, &namespace, limits).await {
+    let registry_ca = current_ca(ctx)?;
+    let wake = daemon::wake(
+        &ctx.client,
+        &ctx.settings.daemon,
+        &namespace,
+        limits,
+        registry_ca.as_deref(),
+    );
+    let action = match wake.await {
         Ok(daemon::Wake::Ready(woken)) => return Ok(Ok(woken)),
         Ok(daemon::Wake::Starting(message)) => {
             pending(ctx, run, status, Reason::BuildkitdStarting, message).await?
@@ -1641,7 +1661,7 @@ async fn start(
         builder: &builder.spec,
         image: &image,
         registry: &settings.default_registry,
-        registry_ca: settings.registry_ca.as_deref(),
+        registry_ca: current_ca(ctx)?.as_deref(),
         registry_http: settings.registry_http,
         tags: &tags,
         buildkitd_addr: &woken.address,
@@ -1828,7 +1848,7 @@ async fn upload_token(
     let token = signer.token(&[(source.as_str(), registry::Access::PUSH)], at, UPLOAD_TTL);
     let host = decide::registry_host(&ctx.settings.default_registry);
     let secret_name = format!("{name}-upload");
-    let data = upload_data(host, token, ctx.settings.registry_ca.as_deref());
+    let data = upload_data(host, token);
     let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
     let secret = Secret {
         metadata: ObjectMeta {
@@ -1874,20 +1894,40 @@ async fn upload_token(
     })
 }
 
-/// The upload Secret's data: `token` for `host` as a Docker config and bare, and `ca` in
-/// `ca.crt` so the uploader can trust a registry with its own CA.
-fn upload_data(host: &str, token: String, ca: Option<&str>) -> BTreeMap<String, ByteString> {
-    let mut data = BTreeMap::from([
+/// The upload Secret's data: `token` for `host` as a Docker config and bare. The registry's CA
+/// is in the Secret [`registry_ca::PUBLISHED`].
+fn upload_data(host: &str, token: String) -> BTreeMap<String, ByteString> {
+    BTreeMap::from([
         (
             ".dockerconfigjson".to_owned(),
             ByteString(registry::docker_config(host, &token)),
         ),
         ("token".to_owned(), ByteString(token.into_bytes())),
-    ]);
-    if let Some(ca) = ca {
-        data.insert("ca.crt".to_owned(), ByteString(ca.as_bytes().to_vec()));
-    }
-    data
+    ])
+}
+
+/// The default registry's CA to trust now: `None` when it needs none, an error before the
+/// controller has read it.
+fn current_ca(ctx: &Context) -> Result<Option<String>, ControllerError> {
+    ctx.registry_ca
+        .as_ref()
+        .map(|current| {
+            current
+                .borrow()
+                .clone()
+                .ok_or(ControllerError::RegistryCaUnread)
+        })
+        .transpose()
+}
+
+/// The default registry's API, trusting its CA as the controller read it last.
+fn registry(ctx: &Context) -> Result<Registry, ControllerError> {
+    let ca = current_ca(ctx)?;
+    Ok(Registry::new(
+        remote::http_client_with(ca.as_deref())?,
+        decide::registry_host(&ctx.settings.default_registry),
+        ctx.settings.registry_http,
+    ))
 }
 
 /// The records, in the controller's namespace.
@@ -1935,8 +1975,9 @@ async fn clear_repositories(
             .map(|r| (r.as_str(), registry::Access::DELETE))
             .collect();
         let token = signer.token(&grants, now(), DELETE_TTL);
+        let registry = registry(ctx)?;
         for repository in &record.repositories {
-            ctx.registry.delete_repository(repository, &token).await?;
+            registry.delete_repository(repository, &token).await?;
         }
     }
     if decide::tokens_expired(record.tokens_until, started) {
@@ -2100,17 +2141,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_upload_secret_carries_the_registry_ca_when_there_is_one() {
-        let ca = "-----BEGIN CERTIFICATE-----\nzot-ca\n-----END CERTIFICATE-----\n";
-        let data = upload_data("zot.zot.svc:5000", "t".to_owned(), Some(ca));
+    fn the_upload_secret_holds_the_token_and_no_ca() {
+        let data = upload_data("zot.zot.svc:5000", "t".to_owned());
         assert_eq!(
-            data.get("ca.crt"),
-            Some(&ByteString(ca.as_bytes().to_vec()))
+            data.keys().map(String::as_str).collect::<Vec<_>>(),
+            [".dockerconfigjson", "token"]
         );
         assert_eq!(data.get("token"), Some(&ByteString(b"t".to_vec())));
-
-        let plain = upload_data("registry:5000", "t".to_owned(), None);
-        assert!(!plain.contains_key("ca.crt"));
     }
 
     #[test]

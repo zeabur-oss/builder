@@ -6,7 +6,8 @@
 //! Scaling down goes through the `scale` subresource; the next apply takes `replicas` back. The
 //! daemon is a cache: a running `StatefulSet` whose spec differs from the one wanted, such as a new
 //! cache size, storage class, build node or build limits, keeps running as it is. Once it has
-//! scaled to zero, the next wake deletes it with its cache and creates it again.
+//! scaled to zero, the next wake deletes it with its cache and creates it again. A new registry CA
+//! is the exception: it is outside the spec hash, so the apply rolls the running Pod at once.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -71,6 +72,7 @@ fn inputs<'a>(
     namespace: &'a str,
     namespace_uid: &'a str,
     limits: &'a decide::Limits,
+    registry_ca: Option<&'a str>,
 ) -> DaemonInputs<'a> {
     DaemonInputs {
         namespace,
@@ -85,6 +87,7 @@ fn inputs<'a>(
         resources: &limits.resources,
         placement: &settings.placement,
         builds: limits.concurrent,
+        registry_ca,
     }
 }
 
@@ -121,12 +124,16 @@ pub(crate) enum Wake {
     },
 }
 
-/// Makes the namespace's certificates and applies its daemon with one replica.
+/// Makes the namespace's certificates and applies its daemon with one replica. A daemon that
+/// started with another registry CA than `registry_ca` restarts and keeps its cache, since it
+/// would keep the old CA for the registries it pulled from. A running daemon with other settings
+/// is replaced only when idle, or at once when it does not trust the registry's CA.
 pub(crate) async fn wake(
     client: &Client,
     settings: &Settings,
     namespace: &str,
     limits: &decide::Limits,
+    registry_ca: Option<&str>,
 ) -> Result<Wake, kube::Error> {
     let name = daemon::name(namespace);
     let uid = Api::<Namespace>::all(client.clone())
@@ -158,7 +165,7 @@ pub(crate) async fn wake(
     else {
         return gone();
     };
-    let objects = buildkitd::daemon(&inputs(settings, namespace, &uid, limits));
+    let objects = buildkitd::daemon(&inputs(settings, namespace, &uid, limits, registry_ca));
     apply(client, &settings.namespace, &objects.network_policy).await?;
     apply(client, &settings.namespace, &objects.service).await?;
     let desired = &objects.stateful_set;
@@ -170,7 +177,9 @@ pub(crate) async fn wake(
         }
         Some(old) if spec_hash(&old) != spec_hash(desired) => {
             let replicas = old.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
-            if replicas > 0 {
+            // A running daemon keeps its old settings until it is idle, unless it does not trust
+            // the registry's CA: then its builds fail at the registry anyway.
+            if replicas > 0 && buildkitd::trusts_registry_ca(&old, registry_ca) {
                 old
             } else {
                 replace(&sets, &old).await?;
