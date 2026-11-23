@@ -95,8 +95,9 @@ fn backoff() -> ExponentialBuilder {
         .with_jitter()
 }
 
-/// The certificates in `key`, PEM, when there is one at least. Only the certificate blocks are
-/// encoded again, so another block in the key, such as a private key, is never published.
+/// The certificates in `key`, PEM, when there is one at least and each is a trust anchor that
+/// rustls accepts, as the build Jobs and the registry client use them. Only the certificate blocks
+/// are encoded again, so another block in the key, such as a private key, is never published.
 fn ca_of(secret: &Secret, key: &str) -> Option<String> {
     let pem = secret.data.as_ref()?.get(key)?;
     let certs = CertificateDer::pem_slice_iter(&pem.0)
@@ -104,6 +105,10 @@ fn ca_of(secret: &Secret, key: &str) -> Option<String> {
         .ok()?;
     if certs.is_empty() {
         return None;
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in &certs {
+        roots.add(cert.clone()).ok()?;
     }
     Some(certs.iter().map(|cert| pem_of(cert)).collect())
 }
@@ -185,6 +190,16 @@ mod tests {
         let key = rcgen::KeyPair::generate().unwrap().serialize_pem();
         assert_eq!(ca_of(&secret("ca.crt", &key), "ca.crt"), None);
         assert_eq!(ca_of(&Secret::default(), "ca.crt"), None);
+    }
+
+    #[test]
+    fn a_block_that_is_no_certificate_gives_no_ca() {
+        let pem = ca("registry");
+        let garbage =
+            "-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n";
+        assert_eq!(ca_of(&secret("ca.crt", garbage), "ca.crt"), None);
+        let bundle = format!("{pem}{garbage}");
+        assert_eq!(ca_of(&secret("ca.crt", &bundle), "ca.crt"), None);
     }
 
     #[test]
