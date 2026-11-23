@@ -61,6 +61,12 @@ const APP_LABEL: &str = "app.kubernetes.io/name";
 const SOCKET: &str = "unix:///run/buildkit/buildkitd.sock";
 /// The volume claim template of the cache.
 const CACHE: &str = "cache";
+/// The Secret, in the builder's namespace, that holds the default registry's CA alone. The
+/// controller writes it when the registry has a CA of its own.
+pub const REGISTRY_CA_SECRET: &str = "registry-ca";
+/// Where buildkitd finds that Secret. A Secret volume, not a `subPath`, so the kubelet updates
+/// the file when the CA rotates, and buildkit reads it again for each registry it resolves.
+pub const REGISTRY_CA_DIR: &str = "/etc/buildkit-registry-ca";
 
 /// How the container starts buildkitd (`sh -c START buildkitd <args>`): first, the TCP
 /// connections of `RUN` steps get a maximum segment size that fits the Pod's interface, since
@@ -424,6 +430,7 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
             volume_mounts: Some(vec![
                 mount("config", "/etc/buildkit", true),
                 mount("certs", "/certs", true),
+                mount("registry-ca", REGISTRY_CA_DIR, true),
                 mount(CACHE, "/var/lib/buildkit", false),
             ]),
             ..Container::default()
@@ -451,6 +458,16 @@ fn pod(inputs: &DaemonInputs<'_>) -> PodSpec {
                             .to_vec(),
                     ),
                     default_mode: Some(0o400),
+                    ..SecretVolumeSource::default()
+                }),
+                ..Volume::default()
+            },
+            // Optional: a registry with a public CA has no such Secret.
+            Volume {
+                name: "registry-ca".to_owned(),
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(REGISTRY_CA_SECRET.to_owned()),
+                    optional: Some(true),
                     ..SecretVolumeSource::default()
                 }),
                 ..Volume::default()

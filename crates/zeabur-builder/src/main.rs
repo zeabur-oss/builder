@@ -11,6 +11,7 @@ mod notify;
 mod output;
 mod record;
 mod registry;
+mod registry_ca;
 mod remote;
 mod ssh;
 mod tls;
@@ -155,10 +156,14 @@ struct ControllerArgs {
     /// The registry for `Build`s without `spec.output.image`, such as `registry.internal:5000`.
     #[arg(long, env = "ZEABUR_BUILDER_DEFAULT_REGISTRY")]
     default_registry: String,
-    /// The default registry's CA, PEM, when a public CA did not sign its certificate. The `fetch`
-    /// container of an archive source trusts it.
-    #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_CA")]
-    registry_ca: Option<String>,
+    /// The Secret, `<namespace>/<name>`, that holds the default registry's CA (PEM), when a
+    /// public CA did not sign its certificate, such as `zot/zot-tls`. The controller follows it
+    /// and publishes the CA alone in the Secret `registry-ca` of its namespace.
+    #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_CA", value_parser = secret_ref)]
+    registry_ca: Option<(String, String)>,
+    /// The key of the CA in `--registry-ca`.
+    #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_CA_KEY", default_value = "ca.crt")]
+    registry_ca_key: String,
     /// The default registry speaks plain HTTP. Only for a test cluster.
     #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_HTTP", default_value_t = false, action = clap::ArgAction::Set)]
     registry_http: bool,
@@ -313,7 +318,13 @@ impl ControllerArgs {
             },
             pending_grace: Duration::from_secs(self.buildkitd_pending_grace),
             default_registry: self.default_registry,
-            registry_ca: self.registry_ca.filter(|ca| !ca.trim().is_empty()),
+            registry_ca: self
+                .registry_ca
+                .map(|(namespace, name)| registry_ca::Source {
+                    namespace,
+                    name,
+                    key: self.registry_ca_key,
+                }),
             registry_http: self.registry_http,
             registry_token_key: self.registry_token_key,
             job_image: self.job_image,

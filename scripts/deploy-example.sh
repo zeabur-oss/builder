@@ -51,6 +51,11 @@ if ! k -n builder-registry get secret zot-token-signer >/dev/null 2>&1; then
     --key "$keys/tls.key" >/dev/null
   rm -rf "$keys"
 fi
+# The registry's certificate, from a CA of its own, as the Zeabur Catalog's zot-tls. A rerun keeps
+# it; scripts/example-registry-ca.sh rotates it.
+if ! k -n builder-registry get secret zot-tls >/dev/null 2>&1; then
+  "$root/scripts/registry-tls.sh" "$context"
+fi
 k apply -f "$manifests/registry.yaml"
 # A changed config needs a restart.
 k -n builder-registry patch deployment registry --type merge -p \
@@ -64,7 +69,8 @@ helm --kube-context "$context" upgrade --install builder "$root/deploy/chart" -n
   --set image.repository="$prefix/builder" --set image.tag="$tag" \
   --set jobImage.repository="$prefix/builder-job" --set jobImage.tag="$tag" \
   --set railpackImage.repository="$prefix/builder-railpack" --set railpackImage.tag="$tag" \
-  --set registry.host="$registry" --set registry.http=true \
+  --set registry.host="$registry" \
+  --set registry.caSecret.namespace=builder-registry --set registry.caSecret.secret=zot-tls \
   --set registry.inCluster.namespace=builder-registry \
   --set registry.inCluster.podLabels.app\\.kubernetes\\.io/name=registry \
   --set registry.tokenKey.namespace=builder-registry --set registry.tokenKey.secret=zot-token-signer \

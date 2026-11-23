@@ -1,7 +1,7 @@
-# Zot over plain HTTP, without persistence, for a test cluster, with the access rules of the
-# Zeabur Catalog's Zot: pushes, deletes and source reads need a token that the controller signs
-# with the key in the Secret zot-token-signer (scripts/deploy-example.sh creates it), and anyone
-# may pull images.
+# Zot over HTTPS with a CA of its own, without persistence, for a test cluster, with the access
+# rules of the Zeabur Catalog's Zot: pushes, deletes and source reads need a token that the
+# controller signs with the key in the Secret zot-token-signer, and anyone may pull images. The
+# certificate is in the Secret zot-tls. scripts/deploy-example.sh creates both Secrets.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -15,8 +15,9 @@ data:
       "http": {
         "address": "0.0.0.0",
         "port": "5000",
+        "tls": {"cert": "/etc/zot/tls/tls.crt", "key": "/etc/zot/tls/tls.key"},
         "auth": {"bearer": {
-          "realm": "http://registry.builder-registry.svc.cluster.local:5000/zot/auth/token",
+          "realm": "https://registry.builder-registry.svc.cluster.local:5000/zot/auth/token",
           "service": "zot",
           "cert": "/etc/zot/token/tls.crt"
         }},
@@ -63,6 +64,7 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /etc/zot/config.json, subPath: config.json, readOnly: true}
             - {name: token, mountPath: /etc/zot/token, readOnly: true}
+            - {name: tls, mountPath: /etc/zot/tls, readOnly: true}
             - {name: data, mountPath: /var/lib/registry}
           resources:
             requests: {cpu: 10m, memory: 64Mi}
@@ -71,6 +73,8 @@ spec:
           configMap: {name: zot}
         - name: token
           secret: {secretName: zot-token-signer, items: [{key: tls.crt, path: tls.crt}]}
+        - name: tls
+          secret: {secretName: zot-tls, items: [{key: tls.crt, path: tls.crt}, {key: tls.key, path: tls.key}]}
         - name: data
           emptyDir: {}
 ---

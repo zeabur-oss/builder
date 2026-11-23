@@ -52,7 +52,7 @@ require "$plain" "default install" 'name: dockerfile$' 'name: railpack$' 'name: 
   '--job-memory-request=128Mi$' '--job-memory-limit=512Mi$' \
   '--max-concurrent-builds=1$' '--max-cluster-builds=1$' "c.image == 'docker.io/moby/buildkit:" \
   "request.namespace in \['default', 'zot'\]"
-if grep -qE '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)' <<<"$plain"; then
+if grep -qE '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)|registry-ca' <<<"$plain"; then
   echo "default install: the chart sets registry http or a CA that nobody asked for" >&2
   exit 1
 fi
@@ -81,12 +81,15 @@ fi
 digest=sha256:$(printf '0%.0s' {1..64})
 pinned=$(helm template builder "$chart" "${base[@]}" --set image.digest="$digest" \
   --set jobImage.digest="$digest" --set railpackImage.digest="$digest" \
-  --set registry.ca=CA --set 'admissionPolicy.extraImages[0]=example.com/planner:1' \
+  --set registry.caSecret.namespace=zot --set registry.caSecret.secret=zot-tls \
+  --set 'admissionPolicy.extraImages[0]=example.com/planner:1' \
   --set registry.inCluster.namespace=zot --set registry.inCluster.podLabels.app=zot)
 require "$pinned" "pinned install" "image: \"ghcr.io/zeabur-oss/builder@$digest\"" \
   "value: \"ghcr.io/zeabur-oss/builder-job@$digest\"" "image: \"ghcr.io/zeabur-oss/builder-railpack@$digest\"" \
-  'ca = \["/etc/buildkit/registry-ca.crt"\]' 'registry-ca.crt: \|' 'kubernetes.io/metadata.name: zot' \
-  'name: ZEABUR_BUILDER_REGISTRY_CA$' 'value: "CA"$' \
+  'ca = \["/etc/buildkit-registry-ca/ca.crt"\]' 'kubernetes.io/metadata.name: zot' \
+  'name: ZEABUR_BUILDER_REGISTRY_CA$' 'value: "zot/zot-tls"$' 'value: "ca.crt"$' \
+  'resourceNames: \[zot-tls\]$' 'verbs: \[get, list, watch\]$' 'resourceNames: \[registry-ca\]$' \
+  'name: "system:authenticated"' \
   "c.image in \['ghcr.io/zeabur-oss/builder-job@$digest', 'ghcr.io/zeabur-oss/builder-railpack@$digest', 'example.com/planner:1'\]" \
   "request.namespace in \['default', 'zot'\]"
 if grep -q -- '--buildkitd-.*-max' <<<"$plain"; then
@@ -110,6 +113,12 @@ require "$placed" "build node" '- "--build-node-selector=builder.zeabur.com/buil
 tokens=$plain
 require "$tokens" "registry tokens" 'value: "zot/zot-token-signer"$' 'namespace: zot$' \
   'resourceNames: \[zot-token-signer\]$' "request.namespace in \['default', 'zot'\]"
+for half in namespace secret; do
+  if helm template builder "$chart" "${base[@]}" --set "registry.caSecret.$half=x" >/dev/null 2>&1; then
+    echo "registry CA: the chart renders with registry.caSecret.$half alone" >&2
+    exit 1
+  fi
+done
 for missing in "registry.tokenKey.namespace=" "registry.tokenKey.secret="; do
   if err=$(helm template builder "$chart" --set registry.host=registry.example:5000 \
     --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer \

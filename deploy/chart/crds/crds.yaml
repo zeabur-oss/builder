@@ -1193,7 +1193,7 @@
                         "type": "string"
                       },
                       "secretName": {
-                        "description": "The `kubernetes.io/dockerconfigjson` Secret, in the `Build`'s namespace. Its key `token`\nholds the bare token, and `ca.crt` the registry's CA when the registry has one.",
+                        "description": "The `kubernetes.io/dockerconfigjson` Secret, in the `Build`'s namespace. Its key `token`\nholds the bare token. A registry with a CA of its own publishes the CA in the Secret\n`registry-ca` of the builder's namespace.",
                         "maxLength": 253,
                         "type": "string"
                       }

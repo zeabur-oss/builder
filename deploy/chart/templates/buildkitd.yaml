@@ -45,12 +45,11 @@ data:
       http = true
       {{- end }}
       {{- if $ca }}
-      ca = ["/etc/buildkit/registry-ca.crt"]
+      # The Secret registry-ca, which the controller keeps current. buildkit reads the file again
+      # for each registry it resolves, so a rotated CA needs no restart.
+      ca = ["/etc/buildkit-registry-ca/ca.crt"]
       {{- end }}
     {{- end }}
-  {{- if $ca }}
-  registry-ca.crt: | {{- $ca | nindent 4 }}
-  {{- end }}
 ---
 # buildkitd may resolve names, reach the registry and reach public addresses; not Pods,
 # Services, nodes or the cloud metadata endpoint.

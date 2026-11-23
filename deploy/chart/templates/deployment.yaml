@@ -70,6 +70,8 @@ spec:
             {{- with include "builder.registryCA" . }}
             - name: ZEABUR_BUILDER_REGISTRY_CA
               value: {{ . | quote }}
+            - name: ZEABUR_BUILDER_REGISTRY_CA_KEY
+              value: {{ $.Values.registry.caSecret.key | quote }}
             {{- end }}
             - name: ZEABUR_BUILDER_REGISTRY_TOKEN_KEY
               value: {{ include "builder.tokenKey" . | quote }}

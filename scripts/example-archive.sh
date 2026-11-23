@@ -31,6 +31,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The registry's CA, as a client reads it: the Secret the controller publishes.
+ca=$(k -n builder-system get secret registry-ca -o jsonpath='{.data.ca\.crt}' | base64 -d)
+
 build() { # $1 = namespace, $2 = name, $3 = source
   cat <<EOF
 apiVersion: builder.zeabur.com/v1alpha1
@@ -47,13 +50,20 @@ build "$a" app "{type: archive}" | k apply -f - >/dev/null
 k -n "$a" annotate build/app --overwrite builder.zeabur.com/upload-token-request=archive-test >/dev/null
 k -n "$a" wait build/app --timeout 60s --for=jsonpath='{.status.uploadToken.request}'=archive-test >/dev/null
 token=$(k -n "$a" get secret app-upload -o jsonpath='{.data.token}' | base64 -d)
+if [[ -z $(k -n "$a" get secret app-upload -o jsonpath='{.data.ca\.crt}') ]]; then
+  ok "the upload Secret holds no CA"
+else
+  wrong "the upload Secret holds a CA"
+fi
 
 # The client side: pack the folder, push the empty config and the layer, then the manifest.
 push=$(k -n "$a" run archive-push --rm -i --quiet --restart Never \
   --image docker.io/curlimages/curl:8.11.1 --env "AUTH=Authorization: Bearer $token" \
-  --env "BASE=http://$registry" \
+  --env "BASE=https://$registry" --env "CA=$ca" \
   --env "REPO=$a/app/source" --command -- sh -eu -s <<'EOF'
 cd /tmp && mkdir -p app/static
+printf '%s\n' "$CA" > ca.crt
+export CURL_CA_BUNDLE=/tmp/ca.crt
 printf 'hello from an archive\n' > app/static/hello.txt
 ln -s static/hello.txt app/hello.txt
 printf 'FROM busybox:1.38.0\nCOPY hello.txt /hello.txt\nCMD ["cat", "/hello.txt"]\n' > app/Dockerfile
@@ -151,9 +161,10 @@ admin=$(k -n builder-system exec deploy/zeabur-builder -- /zeabur-builder regist
 k -n "$a" run registry-check --restart Never --image docker.io/curlimages/curl:8.11.1 \
   --command -- sleep 1800 >/dev/null
 k -n "$a" wait pod/registry-check --for=condition=Ready --timeout 120s >/dev/null
+k -n "$a" exec -i registry-check -- sh -c 'cat > /tmp/ca.crt' <<<"$ca"
 check() {
-  k -n "$a" exec -i registry-check -- \
-    env "AUTH=Authorization: Bearer $admin" "BASE=http://$registry" "$@"
+  k -n "$a" exec -i registry-check -- env "AUTH=Authorization: Bearer $admin" \
+    "BASE=https://$registry" CURL_CA_BUNDLE=/tmp/ca.crt "$@"
 }
 status() { # $1 = path below /v2/
   # shellcheck disable=SC2016 # expanded in the Pod

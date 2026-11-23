@@ -20,7 +20,7 @@ description: 了解 Registry 令牌的有效期与权限，使用 kubectl 和 OR
 
 - 准备 `kubectl` 和 [ORAS](https://oras.land)。
 - 确认你有编辑目标 Build 的权限。
-- 确认 ORAS 能连接到 `zot.zot.svc:5000`，并信任上传 Secret 的 `ca.crt` 字段中的 CA。从集群外上传时，使用下方的 port-forward 方式。
+- 确认 ORAS 能连接到 `zot.zot.svc:5000`，并信任 registry 的 CA。registry 使用私有证书时，CA 在 `builder-system` Namespace 的 Secret `registry-ca` 的 `ca.crt` 字段中。从集群外上传时，使用下方的 port-forward 方式。
 
 <Steps>
 
@@ -64,7 +64,7 @@ kubectl -n zot port-forward svc/zot 5000:5000
 ```sh
 printf '{"auths":{"localhost:5000":{"registrytoken":"%s"}}}' \
   "$(kubectl -n team-a get secret api-upload -o jsonpath='{.data.token}' | base64 -d)" > auth.json
-kubectl -n team-a get secret api-upload -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+kubectl -n builder-system get secret registry-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
 oras push --registry-config auth.json --plain-http=false --ca-file ca.crt \
   localhost:5000/team-a/api/source:upload-1 ...
 ```

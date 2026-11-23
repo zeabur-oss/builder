@@ -90,6 +90,56 @@ metadata:
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zeabur-builder}
 subjects:
   - {kind: ServiceAccount, name: zeabur-builder, namespace: {{ .Release.Namespace }}}
+{{- with .Values.registry.caSecret }}
+{{- if include "builder.registryCA" $ }}
+---
+# The registry's CA, in the registry's namespace: this one Secret, which the controller follows.
+# list and watch name it with a field selector.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $.Release.Name }}-zeabur-builder-registry-ca
+  namespace: {{ .namespace }}
+  labels: {{- include "builder.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ .secret }}]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $.Release.Name }}-zeabur-builder-registry-ca
+  namespace: {{ .namespace }}
+  labels: {{- include "builder.labels" $ | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $.Release.Name }}-zeabur-builder-registry-ca}
+subjects:
+  - {kind: ServiceAccount, name: zeabur-builder, namespace: {{ $.Release.Namespace }}}
+---
+# The CA alone, which the controller publishes: every signed-in user may read it, to trust the
+# registry without reading the registry's own Secret, which also holds its private key.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zeabur-builder-registry-ca-reader
+  labels: {{- include "builder.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [registry-ca]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zeabur-builder-registry-ca-reader
+  labels: {{- include "builder.labels" $ | nindent 4 }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: zeabur-builder-registry-ca-reader}
+subjects:
+  - {apiGroup: rbac.authorization.k8s.io, kind: Group, name: "system:authenticated"}
+{{- end }}
+{{- end }}
 {{- $_ := include "builder.tokenKey" . }}
 {{- with .Values.registry.tokenKey }}
 ---
