@@ -72,3 +72,101 @@ where
     api.replace(&object.name_any(), &PostParams::default(), object)
         .await
 }
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+    use std::sync::{Arc, Mutex};
+
+    use bytes::Bytes;
+    use http::{Method, Request, Response};
+    use http_body_util::{BodyExt as _, Full};
+    use k8s_openapi::api::core::v1::Secret;
+    use kube::Client;
+    use kube::api::ObjectMeta;
+
+    use super::*;
+
+    /// A request the fake API server got: its method and body.
+    type Got = Arc<Mutex<Vec<(Method, Secret)>>>;
+
+    /// An API server that answers every request with `code` and `body`, and keeps the requests.
+    fn server(code: u16, body: &str) -> (Api<Secret>, Got) {
+        let body = Bytes::from(body.to_owned());
+        let got = Got::default();
+        let kept = Arc::clone(&got);
+        let service = tower::service_fn(move |request: Request<kube::client::Body>| {
+            let (kept, body) = (Arc::clone(&kept), body.clone());
+            async move {
+                let method = request.method().clone();
+                let sent = request.into_body().collect().await.unwrap().to_bytes();
+                kept.lock()
+                    .unwrap()
+                    .push((method, serde_json::from_slice(&sent).unwrap()));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(code)
+                        .header("content-type", "application/json")
+                        .body(Full::new(body))
+                        .unwrap(),
+                )
+            }
+        });
+        (
+            Api::namespaced(Client::new(service, "default"), "team-a"),
+            got,
+        )
+    }
+
+    const CREATED: &str = r#"{"apiVersion":"v1","kind":"Secret","metadata":{"name":"web-upload"}}"#;
+
+    fn conflict(reason: &str) -> String {
+        format!(
+            r#"{{"apiVersion":"v1","kind":"Status","status":"Failure","reason":"{reason}","code":409,"message":"{reason}"}}"#
+        )
+    }
+
+    fn secret(version: Option<&str>) -> Secret {
+        Secret {
+            metadata: ObjectMeta {
+                name: Some("web-upload".to_owned()),
+                resource_version: version.map(str::to_owned),
+                ..ObjectMeta::default()
+            },
+            ..Secret::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_replace_sends_the_version_read_and_fails_when_it_changed() {
+        let (api, got) = server(409, &conflict("Conflict"));
+        let error = replace_at(&api, &secret(Some("7"))).await.unwrap_err();
+        assert!(matches!(error, kube::Error::Api(status) if status.is_conflict()));
+        let got = got.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, Method::PUT);
+        assert_eq!(got[0].1.metadata.resource_version.as_deref(), Some("7"));
+    }
+
+    #[tokio::test]
+    async fn a_replace_without_the_version_read_is_not_sent() {
+        let (api, got) = server(200, CREATED);
+        assert!(replace_at(&api, &secret(None)).await.is_err());
+        assert!(got.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_create_keeps_the_object_made_first() {
+        let (api, _) = server(201, CREATED);
+        assert!(matches!(
+            create_once(&api, &secret(None)).await.unwrap(),
+            Created::New(_)
+        ));
+        let (api, got) = server(409, &conflict("AlreadyExists"));
+        assert!(matches!(
+            create_once(&api, &secret(None)).await.unwrap(),
+            Created::Exists
+        ));
+        assert_eq!(got.lock().unwrap()[0].0, Method::POST);
+    }
+}

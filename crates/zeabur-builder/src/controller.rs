@@ -1830,12 +1830,6 @@ async fn upload_token(
     let secret_name = format!("{name}-upload");
     let data = upload_data(host, token, ctx.settings.registry_ca.as_deref());
     let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
-    // A Secret of that name that no Build of this name labelled is someone else's.
-    if let Some(found) = secrets.get_opt(&secret_name).await?
-        && found.labels().get(labels::BUILD) != Some(&name)
-    {
-        return Err(ControllerError::UploadSecretForeign { name: secret_name });
-    }
     let secret = Secret {
         metadata: ObjectMeta {
             name: Some(secret_name.clone()),
@@ -1851,7 +1845,27 @@ async fn upload_token(
         data: Some(data),
         ..Secret::default()
     };
-    tls::apply_secret(&ctx.client, &secret).await?;
+    // A Secret of that name that no Build of this name labelled is someone else's. Each write
+    // holds only if the Secret is still as checked; otherwise the next reconcile checks again.
+    match secrets.get_opt(&secret_name).await? {
+        Some(found) if found.labels().get(labels::BUILD) != Some(&name) => {
+            return Err(ControllerError::UploadSecretForeign { name: secret_name });
+        }
+        Some(mut found) => {
+            found.data = secret.data;
+            write::replace_at(&secrets, &found).await?;
+        }
+        None => {
+            if matches!(
+                write::create_once(&secrets, &secret).await?,
+                Created::Exists
+            ) {
+                return Err(ControllerError::Kube(kube::Error::Service(
+                    format!("Secret `{secret_name}` appeared after it was checked").into(),
+                )));
+            }
+        }
+    }
     tracing::info!(build = %name, namespace = %namespace, request, "upload token issued");
     Ok(UploadToken {
         request: request.to_owned(),
