@@ -27,10 +27,11 @@ rules:
     resources: [namespaces]
     verbs: [get]
   # Credentials and webhook secrets Builds name, the Secrets copied into build namespaces, and
-  # upload tokens. Cluster-wide get is wider than needed (docs/operations/controller-permissions.mdx).
+  # upload tokens, written with server-side apply (patch). Cluster-wide get is wider than needed
+  # (docs/operations/controller-permissions.mdx).
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create, update, delete]
+    verbs: [get, create, update, patch, delete]
   # The ServiceAccount a federated agent run exchanges a token of.
   - apiGroups: [""]
     resources: [serviceaccounts]
