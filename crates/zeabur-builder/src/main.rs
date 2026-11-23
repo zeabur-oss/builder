@@ -162,7 +162,7 @@ struct ControllerArgs {
     #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_CA", value_parser = secret_ref)]
     registry_ca: Option<(String, String)>,
     /// The key of the CA in `--registry-ca`.
-    #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_CA_KEY", default_value = "ca.crt")]
+    #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_CA_KEY", default_value = registry_ca::KEY)]
     registry_ca_key: String,
     /// The default registry speaks plain HTTP. Only for a test cluster.
     #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_HTTP", default_value_t = false, action = clap::ArgAction::Set)]

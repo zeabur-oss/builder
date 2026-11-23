@@ -10,6 +10,7 @@ static() {
   cargo fmt --all --check
   nixfmt --check flake.nix
   shellcheck scripts/*.sh scripts/ci/*.sh
+  ./scripts/ci/patterns.sh
   jactionlint
   bun install --frozen-lockfile
   node_modules/.bin/zeabur-oss-levels

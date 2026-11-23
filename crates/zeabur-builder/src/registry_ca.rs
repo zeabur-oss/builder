@@ -124,9 +124,11 @@ fn published(namespace: &str, ca: &str) -> Secret {
 #[cfg(test)]
 mod tests {
     use k8s_openapi::api::core::v1::Namespace;
-    use kube::api::{DeleteParams, Patch, PatchParams, PostParams};
+    use kube::api::{DeleteParams, Patch, PatchParams};
+    use kube::runtime::wait::await_condition;
 
     use super::*;
+    use crate::write;
 
     fn ca(name: &str) -> String {
         rcgen::generate_simple_self_signed(vec![name.to_owned()])
@@ -184,22 +186,20 @@ mod tests {
 
     /// Waits until `current` holds `ca` and the published Secret too.
     async fn reaches(current: &mut Current, published: &Api<Secret>, ca: &str) {
-        let read = |secret: Option<Secret>| {
+        let holds = |secret: Option<&Secret>| {
             secret
-                .and_then(|s| s.data)
-                .and_then(|d| d.get(KEY).cloned())
-                .map(|v| v.0)
+                .and_then(|s| s.data.as_ref())
+                .and_then(|d| d.get(KEY))
+                .is_some_and(|v| v.0 == ca.as_bytes())
         };
         tokio::time::timeout(Duration::from_secs(30), async {
             current
                 .wait_for(|now| now.as_deref() == Some(ca))
                 .await
                 .unwrap();
-            while read(published.get_opt(PUBLISHED).await.unwrap()).as_deref()
-                != Some(ca.as_bytes())
-            {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
+            await_condition(published.clone(), PUBLISHED, holds)
+                .await
+                .unwrap();
         })
         .await
         .unwrap();
@@ -224,10 +224,7 @@ mod tests {
             },
             ..Namespace::default()
         };
-        namespaces
-            .create(&PostParams::default(), &created)
-            .await
-            .unwrap();
+        write::create_once(&namespaces, &created).await.unwrap();
         let secrets: Api<Secret> = Api::namespaced(client.clone(), &namespace);
         let source = |pem: &str| Secret {
             metadata: ObjectMeta {
@@ -237,10 +234,7 @@ mod tests {
             ..secret("ca.crt", pem)
         };
         let first = ca("first");
-        secrets
-            .create(&PostParams::default(), &source(&first))
-            .await
-            .unwrap();
+        write::create_once(&secrets, &source(&first)).await.unwrap();
 
         let (sender, mut current) = watch::channel(None);
         let following = tokio::spawn(follow(

@@ -27,8 +27,7 @@ registry=registry.builder-registry.svc.cluster.local:5000
 k() { kubectl --context "$context" "$@"; }
 ensure_namespace() { k create namespace "$1" --dry-run=client -o yaml | k apply -f - >/dev/null; }
 
-# Not `k3d image import`: k3d 5.9.0 can take an exec that has not started for one that exited 0,
-# remove the tarball and report success. `docker exec` returns ctr's exit status.
+# `docker exec` returns ctr's exit status (scripts/ci/patterns.sh, k3d-image-import).
 if [[ -n ${K3D_CLUSTER:-} ]]; then
   images=("$prefix/builder:$tag" "$prefix/builder-job:$tag" "$prefix/builder-railpack:$tag")
   nodes=$(docker ps --filter "label=k3d.cluster=$K3D_CLUSTER" --filter label=k3d.role=server --format '{{.Names}}'
