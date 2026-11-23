@@ -10,9 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::Timestamp;
 use k8s_openapi::api::core::v1::ConfigMap;
-use kube::api::{Api, DeleteParams, ListParams, ObjectMeta, PostParams, Preconditions};
+use kube::api::{Api, DeleteParams, ListParams, ObjectMeta, Preconditions};
 use thiserror::Error;
 use zeabur_builder_api::labels;
+
+use crate::write::{self, Created};
 
 /// Selects the records among the controller's `ConfigMap`s.
 const LABEL: &str = "builder.zeabur.com/repositories";
@@ -40,6 +42,8 @@ pub(crate) enum RecordError {
     /// The `ConfigMap`'s name is not the hash of the `Build` it names.
     #[error("ConfigMap `{name}` names another Build")]
     Foreign { name: String },
+    #[error("ConfigMap `{name}` was made by another run since it was read")]
+    Conflict { name: String },
 }
 
 /// The repositories the controller pushed to for one `Build`.
@@ -149,15 +153,18 @@ pub(crate) async fn add(
     }
     record.tokens_until = record.tokens_until.max(until);
     let mut config_map = record.to_config_map();
-    let result = match existing {
+    match existing {
         Some(existing) => {
             config_map.metadata.resource_version = existing.metadata.resource_version;
-            api.replace(&object, &PostParams::default(), &config_map)
-                .await
+            write::replace_at(api, &config_map).await.map(drop)?;
         }
-        None => api.create(&PostParams::default(), &config_map).await,
-    };
-    result.map(drop).map_err(RecordError::from)
+        // Another run that made it first makes this run's write a conflict, as a replace would.
+        None => match write::create_once(api, &config_map).await? {
+            Created::New(_) => {}
+            Created::Exists => return Err(RecordError::Conflict { name: object }),
+        },
+    }
+    Ok(())
 }
 
 /// The record of the `Build` `namespace/name` and its resource version, if there is one.

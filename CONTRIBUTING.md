@@ -93,7 +93,7 @@ scripts compile (aws-lc-sys) goes through kache too, with no further setup.
 ## Tests against a cluster
 
 `scripts/ci/kubernetes.sh` is the cluster job of CI, which runs in the merge queue. It creates
-the k3d cluster `zeabur-builder` with its own kubeconfig (`target/ci/kubeconfig`), builds the images, installs the chart from
+the k3d cluster `zeabur-builder` with its own kubeconfig (`target/ci/kubeconfig`), runs the controller's `#[ignore]`d tests that need a kube-apiserver, builds the images, installs the chart from
 `deploy/chart`, builds the sample Builds from Git (a Dockerfile in `team-a` and `team-b`, Railpack
 in `team-a`), waits for the two samples that fail on purpose, runs `scripts/example-isolation.sh`,
 `scripts/example-admission.sh` and `scripts/example-archive.sh`, and deletes the cluster. Run it on a Linux machine with Docker; `ZEABUR_CI_KEEP=1` keeps the

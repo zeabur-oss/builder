@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use backon::{ConstantBuilder, Retryable as _};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
@@ -47,7 +48,7 @@ use zeabur_builder_core::result::{MAX_EXPOSED_PORTS, is_digest};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A network policy can admit a new Pod some seconds after it starts, and refuse it until then.
 const CONNECT_RETRY: Duration = Duration::from_secs(1);
-const CONNECT_RETRIES: u32 = 30;
+const CONNECT_RETRIES: usize = 30;
 const MAX_REDIRECTS: usize = 5;
 const MAX_TOKEN_BYTES: u64 = 1 << 20;
 const MAX_CONFIG_BYTES: u64 = 4 << 20;
@@ -375,44 +376,51 @@ impl Repository {
         call: &Call<'_>,
         authorization: Option<&str>,
     ) -> Result<Response<Incoming>, RegistryError> {
+        (|| self.attempt(call, authorization))
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(CONNECT_RETRY)
+                    .with_max_times(CONNECT_RETRIES),
+            )
+            .when(|e| matches!(e, RegistryError::Send { source, .. } if source.is_connect()))
+            .await
+    }
+
+    async fn attempt(
+        &self,
+        call: &Call<'_>,
+        authorization: Option<&str>,
+    ) -> Result<Response<Incoming>, RegistryError> {
         let url = call.url;
-        let mut retries = 0;
-        loop {
-            let mut request = Request::builder()
-                .method(call.method.clone())
-                .uri(url)
-                .header(header::USER_AGENT, USER_AGENT);
-            if let Some(accept) = call.accept {
-                request = request.header(header::ACCEPT, accept);
-            }
-            if let Some(content_type) = call.content_type {
-                request = request.header(header::CONTENT_TYPE, content_type);
-            }
-            if let Some(value) = authorization {
-                let mut value =
-                    HeaderValue::from_str(value).map_err(|_e| RegistryError::Credentials)?;
-                value.set_sensitive(true);
-                request = request.header(header::AUTHORIZATION, value);
-            }
-            let request = request
-                .body(Full::new(call.body.clone()))
-                .map_err(|source| RegistryError::Request {
-                    url: url.to_owned(),
-                    source,
-                })?;
-            match self.client.request(request).await {
-                Err(e) if e.is_connect() && retries < CONNECT_RETRIES => {
-                    retries += 1;
-                    tokio::time::sleep(CONNECT_RETRY).await;
-                }
-                answer => {
-                    return answer.map_err(|source| RegistryError::Send {
-                        url: url.to_owned(),
-                        source,
-                    });
-                }
-            }
+        let mut request = Request::builder()
+            .method(call.method.clone())
+            .uri(url)
+            .header(header::USER_AGENT, USER_AGENT);
+        if let Some(accept) = call.accept {
+            request = request.header(header::ACCEPT, accept);
         }
+        if let Some(content_type) = call.content_type {
+            request = request.header(header::CONTENT_TYPE, content_type);
+        }
+        if let Some(value) = authorization {
+            let mut value =
+                HeaderValue::from_str(value).map_err(|_e| RegistryError::Credentials)?;
+            value.set_sensitive(true);
+            request = request.header(header::AUTHORIZATION, value);
+        }
+        let request = request
+            .body(Full::new(call.body.clone()))
+            .map_err(|source| RegistryError::Request {
+                url: url.to_owned(),
+                source,
+            })?;
+        self.client
+            .request(request)
+            .await
+            .map_err(|source| RegistryError::Send {
+                url: url.to_owned(),
+                source,
+            })
     }
 
     /// GETs `/v2/<name>/<path>`, with a pull token if the registry asks for one, following
@@ -1225,6 +1233,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the registry starts two seconds late on purpose"
+    )]
     async fn waits_for_a_registry_that_refuses_connections_at_first() {
         let blob = b"the archive".to_vec();
         let manifest = manifest(&blob);

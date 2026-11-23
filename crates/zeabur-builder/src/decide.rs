@@ -1243,9 +1243,6 @@ pub(crate) fn keel_payload<'a>(image: &'a str, run: &'a BuildRun) -> Option<Keel
     Some(KeelPayload { name: image, tag })
 }
 
-/// The waits between notify attempts: three attempts with exponential backoff.
-pub(crate) const NOTIFY_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
-
 /// How a run signs in to the model API: the way the builder's planner names, unless the run
 /// restores a saved plan and so calls no model.
 pub(crate) const fn model_auth(

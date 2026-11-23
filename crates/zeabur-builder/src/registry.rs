@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use aws_lc_rs::signature::Ed25519KeyPair;
 use base64::Engine as _;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use http::{Method, Request, StatusCode, header};
 use http_body_util::{BodyExt as _, Full, Limited};
@@ -157,15 +157,9 @@ pub(crate) enum RegistryError {
 /// Why a PEM text is no signing key.
 #[derive(Debug, Error)]
 pub(crate) enum KeyError {
-    /// The key is not text.
-    #[error("the key is not PEM")]
-    NotText(#[source] std::str::Utf8Error),
-    /// The key has no `PRIVATE KEY` block.
-    #[error("the key is not a PEM PKCS#8 private key")]
-    NotPkcs8,
-    /// The block is not base64.
-    #[error("the key is not valid PEM")]
-    NotBase64(#[source] base64::DecodeError),
+    /// The key has no PEM `PRIVATE KEY` block.
+    #[error("the key is not a PEM PKCS#8 private key: {0}")]
+    NotPkcs8(#[source] rustls::pki_types::pem::Error),
     /// The DER is no Ed25519 key.
     #[error("the key is not an Ed25519 key: {0}")]
     NotEd25519(#[source] aws_lc_rs::error::KeyRejected),
@@ -218,17 +212,12 @@ impl std::fmt::Debug for Signer {
 impl Signer {
     /// Reads a PEM PKCS#8 Ed25519 key, as cert-manager writes to `tls.key`.
     pub(crate) fn from_pem(pem: &[u8]) -> Result<Self, KeyError> {
-        let pem = std::str::from_utf8(pem).map_err(KeyError::NotText)?;
-        if !pem.contains("-----BEGIN PRIVATE KEY-----") {
-            return Err(KeyError::NotPkcs8);
-        }
-        let body: String = pem
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with("-----"))
-            .collect();
-        let der = STANDARD.decode(body).map_err(KeyError::NotBase64)?;
-        let key = Ed25519KeyPair::from_pkcs8_maybe_unchecked(&der).map_err(KeyError::NotEd25519)?;
+        use rustls::pki_types::PrivatePkcs8KeyDer;
+        use rustls::pki_types::pem::PemObject as _;
+
+        let der = PrivatePkcs8KeyDer::from_pem_slice(pem).map_err(KeyError::NotPkcs8)?;
+        let key = Ed25519KeyPair::from_pkcs8_maybe_unchecked(der.secret_pkcs8_der())
+            .map_err(KeyError::NotEd25519)?;
         Ok(Self { key })
     }
 
@@ -617,7 +606,7 @@ mod tests {
     fn pem(der: &[u8]) -> Vec<u8> {
         format!(
             "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
-            STANDARD.encode(der)
+            base64::engine::general_purpose::STANDARD.encode(der)
         )
         .into_bytes()
     }

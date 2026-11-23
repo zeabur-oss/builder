@@ -24,4 +24,8 @@ disallowed-methods = [
   { path = "serde_json::Value::pointer_mut", reason = "deserialize into a typed struct" },
   { path = "serde_json::Value::as_object_mut", reason = "build a typed struct and serialize it" },
   { path = "serde_json::Value::as_array_mut", reason = "build a typed struct and serialize it" },
+  # Writes go through crates/zeabur-builder/src/write.rs, so runs that write one object at once agree.
+  { path = "kube::Api::create", reason = "use write::apply, or write::create_once for an object made once" },
+  { path = "kube::Api::replace", reason = "use write::apply, or write::replace_at with the resourceVersion read" },
+  { path = "tokio::time::sleep", reason = "retry with a backon builder, or wait on a watch" },
 ]

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The chart from this checkout on k3s, with the images built here: a Dockerfile build in two
 # namespaces and a Railpack build, the ClusterBuilders' status, the two failures the samples make
-# on purpose, the isolation between the namespaces and the admission policy. It creates the k3d
+# on purpose, the isolation between the namespaces and the admission policy, after the
+# controller's tests that need a kube-apiserver. It creates the k3d
 # cluster `zeabur-builder` and deletes it when it ends; set ZEABUR_CI_KEEP=1 to keep it.
 # K3S_IMAGE picks the k3s release. K3D_REGISTRY_CONFIG passes a registries.yaml to k3d, such as
 # one with pull-through mirrors. ZEABUR_CI_IMAGE_TAG uses the images zeabur-builder/<name>:<tag>
@@ -137,6 +138,8 @@ cluster_failure_context() {
 
 tag="${ZEABUR_CI_IMAGE_TAG:-ci}"
 start_cluster
+# The controller's tests that need a real kube-apiserver.
+cargo nextest run -p zeabur-builder --locked --run-ignored only --no-tests=fail
 [[ -n "${ZEABUR_CI_IMAGE_TAG:-}" ]] || ZEABUR_BUILDER_PROFILE=ci ./scripts/build-images.sh zeabur-builder ci
 start_collecting
 if ! {

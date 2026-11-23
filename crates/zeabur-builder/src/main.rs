@@ -15,6 +15,7 @@ mod remote;
 mod ssh;
 mod tls;
 mod webhook;
+mod write;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
