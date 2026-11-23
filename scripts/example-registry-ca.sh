@@ -84,7 +84,7 @@ fi
 revision=$(helm --kube-context "$context" -n builder-system status builder -o json | jq .version)
 controller=$(k -n builder-system get pod -l app.kubernetes.io/name=zeabur-builder \
   -o jsonpath='{.items[*].metadata.uid}')
-read -r pod daemon < <(daemon_pod)
+read -r pod daemon <<<"$(daemon_pod)"
 old=$(published)
 
 "$root/scripts/registry-tls.sh" "$context"
