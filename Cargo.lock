@@ -1652,8 +1652,22 @@ version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
 dependencies = [
- "jiff-core",
- "jiff-static",
+ "jiff-core 0.1.5",
+ "jiff-static 0.2.43",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cc767b5763de45e810109520123bb2829a653f3a7ed9be40b2bc4f81158f595"
+dependencies = [
+ "jiff-core 1.0.0",
+ "jiff-static 1.0.0",
  "log",
  "portable-atomic",
  "portable-atomic-util",
@@ -1670,15 +1684,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "jiff-core"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "894f7ac42105f584100691b3bf6e6b92dd12fcfa225f6c397f95c8a94b47b68f"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "jiff-static"
 version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b4ff49b2887190c760b86207b55cdcaabbdecaf7a0660d68aa2ed6f652abf0a"
 dependencies = [
- "jiff-core",
+ "jiff-core 0.1.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "955491488dc99b572ea6d67b172dcd98787d00744b1fb44a5689b4e6413695a6"
+dependencies = [
+ "jiff-core 1.0.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -1793,7 +1828,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab0d13801242174b1f3966907c3f32039f2d6b36c7ce82c61225d66ed5d1eb70"
 dependencies = [
  "base64 0.22.1",
- "jiff",
+ "jiff 0.2.43",
  "serde",
  "serde_json",
 ]
@@ -1848,7 +1883,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-timeout",
  "hyper-util",
- "jiff",
+ "jiff 0.2.43",
  "jsonpath-rust",
  "k8s-openapi",
  "kube-core",
@@ -1877,7 +1912,7 @@ dependencies = [
  "derive_more",
  "form_urlencoded",
  "http",
- "jiff",
+ "jiff 0.2.43",
  "json-patch",
  "k8s-openapi",
  "schemars",
@@ -4347,7 +4382,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "jiff",
+ "jiff 1.0.0",
  "k8s-openapi",
  "kube",
  "kube-lease-manager",
@@ -4395,7 +4430,7 @@ dependencies = [
 name = "zeabur-builder-api"
 version = "0.2.5"
 dependencies = [
- "jiff",
+ "jiff 1.0.0",
  "k8s-openapi",
  "kube",
  "kube-derive",
@@ -4428,7 +4463,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "jiff",
+ "jiff 1.0.0",
  "rustls",
  "rustls-native-certs",
  "serde",
