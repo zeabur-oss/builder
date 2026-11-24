@@ -110,7 +110,7 @@ export KUBECONFIG=$(mktemp -d)/kubeconfig
 k3d cluster create zeabur-builder --registry-create zeabur-builder-registry
 scripts/build-images.sh zeabur-builder dev
 export TAG="dev-$(date +%s)"
-export IMAGE_PREFIX=$(scripts/push-images.sh k3d-zeabur-builder-registry zeabur-builder dev "$TAG")
+export IMAGE_PREFIX=$(scripts/push-images.sh zeabur-builder-registry zeabur-builder dev "$TAG")
 scripts/deploy-example.sh k3d-zeabur-builder team-a/whoami team-a/hello-python
 ```
 

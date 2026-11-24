@@ -32,7 +32,7 @@ start_cluster() {
   fi
   local registry=()
   [[ -z "${K3D_REGISTRY_CONFIG:-}" ]] || registry=(--registry-config "$K3D_REGISTRY_CONFIG")
-  # The registry the images are pushed to (scripts/push-images.sh), as k3d-zeabur-builder-registry.
+  # The registry the images are pushed to (scripts/push-images.sh), as zeabur-builder-registry.
   k3d cluster create zeabur-builder --image "$k3s_image" --no-lb --wait --timeout 300s \
     --registry-create zeabur-builder-registry "${registry[@]}"
 }
@@ -148,7 +148,7 @@ cargo nextest run -p zeabur-builder --locked --run-ignored only --no-tests=fail
 [[ -n "${ZEABUR_CI_IMAGE_TAG:-}" ]] || ZEABUR_BUILDER_PROFILE=ci ./scripts/build-images.sh zeabur-builder ci
 # The images go to the cluster's registry under a tag of this run: the chart pulls with IfNotPresent.
 pushed="$tag-$(openssl rand -hex 4)"
-IMAGE_PREFIX=$(./scripts/push-images.sh k3d-zeabur-builder-registry zeabur-builder "$tag" "$pushed")
+IMAGE_PREFIX=$(./scripts/push-images.sh zeabur-builder-registry zeabur-builder "$tag" "$pushed")
 export IMAGE_PREFIX
 start_collecting
 if ! {

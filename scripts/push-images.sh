@@ -3,7 +3,7 @@
 # IMAGE_PREFIX that the cluster pulls them by:
 #   scripts/push-images.sh <k3d registry> <prefix> <tag> <pushed tag>
 # <k3d registry> is the registry container that `k3d cluster create --registry-create <name>`
-# starts, k3d-<name>. Give each run its own <pushed tag>: the chart's pull policy is IfNotPresent.
+# starts, named as given. Give each run its own <pushed tag>: the chart's pull policy is IfNotPresent.
 set -euo pipefail
 
 registry="${1:?usage: push-images.sh <k3d registry> <prefix> <tag> <pushed tag>}"
