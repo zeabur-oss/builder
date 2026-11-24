@@ -843,3 +843,168 @@ fn fits_its_pod(filler: &str) {
         }
     }
 }
+
+/// A temporary directory where [`FETCH_SCRIPT`] runs with `git` from `PATH`.
+struct FetchDir(std::path::PathBuf);
+
+impl FetchDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "zeabur-builder-jobspec-{name}-{}",
+            std::process::id()
+        ));
+        drop(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        Self(dir)
+    }
+
+    fn git(&self, dir: &str, args: &[&str]) -> std::process::Output {
+        self.command("git")
+            .current_dir(self.0.join(dir))
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    /// A repository `name` with `file` and one commit, and its SHA.
+    fn repo(&self, name: &str, file: &str, text: &str) -> String {
+        std::fs::create_dir_all(self.0.join(name)).unwrap();
+        self.git(name, &["init", "-q"]);
+        std::fs::write(self.0.join(name).join(file), text).unwrap();
+        self.commit(name)
+    }
+
+    fn commit(&self, name: &str) -> String {
+        self.git(name, &["add", "-A"]);
+        assert!(self.git(name, &["commit", "-qm", "c"]).status.success());
+        let sha = self.git(name, &["rev-parse", "HEAD"]).stdout;
+        String::from_utf8(sha).unwrap().trim().to_owned()
+    }
+
+    fn command(&self, program: &str) -> std::process::Command {
+        let mut command = std::process::Command::new(program);
+        command
+            .env("HOME", self.0.join("home"))
+            .env("XDG_CONFIG_HOME", self.0.join("home"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ALLOW_PROTOCOL", "file")
+            .env("GIT_AUTHOR_NAME", "a")
+            .env("GIT_AUTHOR_EMAIL", "a@example.com")
+            .env("GIT_COMMITTER_NAME", "a")
+            .env("GIT_COMMITTER_EMAIL", "a@example.com");
+        command
+    }
+
+    /// Runs [`FETCH_SCRIPT`] with its paths under this directory.
+    fn fetch(&self, url: &str, sha: &str) -> std::process::Output {
+        let root = self.0.to_str().unwrap();
+        let script = FETCH_SCRIPT
+            .replace("/etc/zeabur-builder/git", &format!("{root}/git"))
+            .replace("/workspace", &format!("{root}/workspace"));
+        self.command("sh")
+            .args(["-c", &script, "fetch", url, sha])
+            .output()
+            .unwrap()
+    }
+
+    fn read(&self, path: &str) -> String {
+        std::fs::read_to_string(self.0.join(path)).unwrap()
+    }
+}
+
+impl Drop for FetchDir {
+    fn drop(&mut self) {
+        drop(std::fs::remove_dir_all(&self.0));
+    }
+}
+
+#[test]
+fn fetch_checks_out_submodules_at_their_recorded_commits() {
+    let dir = FetchDir::new("submodules");
+    dir.repo("icons", "icon.svg", "<svg/>\n");
+    dir.repo("theme", "style.css", "v1\n");
+    dir.git("theme", &["submodule", "-q", "add", "../icons", "icons"]);
+    dir.commit("theme");
+    dir.repo("site", "hugo.toml", "theme = 'paper'\n");
+    dir.git(
+        "site",
+        &["submodule", "-q", "add", "../theme", "themes/paper"],
+    );
+    let sha = dir.commit("site");
+    std::fs::write(dir.0.join("theme/style.css"), "v2\n").unwrap();
+    dir.commit("theme");
+
+    let url = format!("file://{}/site", dir.0.display());
+    let out = dir.fetch(&url, &sha);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(dir.read("workspace/src/themes/paper/style.css"), "v1\n");
+    assert_eq!(
+        dir.read("workspace/src/themes/paper/icons/icon.svg"),
+        "<svg/>\n"
+    );
+}
+
+#[test]
+fn fetch_fails_naming_a_submodule_it_cannot_fetch() {
+    let dir = FetchDir::new("missing-submodule");
+    dir.repo("theme", "style.css", "v1\n");
+    dir.repo("site", "hugo.toml", "theme = 'paper'\n");
+    dir.git(
+        "site",
+        &["submodule", "-q", "add", "../theme", "themes/paper"],
+    );
+    dir.git(
+        "site",
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.themes/paper.url",
+            "../gone",
+        ],
+    );
+    let sha = dir.commit("site");
+
+    let url = format!("file://{}/site", dir.0.display());
+    let out = dir.fetch(&url, &sha);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("'themes/paper'"));
+}
+
+#[test]
+fn fetch_sends_basic_auth_only_to_the_repository_s_host() {
+    let dir = FetchDir::new("credentials");
+    std::fs::create_dir_all(dir.0.join("git")).unwrap();
+    std::fs::write(dir.0.join("git/username"), "x-access-token").unwrap();
+    std::fs::write(dir.0.join("git/password"), "secret").unwrap();
+    // Nothing listens on port 1, so the fetch fails after the script configures Git.
+    dir.fetch("https://me@127.0.0.1:1/acme/app.git", SHA);
+
+    for (host, sent) in [
+        ("127.0.0.1:1", true),
+        ("127.0.0.1:2", false),
+        ("github.com", false),
+    ] {
+        let mut fill = dir
+            .command("git")
+            .args(["credential", "fill"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(
+            fill.stdin.as_mut().unwrap(),
+            format!("protocol=https\nhost={host}\npath=acme/theme.git\n\n").as_bytes(),
+        )
+        .unwrap();
+        let out = fill.wait_with_output().unwrap();
+        let answer = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(answer.contains("password=secret"), sent, "{host}: {answer}");
+    }
+}

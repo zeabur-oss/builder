@@ -5,7 +5,7 @@
 //!
 //! | container | image | does |
 //! |---|---|---|
-//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, then checks `HEAD`; for an archive source, `zeabur-builder-job fetch archive` |
+//! | `fetch` (init) | job image | `git fetch --depth=1 <url> <sha>` into `/workspace/src`, checks `HEAD`, then fetches the submodules at their recorded commits; for an archive source, `zeabur-builder-job fetch archive` |
 //! | `plan` (init) | planner image | Railpack or the agent writes `/workspace/plan`; absent for `dockerfile`. When the controller hands it a saved plan (`JobInputs::saved_plan`), the job image's `zeabur-builder-job plan restore` unpacks it there instead |
 //! | `build` | job image | `zeabur-builder-job build <file>`, a [`BuildPlan`] as JSON from the Pod's annotation; after a planner ran, it pushes `/workspace/plan` as the plan artifact |
 //!
@@ -393,9 +393,16 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     })
 }
 
-/// Fetches exactly one commit; `$1` is the URL and `$2` the SHA, both checked before the Job is
-/// built. `git fetch <sha>` needs the server to allow it, which GitHub,
+/// Fetches exactly one commit and its submodules; `$1` is the URL and `$2` the SHA, both checked
+/// before the Job is built. `git fetch <sha>` needs the server to allow it, which GitHub,
 /// GitLab, Gitea and `git daemon` (protocol v2) do; the checkout is then verified against the SHA.
+///
+/// Submodules are fetched shallow at the commits the tree records. A relative submodule URL
+/// resolves against `origin`. The basic-auth credentials go only to the host of `$1`
+/// ([git-credential], "CREDENTIAL CONTEXTS"). If a submodule cannot be fetched, Git names its
+/// path on stderr and the script fails.
+///
+/// [git-credential]: https://git-scm.com/docs/gitcredentials#_credential_contexts
 const FETCH_SCRIPT: &str = r#"set -eu
 start=$(date +%s)
 mkdir -p /workspace/plan /workspace/out
@@ -404,12 +411,16 @@ if [ -f /etc/zeabur-builder/git/ssh-privatekey ]; then
   export GIT_SSH_COMMAND="ssh -i /tmp/id -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/zeabur-builder/git/known_hosts"
 fi
 if [ -f /etc/zeabur-builder/git/password ]; then
-  git config --global credential.helper '!f() { echo username=$(cat /etc/zeabur-builder/git/username); echo password=$(cat /etc/zeabur-builder/git/password); }; f'
+  authority=${1#*://}
+  authority=${authority%%/*}
+  git config --global "credential.${1%%://*}://${authority##*@}.helper" '!f() { echo username=$(cat /etc/zeabur-builder/git/username); echo password=$(cat /etc/zeabur-builder/git/password); }; f'
 fi
 git init -q /workspace/src
-git -C /workspace/src fetch -q --depth=1 --no-tags -- "$1" "$2"
+git -C /workspace/src remote add origin -- "$1"
+git -C /workspace/src fetch -q --depth=1 --no-tags origin "$2"
 git -C /workspace/src checkout -q --detach FETCH_HEAD
 test "$(git -C /workspace/src rev-parse HEAD)" = "$2"
+git -C /workspace/src submodule update -q --init --recursive --depth=1
 echo "{\"fetch\":$(( $(date +%s) - start ))}" > /workspace/out/fetch.json
 "#;
 

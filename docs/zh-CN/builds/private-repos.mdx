@@ -68,3 +68,9 @@ spec:
 GitHub App 会提供短期 installation 令牌，供 Job 以只读权限访问私有仓库。每个 commit 都会收到 commit status。
 
 App 的 push 事件会唤醒对应的 Build，无需为每个 Build 配置 Secret。控制器接收 webhook 时，这些 Build 改为每 10 分钟轮询一次，而不是每分钟。其他触发方式见[触发构建](./triggers.mdx)。
+
+## 子模块
+
+Job 会按仓库记录的 commit 拉取 Git 子模块。子模块和仓库在同一个 `https://` 主机时，使用同一个令牌，来源是 `credentialsRef` 或 GitHub App。其他主机上的子模块拿不到令牌，因此必须是公开的。deploy key 会用于 `known_hosts` 中的每个 SSH 主机。
+
+子模块拉取失败时，`fetch` 步骤会失败，消息中会写明该子模块的路径。

@@ -68,3 +68,9 @@ spec:
 The GitHub App provides a short-lived installation token that the Job uses for read-only access to the private repository. Each commit receives a commit status.
 
 The App's push events wake the corresponding Builds without a separate Secret for each Build. When the controller receives webhooks, these Builds poll every 10 minutes instead of every minute. For other ways to trigger builds, see [Trigger builds](./triggers.mdx).
+
+## Submodules
+
+The Job fetches the repository's Git submodules at the commits the repository records. A submodule on the same `https://` host as the repository uses the same token, from `credentialsRef` or the GitHub App. A submodule on another host gets no token, so it must be public. A deploy key goes to every SSH host in `known_hosts`.
+
+If a submodule cannot be fetched, the `fetch` step fails and its message names the submodule's path.
