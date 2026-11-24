@@ -44,3 +44,34 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $key := .Values.registry.tokenSecretRef -}}
 {{ required "registry.tokenSecretRef.namespace is required: the Secret whose tls.key signs registry tokens (registry.tokenKey before v0.3.0, with secret now name)" $key.namespace }}/{{ required "registry.tokenSecretRef.name is required: the Secret whose tls.key signs registry tokens" $key.name }}
 {{- end }}
+
+{{- /* An image reference with a tag and a digest: repository:tag@digest. Either one may be empty, not both. */ -}}
+{{- define "builder.pinnedImage" -}}
+{{- if not (or .tag .digest) -}}
+{{- fail (printf "%s needs a tag or a digest" .repository) -}}
+{{- end -}}
+{{ .repository }}{{ if .tag }}:{{ .tag }}{{ end }}{{ if .digest }}@{{ .digest }}{{ end }}
+{{- end }}
+
+{{- /* Fails when a value that v0.3.0 renamed is still set, and names the new key. */ -}}
+{{- define "builder.renamedValues" -}}
+{{- $renamed := dict
+  "githubApp.secretName" "githubApp.secretRef.name"
+  "githubApp.grantsName" "githubApp.grantsConfigMapRef.name"
+  "webhooks.ingress.tlsSecretName" "webhooks.ingress.tls.secretName" -}}
+{{- $values := .Values -}}
+{{- range $key := list "buildkitdImage" "railpackFrontend" -}}
+{{- if kindIs "string" (index $values $key) -}}
+{{- fail (printf "%s is an object { repository, tag, digest } since v0.3.0, not a string" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- range $old, $new := $renamed -}}
+{{- $v := $values -}}
+{{- range $part := splitList "." $old -}}
+{{- if kindIs "map" $v }}{{ $v = index $v $part }}{{ end -}}
+{{- end -}}
+{{- if and $v (not (kindIs "map" $v)) -}}
+{{- fail (printf "%s was renamed to %s in v0.3.0" $old $new) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}

@@ -23,10 +23,12 @@ spec:
   {{- with $ingress.className }}
   ingressClassName: {{ . }}
   {{- end }}
-  {{- if $ingress.tlsSecretName }}
+  {{- with $ingress.tls }}
+  {{- if .secretName }}
   tls:
     - hosts: [{{ required "webhooks.ingress.host is required with TLS" $ingress.host | quote }}]
-      secretName: {{ $ingress.tlsSecretName }}
+      secretName: {{ .secretName }}
+  {{- end }}
   {{- end }}
   rules:
     - http:

@@ -19,7 +19,7 @@ spec:
     image: {{ include "builder.image" (list .Values.railpackImage .Chart) | quote }}
   frontend:
     type: gateway.v0
-    source: {{ .Values.railpackFrontend | quote }}
+    source: {{ include "builder.pinnedImage" .Values.railpackFrontend | quote }}
 {{- with .Values.agent }}
 {{- if .enabled }}
 ---

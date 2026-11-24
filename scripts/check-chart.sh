@@ -57,6 +57,34 @@ if rg -q '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)|registry-ca' <<<"$p
   exit 1
 fi
 
+require "$plain" "default image refs" "--github-app-secret=github-app\$" \
+  '--github-app-grants=github-app-installations$' \
+  '--buildkitd-image=docker.io/moby/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}$' \
+  "c.image == 'docker.io/moby/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}'" \
+  'source: "ghcr.io/railwayapp/railpack-frontend:v[0-9.]+"$'
+renamed=$(helm template builder "$chart" "${base[@]}" --set githubApp.secretRef.name=app \
+  --set githubApp.grantsConfigMapRef.name=grants --set webhooks.enabled=true \
+  --set webhooks.ingress.enabled=true --set webhooks.ingress.host=hooks.example.com \
+  --set webhooks.ingress.tls.secretName=hooks-tls --set buildkitdImage.tag=v9.9.9 \
+  --set buildkitdImage.digest= --set railpackFrontend.digest="sha256:$(printf '1%.0s' {1..64})")
+require "$renamed" "renamed values" '--github-app-secret=app$' '--github-app-grants=grants$' \
+  'secretName: hooks-tls$' '--buildkitd-image=docker.io/moby/buildkit:v9.9.9$' \
+  "c.image == 'docker.io/moby/buildkit:v9.9.9'" \
+  'source: "ghcr.io/railwayapp/railpack-frontend:v[0-9.]+@sha256:1{64}"$'
+for old in githubApp.secretName=x:githubApp.secretRef.name \
+  githubApp.grantsName=x:githubApp.grantsConfigMapRef.name \
+  webhooks.ingress.tlsSecretName=x:webhooks.ingress.tls.secretName \
+  buildkitdImage=x:buildkitdImage railpackFrontend=x:railpackFrontend; do
+  if err=$(helm template builder "$chart" "${base[@]}" --set "${old%%:*}" 2>&1); then
+    echo "renamed values: the chart renders with ${old%%:*}" >&2
+    exit 1
+  fi
+  if ! rg -q -F -- "${old##*:}" <<<"$err"; then
+    echo "renamed values: the error for ${old%%:*} does not name ${old##*:}" >&2
+    exit 1
+  fi
+done
+
 if rg -q 'name: agent$' <<<"$plain"; then
   echo "default install: the chart installs the agent builder that nobody asked for" >&2
   exit 1
