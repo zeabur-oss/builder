@@ -9,6 +9,7 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 
 /// The largest result of one call.
 pub(crate) const MAX_RESULT: usize = 12 * 1024;
@@ -17,9 +18,8 @@ const MAX_GREP_FILE: u64 = 1 << 20;
 /// The deepest `list` goes.
 const MAX_DEPTH: u32 = 4;
 
-/// Directories no tool shows: version control, installed dependencies, caches.
+/// Directories no tool shows: other version control, installed dependencies, caches.
 const HIDDEN_DIRS: &[&str] = &[
-    ".git",
     ".hg",
     ".svn",
     "node_modules",
@@ -37,35 +37,84 @@ const HIDDEN_DIRS: &[&str] = &[
     "vendor",
 ];
 
+/// Names, at any depth, that every build leaves out and no tool shows.
+const SECRETS: &[Secret] = &[
+    Secret::Name(".git"),
+    Secret::Name(".env"),
+    Secret::Prefix(".env."),
+    Secret::Name(".npmrc"),
+    Secret::Name(".netrc"),
+    Secret::Name(".pypirc"),
+    Secret::Name(".git-credentials"),
+    Secret::Extension("pem"),
+    Secret::Extension("key"),
+    Secret::Prefix("id_rsa"),
+    Secret::Prefix("id_ecdsa"),
+    Secret::Prefix("id_ed25519"),
+];
+
+/// Names that a [`SECRETS`] entry matches but that hold no credentials.
+const NOT_SECRETS: &[&str] = &[".env.example", ".env.sample", ".env.template"];
+
+/// A pattern of [`SECRETS`].
+#[derive(Debug, Clone, Copy)]
+enum Secret {
+    /// This name, such as `.npmrc`.
+    Name(&'static str),
+    /// Names that start with this, such as `id_rsa.pub`.
+    Prefix(&'static str),
+    /// Names that end in a dot and this extension, in any case, such as `tls.KEY`.
+    Extension(&'static str),
+}
+
+impl Secret {
+    /// Whether an entry named `name` matches.
+    fn matches(self, name: &str) -> bool {
+        match self {
+            Self::Name(secret) => name == secret,
+            Self::Prefix(prefix) => name.starts_with(prefix),
+            Self::Extension(extension) => name
+                .rsplit_once('.')
+                .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(extension)),
+        }
+    }
+
+    /// The `.dockerignore` rule that leaves out the names [`Self::matches`] accepts.
+    fn rule(self) -> String {
+        match self {
+            Self::Name(name) => format!("**/{name}"),
+            Self::Prefix(prefix) => format!("**/{prefix}*"),
+            Self::Extension(extension) => {
+                let any_case: String = extension
+                    .chars()
+                    .map(|c| format!("[{}{}]", c.to_ascii_lowercase(), c.to_ascii_uppercase()))
+                    .collect();
+                format!("**/*.{any_case}")
+            }
+        }
+    }
+}
+
 /// `.dockerignore` rules every build ends with, so a `COPY . .` never takes credentials.
-const BUILD_IGNORE: &str = "\
-**/.git
-**/.env
-**/.env.*
-!**/.env.example
-!**/.env.sample
-!**/.env.template
-**/.npmrc
-**/.netrc
-**/.pypirc
-**/.git-credentials
-**/*.[pP][eE][mM]
-**/*.[kK][eE][yY]
-**/id_rsa*
-**/id_ecdsa*
-**/id_ed25519*
-";
+static BUILD_IGNORE: LazyLock<String> = LazyLock::new(|| {
+    SECRETS
+        .iter()
+        .map(|secret| secret.rule())
+        .chain(NOT_SECRETS.iter().map(|name| format!("!**/{name}")))
+        .map(|rule| rule + "\n")
+        .collect()
+});
 
 /// The `.dockerignore` of a build with `rules`. The last matching rule wins, so [`BUILD_IGNORE`]
 /// goes last and a rule such as `!.env` cannot take credentials back in.
 pub(crate) fn dockerignore(rules: &str) -> String {
-    format!("{}\n{BUILD_IGNORE}", rules.trim())
+    format!("{}\n{}", rules.trim(), *BUILD_IGNORE)
 }
 
 /// The rules of a `.dockerignore` that [`dockerignore`] wrote.
 pub(crate) fn rules_of(dockerignore: &str) -> &str {
     dockerignore
-        .strip_suffix(BUILD_IGNORE)
+        .strip_suffix(BUILD_IGNORE.as_str())
         .unwrap_or(dockerignore)
         .trim()
 }
@@ -75,18 +124,9 @@ fn hidden(name: &str) -> bool {
     HIDDEN_DIRS.contains(&name) || secret_file(name)
 }
 
-/// Whether a file name holds credentials, matching [`BUILD_IGNORE`].
+/// Whether [`BUILD_IGNORE`] leaves out an entry named `name`.
 fn secret_file(name: &str) -> bool {
-    let env = name == ".env"
-        || (name.starts_with(".env.")
-            && !matches!(name, ".env.example" | ".env.sample" | ".env.template"));
-    env || matches!(name, ".npmrc" | ".netrc" | ".pypirc" | ".git-credentials")
-        || Path::new(name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("pem") || ext.eq_ignore_ascii_case("key"))
-        || ["id_rsa", "id_ecdsa", "id_ed25519"]
-            .iter()
-            .any(|key| name.starts_with(key))
+    !NOT_SECRETS.contains(&name) && SECRETS.iter().any(|secret| secret.matches(name))
 }
 
 /// Why a call returned nothing. The model reads the message.
@@ -390,7 +430,7 @@ mod tests {
     fn credentials_stay_ignored_after_the_model_s_rules() {
         let file = dockerignore("dist\n!**\n!.env\n");
         assert!(file.starts_with("dist\n!**\n!.env\n"));
-        assert!(file.ends_with(BUILD_IGNORE));
+        assert!(file.ends_with(BUILD_IGNORE.as_str()));
         assert_eq!(rules_of(&file), "dist\n!**\n!.env");
     }
 
@@ -433,20 +473,59 @@ mod tests {
         assert!(found.ends_with("search a subdirectory to see more]"));
     }
 
-    #[test]
-    fn build_ignore_covers_every_hidden_file() {
-        for name in [
-            ".env",
-            ".env.local",
-            ".npmrc",
-            ".netrc",
-            "deploy.pem",
-            "tls.key",
-            "id_rsa",
-        ] {
-            assert!(secret_file(name), "{name}");
+    /// A name `pattern` matches, with each `[xX]` class read as its `pick`th character.
+    fn example(pattern: &str, pick: usize) -> String {
+        let mut name = String::new();
+        let mut chars = pattern.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' => name.push('x'),
+                '[' => {
+                    let class: Vec<char> = chars.by_ref().take_while(|&c| c != ']').collect();
+                    name.push(class[pick % class.len()]);
+                }
+                c => name.push(c),
+            }
         }
-        assert!(!secret_file(".env.example"));
-        assert!(!secret_file("package.json"));
+        name
+    }
+
+    #[test]
+    fn tools_refuse_what_every_build_leaves_out() {
+        let (dir, repo) = repo();
+        let mut refused = vec![
+            "id_rsa".to_owned(),
+            "id_ecdsa.pub".to_owned(),
+            "deploy/id_ed25519".to_owned(),
+        ];
+        let mut shown = Vec::new();
+        for rule in BUILD_IGNORE.lines() {
+            let (pattern, list) = match rule.strip_prefix('!') {
+                Some(pattern) => (pattern, &mut shown),
+                None => (rule, &mut refused),
+            };
+            for pick in [0, 1] {
+                list.push(example(&pattern.replace("**/", "app/"), pick));
+            }
+        }
+        for path in &refused {
+            dir.write(path, "secret\n");
+            assert_eq!(
+                repo.read(path, 0),
+                Err(RepoError::Denied(path.clone())),
+                "{path}"
+            );
+        }
+        for path in &shown {
+            dir.write(path, "PORT=\n");
+            assert_eq!(repo.read(path, 0).as_deref(), Ok("PORT=\n"), "{path}");
+        }
+        let list = repo.list(".", MAX_DEPTH).unwrap();
+        for path in &refused {
+            assert!(
+                !list.contains(&format!("{path} (")),
+                "{path} listed:\n{list}"
+            );
+        }
     }
 }
