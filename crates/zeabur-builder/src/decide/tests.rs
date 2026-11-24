@@ -2369,3 +2369,30 @@ fn runs_that_gave_their_slots_back_take_turns() {
         "the other run is older but gave its slot back later"
     );
 }
+
+#[test]
+fn daemon_out_of_memory_says_when_a_new_limit_applies() {
+    let idle = Duration::from_mins(10);
+    for (running, wanted, still_old) in [
+        (Some("2Gi"), Some("4Gi"), true),
+        (Some("2Gi"), Some("2Gi"), false),
+        (Some("4Gi"), Some("2Gi"), false),
+        (None, Some("4Gi"), false),
+    ] {
+        let message = daemon_out_of_memory(running, wanted, idle);
+        assert!(
+            message.contains("idle for 10m and is replaced"),
+            "{message}"
+        );
+        assert_eq!(
+            message.contains("still has the old limit of 2Gi"),
+            still_old,
+            "{message}"
+        );
+        assert_eq!(
+            message.contains("builder.zeabur.com/build-memory"),
+            !still_old,
+            "{message}"
+        );
+    }
+}

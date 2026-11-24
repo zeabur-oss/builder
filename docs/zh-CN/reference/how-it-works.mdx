@@ -67,7 +67,7 @@ buildkitd 空闲 10 分钟后会缩容到零。
 
 Job 的每个容器请求 128 MiB 内存，最多能用 512 MiB（chart 的 `jobResources`）。`RUN` 步骤在 buildkitd 中运行，计入 `buildkitd.resources`。
 
-Namespace 的注解 `builder.zeabur.com/build-memory`（例如 `2Gi`）会同时设置一次构建在 buildkitd 上的内存上限，以及 Job 每个容器的上限。Job 的容器内存不足时，构建会以 `OutOfMemory` 失败。
+Namespace 的注解 `builder.zeabur.com/build-memory`（例如 `2Gi`）会同时设置一次构建在 buildkitd 上的内存上限，以及 Job 每个容器的上限。Job 的容器或 buildkitd 内存不足时，构建会以 `OutOfMemory` 失败。调高的上限会立即应用到 Job，但 buildkitd 要等空闲并被替换后才会应用。在此之前，`OutOfMemory` 的消息会说明 buildkitd 仍是旧的上限。
 
 ## 自定义资源
 
