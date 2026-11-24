@@ -102,14 +102,26 @@ fn admitted(status: BuildRunStatus) -> BuildRunStatus {
 
 #[test]
 fn durations() {
-    assert_eq!(parse_duration("90s"), Some(Duration::from_secs(90)));
-    assert_eq!(parse_duration("1m30s"), Some(Duration::from_secs(90)));
-    assert_eq!(parse_duration("1.5h"), Some(Duration::from_mins(90)));
-    assert_eq!(parse_duration("250ms"), Some(Duration::from_millis(250)));
-    assert_eq!(parse_duration(""), None);
-    assert_eq!(parse_duration("10"), None);
-    assert_eq!(parse_duration("m"), None);
-    assert_eq!(parse_duration("1d"), None);
+    for (text, want) in [
+        ("90s", Duration::from_secs(90)),
+        ("1m30s", Duration::from_secs(90)),
+        ("1h30m", Duration::from_mins(90)),
+        ("1h1m1s", Duration::from_secs(3661)),
+        ("1.5h", Duration::from_mins(90)),
+        ("0.5s", Duration::from_millis(500)),
+        ("250ms", Duration::from_millis(250)),
+        ("1s250ms", Duration::from_millis(1250)),
+        ("0s", Duration::ZERO),
+    ] {
+        assert_eq!(parse_duration(text), Some(want), "{text}");
+    }
+}
+
+#[test]
+fn text_that_is_not_a_duration_is_refused() {
+    for text in ["", "10", "m", "1d", "-1s", "1x", "1.5m30s", "30s1m", "1s2s"] {
+        assert_eq!(parse_duration(text), None, "{text}");
+    }
 }
 
 #[test]

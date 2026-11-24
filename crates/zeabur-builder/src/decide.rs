@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{ContainerStatus, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -82,7 +82,7 @@ pub(crate) fn wake(status: Option<&BuildStatus>, now: Timestamp) -> Wake {
         return Wake::Idle;
     }
     let age = now.duration_since(last);
-    match jiff::SignedDuration::try_from(WAKE_GAP) {
+    match SignedDuration::try_from(WAKE_GAP) {
         Ok(gap) if age < gap => Wake::After((gap - age).unsigned_abs()),
         _ => Wake::Now,
     }
@@ -117,26 +117,10 @@ pub(crate) fn tokens_expired(until: Timestamp, now: Timestamp) -> bool {
 /// Finished `BuildRun`s kept when the `Build` sets no limit.
 pub(crate) const DEFAULT_HISTORY: usize = 10;
 
-/// Reads a Go duration such as `90s`, `1m30s` or `1.5h`, the form `DURATION_PATTERN` admits.
+/// Reads a duration such as `90s`, `1m30s` or `1.5h` in jiff's friendly format; a negative one is
+/// refused.
 pub(crate) fn parse_duration(text: &str) -> Option<Duration> {
-    let mut total = 0.0_f64;
-    let mut rest = text;
-    if rest.is_empty() {
-        return None;
-    }
-    while !rest.is_empty() {
-        let digits = rest
-            .find(|c: char| !c.is_ascii_digit() && c != '.')
-            .filter(|&n| n > 0)?;
-        let (number, after) = rest.split_at(digits);
-        let number: f64 = number.parse().ok()?;
-        let (unit, after) = [("ms", 0.001), ("s", 1.0), ("m", 60.0), ("h", 3600.0)]
-            .iter()
-            .find_map(|(unit, seconds)| after.strip_prefix(unit).map(|a| (*seconds, a)))?;
-        total = number.mul_add(unit, total);
-        rest = after;
-    }
-    Duration::try_from_secs_f64(total).ok()
+    Duration::try_from(text.parse::<SignedDuration>().ok()?).ok()
 }
 
 /// Whether a phase is final.
