@@ -68,3 +68,9 @@ spec:
 GitHub App 會提供短效 installation 權杖，讓 Job 以唯讀權限存取私有儲存庫。每個 commit 都會收到 commit status。
 
 App 的 push 事件會喚醒對應的 Build，不需要為每個 Build 設定 Secret。控制器有接收 webhook 時，這些 Build 改為每 10 分鐘輪詢一次，而不是每分鐘。其他觸發方式請見[觸發建置](./triggers.mdx)。
+
+## 子模組
+
+Job 會依儲存庫記錄的 commit 抓取 Git 子模組。子模組和儲存庫在同一個 `https://` 主機時，會使用同一個權杖，來源是 `credentialsRef` 或 GitHub App。其他主機上的子模組拿不到權杖，所以必須是公開的。deploy key 會用在 `known_hosts` 裡的每個 SSH 主機。
+
+子模組抓取失敗時，`fetch` 步驟會失敗，訊息會寫出該子模組的路徑。
