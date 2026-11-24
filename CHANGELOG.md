@@ -2,6 +2,66 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.3.0 (2026-11-24)
+
+### Breaking Changes
+
+#### The chart names the GitHub App, webhook TLS and image values like the registry values
+
+Rename these chart values before you upgrade. The chart fails to render while an old key is set, and the error names the new key.
+
+| Before | Now |
+| --- | --- |
+| `githubApp.secretName` | `githubApp.secretRef.name` |
+| `githubApp.grantsName` | `githubApp.grantsConfigMapRef.name` |
+| `webhooks.ingress.tlsSecretName` | `webhooks.ingress.tls.secretName` |
+| `buildkitdImage: <image>` | `buildkitdImage: {repository, tag, digest}` |
+| `railpackFrontend: <image>` | `railpackFrontend: {repository, tag, digest}` |
+
+`buildkitdImage` and `railpackFrontend` take the same fields as `image`, `jobImage` and `railpackImage`. A reference such as `docker.io/moby/buildkit:v0.34.2@sha256:…` splits into `repository` (`docker.io/moby/buildkit`), `tag` (`v0.34.2`) and `digest` (`sha256:…`). Set a tag, a digest or both.
+
+#### The CRDs refuse durations the controller cannot read
+
+`triggers.pollInterval` and `planner.timeout` take hours, minutes, seconds and milliseconds, largest first and each once, such as `90s`, `1h30m` or `1.5h`. A fraction goes on the last unit only. The CRDs now refuse `1.5m30s`, `30s1m` and `1s2s` when you apply them. Before, the controller took such a `pollInterval` as unset and polled at the default interval. Write the value in the forms above.
+
+#### The controller's time flags take durations
+
+`--buildkitd-pending-grace`, `--buildkitd-idle`, `--job-deadline`, `--job-ttl` and the `--ttl` of `registry-token` take a duration such as `90s`, `10m` or `1h`, as the CRD fields do. A bare number is refused. If you pass these flags through `extraArgs`, change `600` to `10m`. The chart sets none of them.
+
+#### The registry's CA is read from a Secret at run time
+
+`registry.caSecretRef` (`namespace`, `name`, `key`) names the Secret key that holds the registry's CA, and replaces `registry.ca` and `registry.caFrom`. The controller follows that Secret and publishes the CA alone in the Secret `registry-ca` of its Namespace. Each buildkitd mounts it, and every signed-in user may read it. A new CA reaches the controller, buildkitd and new build Jobs without a reinstall. A running buildkitd restarts at its next build to trust the new CA and keeps its cache. Builds it runs at that moment fail.
+
+Upload Secrets no longer hold `ca.crt`. Read the CA from `registry-ca` instead.
+
+#### `registry.tokenKey` is now `registry.tokenSecretRef`, with `name` for the Secret
+
+The chart names a Secret the way the `Build` CRD and Kubernetes do: `registry.tokenSecretRef` (`namespace`, `name`) replaces `registry.tokenKey` (`namespace`, `secret`). Rename the key and its `secret` field in your values before you upgrade. The chart fails to render while `registry.tokenSecretRef` is unset.
+
+### Features
+
+#### Builds fetch Git submodules
+
+The `fetch` step fetches submodules at the commits the repository records. A submodule on the repository's `https://` host uses the same token. A submodule that cannot be fetched fails the step, and the message names its path.
+
+### Fixes
+
+#### The AI Dockerfile tool hides every file the build leaves out
+
+The model's file tools and the build's `.dockerignore` now use one list of credential files. The tools also hide a `.git` file and files named `.pem` or `.key`.
+
+#### `pollInterval` is read in jiff's friendly format
+
+The controller reads `triggers.pollInterval` with jiff. Every value the CRD pattern admitted still means the same, except a fraction before another unit (`1.5m30s`), units out of order (`30s1m`) and a repeated unit (`1s2s`). The controller takes such a value as unset and uses the default interval.
+
+#### The OutOfMemory message says when a raised buildkitd limit applies
+
+When buildkitd runs out of memory, the BuildRun message says that a new limit applies once buildkitd has been idle and is replaced. If the namespace already asks for more memory than the running buildkitd has, the message says that buildkitd still has the old limit.
+
+#### url 2.5.9 fixes RUSTSEC-2026-0592
+
+`Url::origin` could overflow the stack on a crafted URL. The controller reaches `url` through its AI dependency.
+
 ## 0.2.5 (2026-11-22)
 
 ### Fixes
