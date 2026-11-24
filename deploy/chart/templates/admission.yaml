@@ -1,7 +1,7 @@
 {{- $images := concat (list (include "builder.image" (list .Values.jobImage .Chart)) (include "builder.image" (list .Values.railpackImage .Chart))) .Values.admissionPolicy.extraImages | uniq }}
 {{- $_ := include "builder.tokenKey" . }}
 {{- $registry := .Values.registry }}
-{{- $denied := concat (list .Release.Namespace $registry.tokenKey.namespace $registry.caSecret.namespace $registry.inCluster.namespace) .Values.admissionPolicy.extraDeniedNamespaces | compact | uniq }}
+{{- $denied := concat (list .Release.Namespace $registry.tokenSecretRef.namespace $registry.caSecretRef.namespace $registry.inCluster.namespace) .Values.admissionPolicy.extraDeniedNamespaces | compact | uniq }}
 {{- $user := printf "system:serviceaccount:%s:zeabur-builder" .Release.Namespace }}
 {{- $audiences := list "https://api.anthropic.com" "https://api.openai.com/v1" }}
 # The controller can create Jobs in every namespace. A Job it creates must be a build Job: the

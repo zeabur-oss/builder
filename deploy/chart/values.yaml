@@ -67,17 +67,17 @@ registry:
   # of deleted Builds are deleted. The chart lets the controller read this one Secret. Required:
   # the chart fails without namespace and secret. An image on another registry uses the Build's
   # spec.output.pushSecretRef.
-  tokenKey:
+  tokenSecretRef:
     namespace: ""
-    secret: ""
+    name: ""
   # The Secret key that holds the CA that signed the registry's certificate (PEM), when a public
   # CA did not, such as ca.crt of the catalog Zot's zot-tls in zot. The controller follows this
   # one Secret and publishes the CA alone in the Secret registry-ca of this namespace, which
   # buildkitd mounts and every signed-in user may read. buildkitd, the archive download and the
   # controller trust it, and a rotation needs no reinstall. Empty: the registry has a public CA.
-  caSecret:
+  caSecretRef:
     namespace: ""
-    secret: ""
+    name: ""
     key: ca.crt
   # true: the registry speaks plain HTTP. Only for a test cluster.
   http: false

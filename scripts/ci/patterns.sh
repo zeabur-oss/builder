@@ -24,10 +24,10 @@ rule() {
 
 rule registry-ca-from 'deploy/** crates/** scripts/** docs/**' '\bcaFrom\b' \
   '  caFrom:' \
-  'name the Secret key of the CA in registry.caSecret; the controller publishes it in registry-ca'
+  'name the Secret key of the CA in registry.caSecretRef; the controller publishes it in registry-ca'
 rule registry-ca-bundle 'deploy/** crates/** scripts/** docs/**' '\bcaBundle\b' \
   '  caBundle: LS0t' \
-  'name the Secret key of the CA in registry.caSecret; the controller publishes it in registry-ca'
+  'name the Secret key of the CA in registry.caSecretRef; the controller publishes it in registry-ca'
 rule upload-secret-ca 'crates/**/*.rs !crates/zeabur-builder/src/registry_ca.rs' '"ca\.crt"' \
   '        data.insert("ca.crt".to_owned(), ByteString(ca.as_bytes().to_vec()));' \
   'an upload Secret holds the credentials only; clients read the CA from builder-system/registry-ca'

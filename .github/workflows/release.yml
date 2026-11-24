@@ -238,4 +238,4 @@ jobs:
           image builder-railpack railpackImage
           release verify-chart --digests downloaded/digests.txt "$chart"
           helm template builder "$chart" --set registry.host=registry.example:5000 \
-            --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer >/dev/null
+            --set registry.tokenSecretRef.namespace=zot --set registry.tokenSecretRef.name=zot-token-signer >/dev/null

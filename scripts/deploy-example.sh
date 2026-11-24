@@ -59,10 +59,10 @@ helm --kube-context "$context" upgrade --install builder "$root/deploy/chart" -n
   --set jobImage.repository="$prefix/builder-job" --set jobImage.tag="$tag" \
   --set railpackImage.repository="$prefix/builder-railpack" --set railpackImage.tag="$tag" \
   --set registry.host="$registry" \
-  --set registry.caSecret.namespace=builder-registry --set registry.caSecret.secret=zot-tls \
+  --set registry.caSecretRef.namespace=builder-registry --set registry.caSecretRef.name=zot-tls \
   --set registry.inCluster.namespace=builder-registry \
   --set registry.inCluster.podLabels.app\\.kubernetes\\.io/name=registry \
-  --set registry.tokenKey.namespace=builder-registry --set registry.tokenKey.secret=zot-token-signer \
+  --set registry.tokenSecretRef.namespace=builder-registry --set registry.tokenSecretRef.name=zot-token-signer \
   --set-json "extraArgs=[\"--buildkitd-cache-size=10Gi\",\"--buildkitd-idle=$idle\"]"
 # The controller restarts so that a new image with the same tag is picked up.
 k -n builder-system rollout restart deployment/zeabur-builder
