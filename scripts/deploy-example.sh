@@ -5,7 +5,7 @@
 # Environment:
 #   IMAGE_PREFIX, TAG     the images the cluster pulls (zeabur-builder, dev): those of
 #                         scripts/build-images.sh, or on k3d those that scripts/push-images.sh pushed
-#   IDLE                  seconds before an idle buildkitd scales to zero (600)
+#   IDLE                  time before an idle buildkitd scales to zero (10m)
 #   NAMESPACES            build namespaces to create (team-a team-b)
 #   TIMEOUT               seconds to wait for the Builds (900); the first failed BuildRun stops
 #                         the wait
@@ -17,7 +17,7 @@ builds=("$@")
 [[ ${#builds[@]} -gt 0 ]] || builds=(whoami)
 prefix="${IMAGE_PREFIX:-zeabur-builder}"
 tag="${TAG:-dev}"
-idle="${IDLE:-600}"
+idle="${IDLE:-10m}"
 read -r -a namespaces <<<"${NAMESPACES:-team-a team-b}"
 timeout="${TIMEOUT:-900}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
