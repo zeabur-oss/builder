@@ -316,7 +316,7 @@ async fn apply_run_status(
 pub(crate) async fn run(client: Client, settings: Settings) -> Result<(), ControllerError> {
     let identity = std::env::var("POD_NAME").ok();
     let (leader, election) = leader::elect(client.clone(), &settings.namespace, identity).await?;
-    let served = run_replica(client, settings, leader).await;
+    let served = Box::pin(run_replica(client, settings, leader)).await;
     election.release().await;
     served
 }
