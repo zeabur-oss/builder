@@ -88,9 +88,9 @@ struct RegistryTokenArgs {
     /// The token may also delete manifests.
     #[arg(long)]
     delete: bool,
-    /// How long the token lasts, in seconds.
-    #[arg(long, default_value_t = 900)]
-    ttl: u64,
+    /// How long the token lasts, such as `15m`.
+    #[arg(long, default_value = "15m", value_parser = duration)]
+    ttl: Duration,
     /// The Secret whose `tls.key` signs tokens, `<namespace>/<name>`.
     #[arg(long, env = "ZEABUR_BUILDER_REGISTRY_TOKEN_KEY", value_parser = secret_ref)]
     registry_token_key: (String, String),
@@ -113,6 +113,39 @@ fn quantity(value: &str) -> Result<String, String> {
     zeabur_builder_jobspec::buildkitd::times(value, 1)
         .map(|_| value.to_owned())
         .ok_or_else(|| format!("`{value}` is not a positive quantity, such as 500m or 4Gi"))
+}
+
+/// Parses a duration such as `90s`, `10m` or `1h`; a bare number is refused.
+fn duration(value: &str) -> Result<Duration, String> {
+    decide::parse_duration(value).ok_or_else(|| {
+        if value.parse::<u64>().is_ok() {
+            format!("`{value}` has no unit; write {value}s for seconds, or 10m, 1h")
+        } else {
+            format!("`{value}` is not a duration, such as 90s, 10m or 1h")
+        }
+    })
+}
+
+/// A duration of whole seconds, as a Job counts them.
+fn whole_seconds(value: &str) -> Result<Duration, String> {
+    let d = duration(value)?;
+    if d.subsec_nanos() == 0 {
+        Ok(d)
+    } else {
+        Err(format!(
+            "`{value}` is not a whole number of seconds, as a Job counts them"
+        ))
+    }
+}
+
+/// A Job's deadline: whole seconds, at least one, as `activeDeadlineSeconds` requires.
+fn job_deadline(value: &str) -> Result<Duration, String> {
+    let d = whole_seconds(value)?;
+    if d.is_zero() {
+        Err(format!("`{value}` is too short; a build needs at least 1s"))
+    } else {
+        Ok(d)
+    }
 }
 
 /// Parses `key=value`.
@@ -141,11 +174,7 @@ async fn registry_token(args: RegistryTokenArgs) -> Result<String, Error> {
         .iter()
         .map(|r| (r.as_str(), access))
         .collect();
-    Ok(signer.token(
-        &grants,
-        jiff::Timestamp::now(),
-        Duration::from_secs(args.ttl),
-    ))
+    Ok(signer.token(&grants, jiff::Timestamp::now(), args.ttl))
 }
 
 #[derive(Debug, Args)]
@@ -182,10 +211,10 @@ struct ControllerArgs {
     /// Builds all namespaces run at once. A run over the limit waits, oldest first.
     #[arg(long, default_value_t = decide::DEFAULT_MAX_CLUSTER_BUILDS)]
     max_cluster_builds: u32,
-    /// Seconds a run waits for memory or CPU for its buildkitd before it gives its cluster slot
-    /// to a run that can start now.
-    #[arg(long, default_value_t = 60)]
-    buildkitd_pending_grace: u64,
+    /// How long a run waits for memory or CPU for its buildkitd before it gives its cluster slot
+    /// to a run that can start now, such as `1m`.
+    #[arg(long, default_value = "1m", value_parser = duration)]
+    buildkitd_pending_grace: Duration,
     /// Where the buildkitd of each namespace runs. Default: the controller's namespace.
     #[arg(long)]
     buildkitd_namespace: Option<String>,
@@ -238,9 +267,10 @@ struct ControllerArgs {
     /// }`. Repeat for more.
     #[arg(long = "build-toleration", value_parser = toleration)]
     build_tolerations: Vec<Toleration>,
-    /// Seconds a namespace goes without builds before its buildkitd scales to zero.
-    #[arg(long, default_value_t = 600)]
-    buildkitd_idle: u64,
+    /// How long a namespace goes without builds before its buildkitd scales to zero, such as
+    /// `10m`.
+    #[arg(long, default_value = "10m", value_parser = duration)]
+    buildkitd_idle: Duration,
     /// The memory request of each container of a build Job.
     #[arg(long, default_value = "128Mi", value_parser = quantity)]
     job_memory_request: String,
@@ -248,12 +278,12 @@ struct ControllerArgs {
     /// `builder.zeabur.com/build-memory` overrides it.
     #[arg(long, default_value = "512Mi", value_parser = quantity)]
     job_memory_limit: String,
-    /// How long a build may run, in seconds.
-    #[arg(long, default_value_t = 3600)]
-    job_deadline: i64,
-    /// How long a finished Job is kept, in seconds, for log collectors.
-    #[arg(long, default_value_t = 600)]
-    job_ttl: i32,
+    /// How long a build may run, such as `1h`.
+    #[arg(long, default_value = "1h", value_parser = job_deadline)]
+    job_deadline: Duration,
+    /// How long a finished Job is kept for log collectors, such as `10m`.
+    #[arg(long, default_value = "10m", value_parser = whole_seconds)]
+    job_ttl: Duration,
     /// The GitHub App's Secret in the controller's namespace: `app-id`, `client-id`,
     /// `private-key`, `webhook-secret` and, for GitHub Enterprise Server, `api-url`.
     #[arg(
@@ -301,7 +331,7 @@ impl ControllerArgs {
                 cpu_limit: Some(self.buildkitd_cpu_limit),
                 memory_limit: Some(self.buildkitd_memory_limit),
             },
-            idle_after: Duration::from_secs(self.buildkitd_idle),
+            idle_after: self.buildkitd_idle,
             placement: Placement {
                 node_selector: self.build_node_selector.into_iter().collect(),
                 tolerations: self.build_tolerations,
@@ -316,7 +346,7 @@ impl ControllerArgs {
                 cpu: self.buildkitd_cpu_max,
                 memory: self.buildkitd_memory_max,
             },
-            pending_grace: Duration::from_secs(self.buildkitd_pending_grace),
+            pending_grace: self.buildkitd_pending_grace,
             default_registry: self.default_registry,
             registry_ca: self
                 .registry_ca
@@ -332,8 +362,8 @@ impl ControllerArgs {
                 request: self.job_memory_request,
                 limit: self.job_memory_limit,
             },
-            job_deadline_seconds: self.job_deadline,
-            job_ttl_seconds: self.job_ttl,
+            job_deadline_seconds: i64::try_from(self.job_deadline.as_secs()).unwrap_or(i64::MAX),
+            job_ttl_seconds: i32::try_from(self.job_ttl.as_secs()).unwrap_or(i32::MAX),
             github_app_secret: self.github_app_secret,
             github_app_grants: self.github_app_grants,
             webhook: self.webhook_addr.map(|addr| webhook::Settings {
@@ -423,6 +453,50 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn the_time_flag_defaults_are_the_old_seconds() {
+        let cli = Cli::try_parse_from([
+            "zeabur-builder",
+            "controller",
+            "--namespace=builder-system",
+            "--default-registry=registry.internal:5000",
+            "--registry-token-key=zot/zot-token-signer",
+            "--job-image=ghcr.io/zeabur-oss/builder-job:dev",
+        ])
+        .unwrap();
+        let Command::Controller(args) = cli.command else {
+            panic!("not the controller");
+        };
+        assert_eq!(args.buildkitd_pending_grace, Duration::from_secs(60));
+        assert_eq!(args.buildkitd_idle, Duration::from_secs(600));
+        assert_eq!(args.job_deadline, Duration::from_secs(3600));
+        assert_eq!(args.job_ttl, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn a_duration_flag_takes_a_unit() {
+        assert_eq!(duration("10m"), Ok(Duration::from_secs(600)));
+        assert_eq!(duration("1h"), Ok(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn a_bare_number_is_refused_with_the_new_form() {
+        let message = duration("600").unwrap_err();
+        assert!(message.contains("write 600s"), "{message}");
+        assert!(duration("soon").is_err());
+        assert!(duration("-1m").is_err());
+    }
+
+    #[test]
+    fn a_job_deadline_is_whole_seconds_and_not_zero() {
+        assert_eq!(job_deadline("90s"), Ok(Duration::from_secs(90)));
+        assert!(job_deadline("500ms").is_err());
+        assert!(job_deadline("1.5s").is_err());
+        assert!(job_deadline("0s").is_err());
+        assert_eq!(whole_seconds("0s"), Ok(Duration::ZERO));
+        assert!(whole_seconds("1500ms").is_err());
+    }
 
     #[test]
     fn a_ceiling_below_the_request_is_refused() {

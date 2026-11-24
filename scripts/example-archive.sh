@@ -158,7 +158,7 @@ done
 
 echo "== cleanup"
 admin=$(k -n builder-system exec deploy/zeabur-builder -- /zeabur-builder registry-token \
-  --repository "$a/handmade" --repository "$a/app" --repository "$a/app/source" --push --ttl 1800)
+  --repository "$a/handmade" --repository "$a/app" --repository "$a/app/source" --push --ttl 30m)
 k -n "$a" run registry-check --restart Never --image docker.io/curlimages/curl:8.11.1 \
   --command -- sleep 1800 >/dev/null
 k -n "$a" wait pod/registry-check --for=condition=Ready --timeout 120s >/dev/null
