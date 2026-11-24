@@ -126,6 +126,28 @@ fn duration(value: &str) -> Result<Duration, String> {
     })
 }
 
+/// A duration of whole seconds, as a Job counts them.
+fn whole_seconds(value: &str) -> Result<Duration, String> {
+    let d = duration(value)?;
+    if d.subsec_nanos() == 0 {
+        Ok(d)
+    } else {
+        Err(format!(
+            "`{value}` is not a whole number of seconds, as a Job counts them"
+        ))
+    }
+}
+
+/// A Job's deadline: whole seconds, at least one, as `activeDeadlineSeconds` requires.
+fn job_deadline(value: &str) -> Result<Duration, String> {
+    let d = whole_seconds(value)?;
+    if d.is_zero() {
+        Err(format!("`{value}` is too short; a build needs at least 1s"))
+    } else {
+        Ok(d)
+    }
+}
+
 /// Parses `key=value`.
 fn node_label(value: &str) -> Result<(String, String), String> {
     match value.split_once('=') {
@@ -257,10 +279,10 @@ struct ControllerArgs {
     #[arg(long, default_value = "512Mi", value_parser = quantity)]
     job_memory_limit: String,
     /// How long a build may run, such as `1h`.
-    #[arg(long, default_value = "1h", value_parser = duration)]
+    #[arg(long, default_value = "1h", value_parser = job_deadline)]
     job_deadline: Duration,
     /// How long a finished Job is kept for log collectors, such as `10m`.
-    #[arg(long, default_value = "10m", value_parser = duration)]
+    #[arg(long, default_value = "10m", value_parser = whole_seconds)]
     job_ttl: Duration,
     /// The GitHub App's Secret in the controller's namespace: `app-id`, `client-id`,
     /// `private-key`, `webhook-secret` and, for GitHub Enterprise Server, `api-url`.
@@ -464,6 +486,16 @@ mod tests {
         assert!(message.contains("write 600s"), "{message}");
         assert!(duration("soon").is_err());
         assert!(duration("-1m").is_err());
+    }
+
+    #[test]
+    fn a_job_deadline_is_whole_seconds_and_not_zero() {
+        assert_eq!(job_deadline("90s"), Ok(Duration::from_secs(90)));
+        assert!(job_deadline("500ms").is_err());
+        assert!(job_deadline("1.5s").is_err());
+        assert!(job_deadline("0s").is_err());
+        assert_eq!(whole_seconds("0s"), Ok(Duration::ZERO));
+        assert!(whole_seconds("1500ms").is_err());
     }
 
     #[test]
