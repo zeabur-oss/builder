@@ -4351,6 +4351,7 @@ dependencies = [
  "kube",
  "kube-lease-manager",
  "rcgen",
+ "regex",
  "russh",
  "rustls",
  "rustls-native-certs",

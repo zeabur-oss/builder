@@ -125,6 +125,43 @@ fn text_that_is_not_a_duration_is_refused() {
 }
 
 #[test]
+fn the_crd_admits_the_durations_the_controller_reads() {
+    let pattern = regex::Regex::new(zeabur_builder_api::common::DURATION_PATTERN).unwrap();
+    for (text, read) in [
+        ("90s", true),
+        ("1m30s", true),
+        ("1h30m", true),
+        ("1h1m1s", true),
+        ("1.5h", true),
+        ("1.5m", true),
+        ("0.5s", true),
+        ("250ms", true),
+        ("1.5ms", true),
+        ("1s250ms", true),
+        ("0s", true),
+        ("", false),
+        ("10", false),
+        ("m", false),
+        ("1d", false),
+        ("-1s", false),
+        ("1x", false),
+        ("1.5m30s", false),
+        ("1.5h30m", false),
+        ("30s1m", false),
+        ("1s2s", false),
+        ("1ms1s", false),
+        ("1.s", false),
+        ("1.5555s", false),
+        ("1234567s", false),
+    ] {
+        assert_eq!(pattern.is_match(text), read, "pattern: {text}");
+        if read {
+            assert!(parse_duration(text).is_some(), "parser: {text}");
+        }
+    }
+}
+
+#[test]
 fn conditions_keep_their_transition_time() {
     let mut conditions = Vec::new();
     let earlier: Timestamp = "2026-10-22T07:00:00Z".parse().unwrap();

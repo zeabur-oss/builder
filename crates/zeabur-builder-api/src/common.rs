@@ -14,8 +14,9 @@ pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 /// Longest Kubernetes object name (DNS subdomain).
 pub const MAX_NAME: usize = 253;
 
-/// A Go duration as Kubernetes writes them, such as `90s`, `10m` or `1h30m`.
-pub const DURATION_PATTERN: &str = r"^([0-9]{1,6}(\.[0-9]{1,3})?(ms|s|m|h))+$";
+/// A duration such as `90s`, `10m` or `1h30m`: hours, minutes, seconds and milliseconds, largest
+/// first and each once, with a fraction only on the last. jiff reads all of it.
+pub const DURATION_PATTERN: &str = r"^(([0-9]{1,6}h)?([0-9]{1,6}m)?([0-9]{1,6}s)?[0-9]{1,6}(\.[0-9]{1,3})?ms|([0-9]{1,6}h)?([0-9]{1,6}m)?[0-9]{1,6}(\.[0-9]{1,3})?s|([0-9]{1,6}h)?[0-9]{1,6}(\.[0-9]{1,3})?m|[0-9]{1,6}(\.[0-9]{1,3})?h)$";
 
 /// What a build built from: a full commit SHA, or an archive's manifest digest.
 pub const REVISION_PATTERN: &str = "^([0-9a-f]{40}|sha256:[0-9a-f]{64})$";

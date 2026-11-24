@@ -67,6 +67,8 @@ kube_quantity = "0.9"
 pretty_assertions = "1"
 # Model APIs for the agent planner, with no bundled HTTP client: it sends through hyper-rustls.
 rig-core = { version = "=0.46.0", default-features = false }
+# Runs the CRD patterns against the parsers in tests.
+regex = { version = "1", default-features = false, features = ["std"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem", "crypto"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "logging", "tls12"] }
 rustls-native-certs = "0.8.5"
