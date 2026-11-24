@@ -152,11 +152,7 @@ async fn registry_token(args: RegistryTokenArgs) -> Result<String, Error> {
         .iter()
         .map(|r| (r.as_str(), access))
         .collect();
-    Ok(signer.token(
-        &grants,
-        jiff::Timestamp::now(),
-        args.ttl,
-    ))
+    Ok(signer.token(&grants, jiff::Timestamp::now(), args.ttl))
 }
 
 #[derive(Debug, Args)]
