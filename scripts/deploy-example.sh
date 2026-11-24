@@ -3,8 +3,8 @@
 # for a Build's image:
 #   scripts/deploy-example.sh <context> [[namespace/]build...]   # default: team-a/whoami
 # Environment:
-#   IMAGE_PREFIX, TAG     the images from scripts/build-images.sh (zeabur-builder, dev)
-#   K3D_CLUSTER           when set, imports the images into this k3d cluster first
+#   IMAGE_PREFIX, TAG     the images the cluster pulls (zeabur-builder, dev): those of
+#                         scripts/build-images.sh, or on k3d those that scripts/push-images.sh pushed
 #   IDLE                  seconds before an idle buildkitd scales to zero (600)
 #   NAMESPACES            build namespaces to create (team-a team-b)
 #   TIMEOUT               seconds to wait for the Builds (900); the first failed BuildRun stops
@@ -26,17 +26,6 @@ registry=registry.builder-registry.svc.cluster.local:5000
 
 k() { kubectl --context "$context" "$@"; }
 ensure_namespace() { k create namespace "$1" --dry-run=client -o yaml | k apply -f - >/dev/null; }
-
-# `docker exec` returns ctr's exit status (scripts/ci/patterns.sh, k3d-image-import).
-if [[ -n ${K3D_CLUSTER:-} ]]; then
-  images=("$prefix/builder:$tag" "$prefix/builder-job:$tag" "$prefix/builder-railpack:$tag")
-  nodes=$(docker ps --filter "label=k3d.cluster=$K3D_CLUSTER" --filter label=k3d.role=server --format '{{.Names}}'
-    docker ps --filter "label=k3d.cluster=$K3D_CLUSTER" --filter label=k3d.role=agent --format '{{.Names}}')
-  [[ -n $nodes ]] || { echo "k3d cluster $K3D_CLUSTER has no nodes" >&2; exit 1; }
-  for node in $nodes; do
-    docker image save "${images[@]}" | docker exec -i "$node" ctr image import --all-platforms -
-  done
-fi
 
 for ns in builder-system builder-registry "${namespaces[@]}"; do ensure_namespace "$ns"; done
 
