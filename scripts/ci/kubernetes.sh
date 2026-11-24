@@ -3,7 +3,8 @@
 # namespaces and a Railpack build, the ClusterBuilders' status, the two failures the samples make
 # on purpose, the isolation between the namespaces and the admission policy, an uploaded archive,
 # a rotation of the registry's CA, after the controller's tests that need a kube-apiserver. It creates the k3d
-# cluster `zeabur-builder` and deletes it when it ends; set ZEABUR_CI_KEEP=1 to keep it.
+# cluster `zeabur-builder` with a k3d registry, pushes the images there and deletes the cluster when it ends;
+# set ZEABUR_CI_KEEP=1 to keep it.
 # K3S_IMAGE picks the k3s release. K3D_REGISTRY_CONFIG passes a registries.yaml to k3d, such as
 # one with pull-through mirrors. ZEABUR_CI_IMAGE_TAG uses the images zeabur-builder/<name>:<tag>
 # already in Docker instead of building them (the release smoke).
@@ -31,7 +32,9 @@ start_cluster() {
   fi
   local registry=()
   [[ -z "${K3D_REGISTRY_CONFIG:-}" ]] || registry=(--registry-config "$K3D_REGISTRY_CONFIG")
-  k3d cluster create zeabur-builder --image "$k3s_image" --no-lb --wait --timeout 300s "${registry[@]}"
+  # The registry the images are pushed to (scripts/push-images.sh), as zeabur-builder-registry.
+  k3d cluster create zeabur-builder --image "$k3s_image" --no-lb --wait --timeout 300s \
+    --registry-create zeabur-builder-registry "${registry[@]}"
 }
 
 # Keeps the log of every Pod outside kube-system that ends, in $artifacts/pods/, while the job
@@ -143,9 +146,13 @@ start_cluster
 # The controller's tests that need a real kube-apiserver.
 cargo nextest run -p zeabur-builder --locked --run-ignored only --no-tests=fail
 [[ -n "${ZEABUR_CI_IMAGE_TAG:-}" ]] || ZEABUR_BUILDER_PROFILE=ci ./scripts/build-images.sh zeabur-builder ci
+# The images go to the cluster's registry under a tag of this run: the chart pulls with IfNotPresent.
+pushed="$tag-$(openssl rand -hex 4)"
+IMAGE_PREFIX=$(./scripts/push-images.sh zeabur-builder-registry zeabur-builder "$tag" "$pushed")
+export IMAGE_PREFIX
 start_collecting
 if ! {
-  TAG="$tag" K3D_CLUSTER=zeabur-builder ./scripts/deploy-example.sh k3d-zeabur-builder \
+  TAG="$pushed" ./scripts/deploy-example.sh k3d-zeabur-builder \
     team-a/whoami team-a/hello-python team-b/whoami &&
     kubectl -n team-a wait build/whoami --timeout 60s \
       --for 'jsonpath={.status.exposedPorts[0]}=80/tcp' &&
@@ -154,8 +161,8 @@ if ! {
       --for 'jsonpath={.status.conditions[?(@.type=="SourceReady")].reason}=RefNotFound' &&
     kubectl -n team-a wait buildrun -l builder.zeabur.com/build=no-such-dockerfile --timeout 600s \
       --for 'jsonpath={.status.phase}=Failed' &&
-    TAG="$tag" ./scripts/example-isolation.sh k3d-zeabur-builder &&
-    TAG="$tag" ./scripts/example-admission.sh k3d-zeabur-builder &&
+    TAG="$pushed" ./scripts/example-isolation.sh k3d-zeabur-builder &&
+    TAG="$pushed" ./scripts/example-admission.sh k3d-zeabur-builder &&
     ./scripts/example-archive.sh k3d-zeabur-builder &&
     ./scripts/example-registry-ca.sh k3d-zeabur-builder &&
     ./scripts/example-cache-size.sh k3d-zeabur-builder

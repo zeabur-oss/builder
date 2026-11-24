@@ -107,10 +107,17 @@ context:
 
 ```sh
 export KUBECONFIG=$(mktemp -d)/kubeconfig
-k3d cluster create zeabur-builder
+k3d cluster create zeabur-builder --registry-create zeabur-builder-registry
 scripts/build-images.sh zeabur-builder dev
-K3D_CLUSTER=zeabur-builder scripts/deploy-example.sh k3d-zeabur-builder team-a/whoami team-a/hello-python
+export TAG="dev-$(date +%s)"
+export IMAGE_PREFIX=$(scripts/push-images.sh zeabur-builder-registry zeabur-builder dev "$TAG")
+scripts/deploy-example.sh k3d-zeabur-builder team-a/whoami team-a/hello-python
 ```
+
+Load images into k3d through its registry, never with `k3d image import` or `ctr image import`:
+k3d 5.9.0 can report success for an import that never ran. `scripts/push-images.sh` pushes the
+images to the registry and prints the `IMAGE_PREFIX` the cluster pulls them by. Push each run under
+a new tag, as the chart's pull policy is `IfNotPresent`.
 
 `scripts/deploy-example.sh` starts the test registry in `deploy/examples/registry.yaml` with a
 new token key, creates the namespaces in `NAMESPACES` (default `team-a team-b`), installs the
