@@ -25,9 +25,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- /* The Secret with the registry's CA, <namespace>/<name>, or nothing when the registry has a public CA. */ -}}
 {{- define "builder.registryCA" -}}
-{{- with .Values.registry.caSecret -}}
-{{- if or .namespace .secret -}}
-{{ required "registry.caSecret.namespace is required with registry.caSecret.secret" .namespace }}/{{ required "registry.caSecret.secret is required with registry.caSecret.namespace" .secret }}
+{{- with .Values.registry.caSecretRef -}}
+{{- if or .namespace .name -}}
+{{ required "registry.caSecretRef.namespace is required with registry.caSecretRef.name" .namespace }}/{{ required "registry.caSecretRef.name is required with registry.caSecretRef.namespace" .name }}
 {{- end -}}
 {{- end -}}
 {{- end }}
@@ -39,8 +39,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 [{{ join ", " $items }}]
 {{- end }}
 
-{{- /* The registry token key as namespace/secret. The chart fails without both fields. */ -}}
+{{- /* The registry token key Secret as namespace/name. The chart fails without both fields. */ -}}
 {{- define "builder.tokenKey" -}}
-{{- $key := .Values.registry.tokenKey -}}
-{{ required "registry.tokenKey.namespace is required: the Secret whose tls.key signs registry tokens" $key.namespace }}/{{ required "registry.tokenKey.secret is required: the Secret whose tls.key signs registry tokens" $key.secret }}
+{{- $key := .Values.registry.tokenSecretRef -}}
+{{ required "registry.tokenSecretRef.namespace is required: the Secret whose tls.key signs registry tokens (registry.tokenKey before v0.3.0, with secret now name)" $key.namespace }}/{{ required "registry.tokenSecretRef.name is required: the Secret whose tls.key signs registry tokens" $key.name }}
 {{- end }}

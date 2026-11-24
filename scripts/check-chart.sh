@@ -7,8 +7,8 @@ set -euo pipefail
 chart="$(dirname "$0")/../deploy/chart"
 version=$(helm show chart "$chart" | yq .version)
 version=${version//./\\.}
-base=(--set registry.host=registry.example:5000 --set registry.tokenKey.namespace=zot
-  --set registry.tokenKey.secret=zot-token-signer)
+base=(--set registry.host=registry.example:5000 --set registry.tokenSecretRef.namespace=zot
+  --set registry.tokenSecretRef.name=zot-token-signer)
 
 helm lint --strict "$chart" "${base[@]}"
 helm lint --strict "$chart" "${base[@]}" --set webhooks.enabled=true \
@@ -81,7 +81,7 @@ fi
 digest=sha256:$(printf '0%.0s' {1..64})
 pinned=$(helm template builder "$chart" "${base[@]}" --set image.digest="$digest" \
   --set jobImage.digest="$digest" --set railpackImage.digest="$digest" \
-  --set registry.caSecret.namespace=zot --set registry.caSecret.secret=zot-tls \
+  --set registry.caSecretRef.namespace=zot --set registry.caSecretRef.name=zot-tls \
   --set 'admissionPolicy.extraImages[0]=example.com/planner:1' \
   --set registry.inCluster.namespace=zot --set registry.inCluster.podLabels.app=zot)
 require "$pinned" "pinned install" "image: \"ghcr.io/zeabur-oss/builder@$digest\"" \
@@ -113,15 +113,15 @@ require "$placed" "build node" '- "--build-node-selector=builder.zeabur.com/buil
 tokens=$plain
 require "$tokens" "registry tokens" 'value: "zot/zot-token-signer"$' 'namespace: zot$' \
   'resourceNames: \[zot-token-signer\]$' "request.namespace in \['default', 'zot'\]"
-for half in namespace secret; do
-  if helm template builder "$chart" "${base[@]}" --set "registry.caSecret.$half=x" >/dev/null 2>&1; then
-    echo "registry CA: the chart renders with registry.caSecret.$half alone" >&2
+for half in namespace name; do
+  if helm template builder "$chart" "${base[@]}" --set "registry.caSecretRef.$half=x" >/dev/null 2>&1; then
+    echo "registry CA: the chart renders with registry.caSecretRef.$half alone" >&2
     exit 1
   fi
 done
-for missing in "registry.tokenKey.namespace=" "registry.tokenKey.secret="; do
+for missing in "registry.tokenSecretRef.namespace=" "registry.tokenSecretRef.name="; do
   if err=$(helm template builder "$chart" --set registry.host=registry.example:5000 \
-    --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer \
+    --set registry.tokenSecretRef.namespace=zot --set registry.tokenSecretRef.name=zot-token-signer \
     --set "$missing" 2>&1); then
     echo "missing token key: the chart renders without ${missing%=}" >&2
     exit 1

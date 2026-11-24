@@ -38,11 +38,11 @@ kubectl version
 | 設定值 | 用途 |
 | --- | --- |
 | `registry.host` | 映像檔推送的目的地，路徑格式為 `<host>/<namespace>/<build>`。 |
-| `registry.tokenKey` | 必填。指定存放簽署金鑰的 Secret。registry 信任這把金鑰簽署的權杖。詳見 [Registry 權杖](../operations/registry-tokens.mdx)。 |
-| `registry.caSecret` | registry 使用私有憑證時，指定存放其 CA 的 Secret（`namespace`、`secret`、`key`）。控制器會把 CA 單獨發布到自己 Namespace 的 Secret `registry-ca`，所有已登入的使用者都能讀取。Secret 換上新的 CA 後，不必重新安裝就會生效。 |
+| `registry.tokenSecretRef` | 必填。指定存放簽署金鑰的 Secret。registry 信任這把金鑰簽署的權杖。詳見 [Registry 權杖](../operations/registry-tokens.mdx)。 |
+| `registry.caSecretRef` | registry 使用私有憑證時，指定存放其 CA 的 Secret（`namespace`、`name`、`key`）。控制器會把 CA 單獨發布到自己 Namespace 的 Secret `registry-ca`，所有已登入的使用者都能讀取。Secret 換上新的 CA 後，不必重新安裝就會生效。 |
 | `registry.inCluster` | registry 在叢集內執行時，指定它的 Namespace、Pod 標籤與連接埠，讓對外連線政策允許 buildkitd 存取 registry。 |
 
-缺少 `registry.tokenKey.namespace` 或 `registry.tokenKey.secret` 時，chart 無法安裝或渲染。
+缺少 `registry.tokenSecretRef.namespace` 或 `registry.tokenSecretRef.name` 時，chart 無法安裝或渲染。
 
 控制器需要連線到 registry 才能刪除儲存庫。registry 所在 Namespace 的 NetworkPolicy 也必須允許這項連線。控制器有哪些權限，請參考[控制器的權限](../operations/controller-permissions.mdx)。
 
@@ -52,13 +52,13 @@ kubectl version
 cat > builder-values.yaml <<'EOF'
 registry:
   host: registry.example.com
-  tokenKey:
+  tokenSecretRef:
     namespace: registry
-    secret: registry-token-signer
+    name: registry-token-signer
 EOF
 ```
 
-把 `registry` 和 `registry-token-signer` 換成你在 `registry.tokenKey` 填的值，確認存放簽署金鑰的 Secret 存在：
+把 `registry` 和 `registry-token-signer` 換成你在 `registry.tokenSecretRef` 填的值，確認存放簽署金鑰的 Secret 存在：
 
 ```sh
 kubectl -n registry get secret registry-token-signer
@@ -129,10 +129,10 @@ clusterbuilder.builder.zeabur.com/railpack condition met
 ```sh
 helm install builder oci://ghcr.io/zeabur-oss/charts/zeabur-builder --version <version> \
   -n builder-system --create-namespace --set registry.host=zot.zot.svc:5000 \
-  --set registry.caSecret.namespace=zot --set registry.caSecret.secret=zot-tls \
+  --set registry.caSecretRef.namespace=zot --set registry.caSecretRef.name=zot-tls \
   --set registry.inCluster.namespace=zot \
   --set registry.inCluster.podLabels.app\\.kubernetes\\.io/name=zot \
-  --set registry.tokenKey.namespace=zot --set registry.tokenKey.secret=zot-token-signer
+  --set registry.tokenSecretRef.namespace=zot --set registry.tokenSecretRef.name=zot-token-signer
 ```
 
 安裝後，用上面的方式確認安裝結果。
