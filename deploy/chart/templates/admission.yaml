@@ -108,7 +108,7 @@ spec:
   validations:
     - expression: request.namespace == '{{ .Release.Namespace }}'
       message: the controller creates StatefulSets only in its own namespace
-    - expression: variables.containers.all(c, c.image == '{{ .Values.buildkitdImage }}')
+    - expression: variables.containers.all(c, c.image == '{{ include "builder.pinnedImage" .Values.buildkitdImage }}')
       message: a buildkitd StatefulSet runs only buildkitdImage
     - expression: >-
         !(has(variables.pod.hostNetwork) && variables.pod.hostNetwork) &&

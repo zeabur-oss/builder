@@ -24,8 +24,12 @@ railpackImage:
   tag: ""
   digest: ""
 
-# The Railpack frontend. Its version must match the railpack in railpackImage.
-railpackFrontend: ghcr.io/railwayapp/railpack-frontend:v0.43.0
+# The Railpack frontend, tag and optional digest. Its version must match the railpack in
+# railpackImage.
+railpackFrontend:
+  repository: ghcr.io/railwayapp/railpack-frontend
+  tag: v0.43.0
+  digest: ""
 
 # The `agent` ClusterBuilder: a model writes the Dockerfile for a repository that has none. Its
 # planner runs from jobImage. Each Build's namespace needs the Secret or the ServiceAccount auth
@@ -45,7 +49,10 @@ agent:
   auth: {}
 
 # Each namespace's buildkitd, rootful. The admission policy below allows only this image.
-buildkitdImage: docker.io/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+buildkitdImage:
+  repository: docker.io/moby/buildkit
+  tag: v0.34.2
+  digest: sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
 # A ValidatingAdmissionPolicy that limits what the controller's ServiceAccount may create: Jobs
 # only in the shape of a build Job, and StatefulSets only with buildkitdImage, in this namespace.
@@ -145,8 +152,10 @@ resources:
 githubApp:
   # The App's Secret and the ConfigMap that grants installations to namespaces, both in this
   # namespace. Create them with `zeabur-builder github-app create`.
-  secretName: github-app
-  grantsName: github-app-installations
+  secretRef:
+    name: github-app
+  grantsConfigMapRef:
+    name: github-app-installations
 
 webhooks:
   # Off by default: no listener, no Service, no route.
@@ -164,8 +173,9 @@ webhooks:
     className: ""
     host: ""
     annotations: {}
-    # Name of a TLS Secret for the host; none means plain HTTP at the Ingress.
-    tlsSecretName: ""
+    # The TLS Secret for the host; no name means plain HTTP at the Ingress.
+    tls:
+      secretName: ""
   httpRoute:
     enabled: false
     parentRefs: []

@@ -1,3 +1,4 @@
+{{- include "builder.renamedValues" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,9 +24,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - controller
-            - --github-app-secret={{ .Values.githubApp.secretName }}
-            - --github-app-grants={{ .Values.githubApp.grantsName }}
-            - --buildkitd-image={{ .Values.buildkitdImage }}
+            - --github-app-secret={{ .Values.githubApp.secretRef.name }}
+            - --github-app-grants={{ .Values.githubApp.grantsConfigMapRef.name }}
+            - --buildkitd-image={{ include "builder.pinnedImage" .Values.buildkitdImage }}
             - --buildkitd-cpu-request={{ .Values.buildkitd.resources.requests.cpu }}
             - --buildkitd-memory-request={{ .Values.buildkitd.resources.requests.memory }}
             - --buildkitd-cpu-limit={{ .Values.buildkitd.resources.limits.cpu }}
