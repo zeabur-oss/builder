@@ -30,7 +30,8 @@ check() {
     echo "WRONG $what (expected $want, got $got)"
     failures=$((failures + 1))
   fi
-  sed -e 's/^/      /' "$out" | tail -n "${LINES_SHOWN:-4}"
+  local line
+  tail -n "${LINES_SHOWN:-4}" "$out" | while IFS= read -r line; do echo "      $line"; done
 }
 
 cleanup() {
@@ -161,9 +162,10 @@ check fail "a push without a token is refused" \
   build_in "$b" "--output type=image,name=$registry/$b/probe:isolation,push=true" "FROM busybox:1.38.0"
 
 echo "== RUN network"
-reach() { echo "wget -S -T 10 -O /dev/null $1 2>&1 | grep -q HTTP/"; }
+# Any HTTP answer counts, a 404 too: the step reached the server.
+reach() { echo "case \$(wget -S -T 10 -O /dev/null $1 2>&1) in *HTTP/*) ;; *) exit 1 ;; esac"; }
 run_step() { build "" "FROM busybox:1.38.0
-RUN ip -4 addr show eth0 | grep inet; $1"; }
+RUN ip -4 -o addr show eth0; $1"; }
 LINES_SHOWN=2 check pass "RUN has its own network namespace and reaches the internet" \
   run_step "$(reach https://example.com)"
 check pass "RUN reaches the registry" \

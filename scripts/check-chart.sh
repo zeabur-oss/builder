@@ -5,7 +5,7 @@
 set -euo pipefail
 
 chart="$(dirname "$0")/../deploy/chart"
-version=$(helm show chart "$chart" | sed -n 's/^version: *\(.*\)$/\1/p')
+version=$(helm show chart "$chart" | yq .version)
 version=${version//./\\.}
 base=(--set registry.host=registry.example:5000 --set registry.tokenKey.namespace=zot
   --set registry.tokenKey.secret=zot-token-signer)
@@ -17,7 +17,7 @@ helm lint --strict "$chart" "${base[@]}" --set webhooks.enabled=true \
   --set webhooks.httpRoute.enabled=true --set 'webhooks.httpRoute.parentRefs[0].name=gateway'
 
 off=$(helm template builder "$chart" "${base[@]}" --set webhooks.ingress.enabled=true)
-if grep -qE 'kind: (Service|Ingress|HTTPRoute)$|--webhook-addr' <<<"$off"; then
+if rg -q 'kind: (Service|Ingress|HTTPRoute)$|--webhook-addr' <<<"$off"; then
   echo "webhooks are exposed although webhooks.enabled is false" >&2
   exit 1
 fi
@@ -26,7 +26,7 @@ on=$(helm template builder "$chart" "${base[@]}" --set webhooks.enabled=true \
   --set webhooks.path=/git/ --set webhooks.ingress.enabled=true \
   --set webhooks.ingress.host=hooks.example.com)
 for want in 'kind: Ingress' '--webhook-path=/git$' 'path: /git/$' 'host: "hooks.example.com"'; do
-  if ! grep -qE -- "$want" <<<"$on"; then
+  if ! rg -q -- "$want" <<<"$on"; then
     echo "the enabled chart lacks $want" >&2
     exit 1
   fi
@@ -35,7 +35,7 @@ require() { # $1 = rendered chart, $2 = what is checked, then patterns it must h
   local out=$1 what=$2
   shift 2
   for want in "$@"; do
-    if ! grep -qE -- "$want" <<<"$out"; then
+    if ! rg -q -- "$want" <<<"$out"; then
       echo "$what: the chart lacks $want" >&2
       exit 1
     fi
@@ -52,12 +52,12 @@ require "$plain" "default install" 'name: dockerfile$' 'name: railpack$' 'name: 
   '--job-memory-request=128Mi$' '--job-memory-limit=512Mi$' \
   '--max-concurrent-builds=1$' '--max-cluster-builds=1$' "c.image == 'docker.io/moby/buildkit:" \
   "request.namespace in \['default', 'zot'\]"
-if grep -qE '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)|registry-ca' <<<"$plain"; then
+if rg -q '^\s+\[registry\.|ZEABUR_BUILDER_REGISTRY_(CA|HTTP)|registry-ca' <<<"$plain"; then
   echo "default install: the chart sets registry http or a CA that nobody asked for" >&2
   exit 1
 fi
 
-if grep -q 'name: agent$' <<<"$plain"; then
+if rg -q 'name: agent$' <<<"$plain"; then
   echo "default install: the chart installs the agent builder that nobody asked for" >&2
   exit 1
 fi
@@ -92,7 +92,7 @@ require "$pinned" "pinned install" "image: \"ghcr.io/zeabur-oss/builder@$digest\
   'name: "system:authenticated"' \
   "c.image in \['ghcr.io/zeabur-oss/builder-job@$digest', 'ghcr.io/zeabur-oss/builder-railpack@$digest', 'example.com/planner:1'\]" \
   "request.namespace in \['default', 'zot'\]"
-if grep -q -- '--buildkitd-.*-max' <<<"$plain"; then
+if rg -q -- '--buildkitd-.*-max' <<<"$plain"; then
   echo "default install: the chart sets a build ceiling that nobody asked for" >&2
   exit 1
 fi
@@ -101,7 +101,7 @@ ceiling=$(helm template builder "$chart" "${base[@]}" --set buildkitd.resources.
 require "$ceiling" "build ceiling" '--buildkitd-cpu-max=4$' '--buildkitd-memory-max=8Gi$'
 http=$(helm template builder "$chart" "${base[@]}" --set registry.http=true)
 require "$http" "plain HTTP registry" 'http = true$' 'name: ZEABUR_BUILDER_REGISTRY_HTTP, value: "true"'
-if grep -qE -- '--build-(node-selector|toleration)' <<<"$plain"; then
+if rg -q -- '--build-(node-selector|toleration)' <<<"$plain"; then
   echo "default install: the chart places builds although builds is empty" >&2
   exit 1
 fi
@@ -126,7 +126,7 @@ for missing in "registry.tokenKey.namespace=" "registry.tokenKey.secret="; do
     echo "missing token key: the chart renders without ${missing%=}" >&2
     exit 1
   fi
-  if ! grep -qF "${missing%=} is required" <<<"$err"; then
+  if ! rg -qF -- "${missing%=} is required" <<<"$err"; then
     echo "missing token key: the error does not name ${missing%=}" >&2
     exit 1
   fi

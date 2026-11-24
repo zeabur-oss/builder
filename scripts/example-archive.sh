@@ -70,9 +70,9 @@ printf 'FROM busybox:1.38.0\nCOPY hello.txt /hello.txt\nCMD ["cat", "/hello.txt"
 tar -czf app.tar.gz -C app .
 printf '{}' > config.json
 blob() { # $1 = file; prints its digest
-  digest="sha256:$(sha256sum "$1" | cut -d' ' -f1)"
-  location=$(curl -fsS -H "$AUTH" -X POST -o /dev/null -D - "$BASE/v2/$REPO/blobs/uploads/" |
-    tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+  sum=$(sha256sum "$1")
+  digest="sha256:${sum%% *}"
+  location=$(curl -fsS -H "$AUTH" -X POST -o /dev/null -w '%header{location}' "$BASE/v2/$REPO/blobs/uploads/")
   case $location in /*) location="$BASE$location" ;; esac
   case $location in *\?*) sep='&' ;; *) sep='?' ;; esac
   curl -fsS -H "$AUTH" -X PUT -H 'Content-Type: application/octet-stream' \
@@ -86,10 +86,11 @@ printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+js
   "$config" "$layer" "$size" > manifest.json
 curl -fsS -H "$AUTH" -X PUT -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' \
   --data-binary @manifest.json "$BASE/v2/$REPO/manifests/upload-$(date +%s)" -o /dev/null
-echo "digest=sha256:$(sha256sum manifest.json | cut -d' ' -f1)"
+sum=$(sha256sum manifest.json)
+echo "digest=sha256:${sum%% *}"
 EOF
 )
-digest=$(sed -n 's/^digest=//p' <<<"$push")
+digest=${push##*digest=}
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || {
   echo "the push printed no digest: $push" >&2
   exit 1
@@ -103,7 +104,7 @@ refused() { # $1 = what, then the manifest on stdin
   if out=$(k apply --dry-run=server -f - 2>&1); then
     wrong "$1 is admitted"
   else
-    ok "$1 is refused: $(grep -oE 'set exactly one[^"]*|an archive source has no webhook trigger|should match [^"]*' <<<"$out" | head -n1)"
+    ok "$1 is refused: $(rg -o 'set exactly one[^"]*|an archive source has no webhook trigger|should match [^"]*' <<<"$out" | head -n1)"
   fi
 }
 build "$a" app "{type: git, git: {url: https://github.com/traefik/whoami}, archive: {digest: $digest}}" |
@@ -174,15 +175,15 @@ status() { # $1 = path below /v2/
 }
 tagged() { # $1 = repository; succeeds when it has a tag. Zot answers [] or 404 for none.
   # shellcheck disable=SC2016 # expanded in the Pod
-  check sh -c 'curl -s -H "$AUTH" "$BASE/v2/$0/tags/list"' "$1" | grep -q '"tags":\["'
+  check sh -c 'curl -s -H "$AUTH" "$BASE/v2/$0/tags/list"' "$1" | jq -e '.tags | length > 0' >/dev/null
 }
 
 # An image someone pushed to a path of the Build layout, before any Build of that name.
 check env "REPO=$a/handmade" sh -eu -s <<'EOF'
 cd /tmp && printf '{}' > empty
-digest="sha256:$(sha256sum empty | cut -d' ' -f1)"
-location=$(curl -fsS -H "$AUTH" -X POST -o /dev/null -D - "$BASE/v2/$REPO/blobs/uploads/" |
-  tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+sum=$(sha256sum empty)
+digest="sha256:${sum%% *}"
+location=$(curl -fsS -H "$AUTH" -X POST -o /dev/null -w '%header{location}' "$BASE/v2/$REPO/blobs/uploads/")
 case $location in /*) location="$BASE$location" ;; esac
 case $location in *\?*) sep='&' ;; *) sep='?' ;; esac
 curl -fsS -H "$AUTH" -X PUT -H 'Content-Type: application/octet-stream' \

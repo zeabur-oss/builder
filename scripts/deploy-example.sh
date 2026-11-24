@@ -57,8 +57,9 @@ if ! k -n builder-registry get secret zot-tls >/dev/null 2>&1; then
 fi
 k apply -f "$manifests/registry.yaml"
 # A changed config needs a restart.
+config_sum=$(sha256sum "$manifests/registry.yaml")
 k -n builder-registry patch deployment registry --type merge -p \
-  "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"zot-config\":\"$(sha256sum "$manifests/registry.yaml" | cut -c1-16)\"}}}}}"
+  "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"zot-config\":\"${config_sum:0:16}\"}}}}}"
 
 # Helm installs the CRDs only on the first install; a rerun applies them itself.
 if helm --kube-context "$context" -n builder-system status builder >/dev/null 2>&1; then
