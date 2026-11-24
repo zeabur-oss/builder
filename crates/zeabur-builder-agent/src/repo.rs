@@ -541,8 +541,8 @@ mod tests {
             "id_rsa".to_owned(),
             "id_ecdsa.pub".to_owned(),
             "deploy/id_ed25519".to_owned(),
-            ".env.example/tls.key".to_owned(),
-            ".env.template/.env".to_owned(),
+            "nested/.env.example/tls.key".to_owned(),
+            "nested/.env.template/.env".to_owned(),
         ];
         let mut shown = Vec::new();
         for rule in BUILD_IGNORE.lines() {
