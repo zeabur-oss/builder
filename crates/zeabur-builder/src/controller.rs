@@ -1035,34 +1035,39 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
                     finished.reason,
                     Some(Reason::BuildFailed | Reason::InfraError)
                 )
-                && daemon_out_of_memory(&ctx, &finished).await?
+                && let Some(message) = daemon_out_of_memory(&ctx, &namespace, &finished).await?
             {
                 finished.reason = Some(Reason::OutOfMemory);
-                finished.message = Some(
-                    "buildkitd was killed for using more memory than its limit; raise \
-                     builder.zeabur.com/build-memory on the namespace or the controller's \
-                     --buildkitd-memory-limit"
-                        .to_owned(),
-                );
+                finished.message = Some(message);
             }
             finish(&ctx, &run, finished).await
         }
     }
 }
 
-/// Whether the run's buildkitd was killed for its memory since the run started.
+/// Why the run failed, if its buildkitd was killed for its memory since the run started.
 async fn daemon_out_of_memory(
     ctx: &Context,
+    namespace: &str,
     status: &BuildRunStatus,
-) -> Result<bool, ControllerError> {
+) -> Result<Option<String>, ControllerError> {
     let Some(pod) = &status.buildkitd_instance else {
-        return Ok(false);
+        return Ok(None);
     };
     let since = status.start_time;
     let pod = Api::<Pod>::namespaced(ctx.client.clone(), &ctx.settings.daemon.namespace)
         .get_opt(pod)
         .await?;
-    Ok(pod.is_some_and(|p| decide::oom_killed(&p, since)))
+    let Some(pod) = pod.filter(|p| decide::oom_killed(p, since)) else {
+        return Ok(None);
+    };
+    let limits = namespace_limits(ctx, namespace).await?;
+    let wanted = daemon::memory_limit(&ctx.settings.daemon, namespace, &limits);
+    Ok(Some(decide::daemon_out_of_memory(
+        daemon::pod_memory_limit(&pod),
+        wanted.as_deref(),
+        ctx.settings.daemon.idle_after,
+    )))
 }
 
 async fn finish(

@@ -884,6 +884,38 @@ pub(crate) fn oom_killed(pod: &Pod, since: Option<Timestamp>) -> bool {
         })
 }
 
+/// Why a run failed when its buildkitd was killed for its memory. `running` is that daemon's
+/// memory limit, `wanted` the limit a new daemon of the namespace gets, and `idle` how long a
+/// daemon waits before it scales to zero and is replaced with new settings.
+pub(crate) fn daemon_out_of_memory(
+    running: Option<&str>,
+    wanted: Option<&str>,
+    idle: Duration,
+) -> String {
+    let idle = SignedDuration::try_from(idle).map_or_else(
+        |_| format!("{}s", idle.as_secs()),
+        |idle| format!("{idle:#}"),
+    );
+    let applies =
+        format!("A new limit applies once buildkitd has been idle for {idle} and is replaced.");
+    match (running, wanted) {
+        (Some(running), Some(wanted))
+            if zeabur_builder_jobspec::buildkitd::exceeds(wanted, running) =>
+        {
+            format!(
+                "buildkitd was killed for using more memory than its limit; it still has the old \
+                 limit of {running}, and the namespace's settings give a new buildkitd {wanted}. \
+                 {applies}"
+            )
+        }
+        _ => format!(
+            "buildkitd was killed for using more memory than its limit; raise \
+             builder.zeabur.com/build-memory on the namespace or the controller's \
+             --buildkitd-memory-limit. {applies}"
+        ),
+    }
+}
+
 fn last_activity(run: &BuildRun) -> Option<Timestamp> {
     let created = run.metadata.creation_timestamp.as_ref().map(|t| t.0);
     let completed = run.status.as_ref().and_then(|s| s.completion_time);

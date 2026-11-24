@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{Namespace, Pod};
+use k8s_openapi::api::core::v1::{Namespace, Pod, PodSpec};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, Preconditions};
 use kube::runtime::reflector::Store;
 use kube::{Client, ResourceExt as _};
@@ -89,6 +89,34 @@ fn inputs<'a>(
         builds: limits.concurrent,
         registry_ca,
     }
+}
+
+/// The memory limit a new buildkitd of `namespace` gets with `limits`.
+pub(crate) fn memory_limit(
+    settings: &Settings,
+    namespace: &str,
+    limits: &decide::Limits,
+) -> Option<String> {
+    let daemon = buildkitd::daemon(&inputs(settings, namespace, "", limits, None));
+    let pod = daemon.stateful_set.spec?.template.spec?;
+    container_memory_limit(&pod).map(str::to_owned)
+}
+
+/// The memory limit of a running buildkitd Pod.
+pub(crate) fn pod_memory_limit(pod: &Pod) -> Option<&str> {
+    container_memory_limit(pod.spec.as_ref()?)
+}
+
+fn container_memory_limit(pod: &PodSpec) -> Option<&str> {
+    pod.containers
+        .iter()
+        .find(|c| c.name == "buildkitd")?
+        .resources
+        .as_ref()?
+        .limits
+        .as_ref()?
+        .get("memory")
+        .map(|q| q.0.as_str())
 }
 
 async fn apply<K>(client: &Client, namespace: &str, object: &K) -> Result<K, kube::Error>
