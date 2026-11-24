@@ -85,10 +85,10 @@ impl Secret {
             Self::Name(name) => format!("**/{name}"),
             Self::Prefix(prefix) => format!("**/{prefix}*"),
             Self::Extension(extension) => {
-                let any_case: String = extension
-                    .chars()
-                    .map(|c| format!("[{}{}]", c.to_ascii_lowercase(), c.to_ascii_uppercase()))
-                    .collect();
+                let mut any_case = String::new();
+                for c in extension.chars() {
+                    any_case.extend(['[', c.to_ascii_lowercase(), c.to_ascii_uppercase(), ']']);
+                }
                 format!("**/*.{any_case}")
             }
         }
@@ -500,10 +500,13 @@ mod tests {
         ];
         let mut shown = Vec::new();
         for rule in BUILD_IGNORE.lines() {
-            let (pattern, list) = match rule.strip_prefix('!') {
-                Some(pattern) => (pattern, &mut shown),
-                None => (rule, &mut refused),
+            let kept = rule.strip_prefix('!');
+            let list = if kept.is_some() {
+                &mut shown
+            } else {
+                &mut refused
             };
+            let pattern = kept.unwrap_or(rule);
             for pick in [0, 1] {
                 list.push(example(&pattern.replace("**/", "app/"), pick));
             }
