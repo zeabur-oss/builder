@@ -844,15 +844,15 @@ fn fits_its_pod(filler: &str) {
     }
 }
 
-/// A temporary directory where [`FETCH_SCRIPT`] runs with `git` from `PATH`.
+/// A directory under the workspace's `target/` where [`FETCH_SCRIPT`] runs with `git` from `PATH`.
 struct FetchDir(std::path::PathBuf);
 
 impl FetchDir {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "zeabur-builder-jobspec-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/tmp")).join(
+                format!("zeabur-builder-jobspec-{name}-{}", std::process::id()),
+            );
         drop(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         Self(dir)
