@@ -1035,27 +1035,22 @@ async fn reconcile_run(run: Arc<BuildRun>, ctx: Arc<Context>) -> Result<Action, 
                     finished.reason,
                     Some(Reason::BuildFailed | Reason::InfraError)
                 )
-                && let Some(buildkitd) = daemon_out_of_memory(&ctx, &finished).await?
+                && let Some(message) = daemon_out_of_memory(&ctx, &namespace, &finished).await?
             {
-                let limits = namespace_limits(&ctx, &namespace).await?;
-                let wanted = daemon::memory_limit(&ctx.settings.daemon, &namespace, &limits);
                 finished.reason = Some(Reason::OutOfMemory);
-                finished.message = Some(decide::daemon_out_of_memory(
-                    daemon::pod_memory_limit(&buildkitd),
-                    wanted.as_deref(),
-                    ctx.settings.daemon.idle_after,
-                ));
+                finished.message = Some(message);
             }
             finish(&ctx, &run, finished).await
         }
     }
 }
 
-/// The run's buildkitd Pod, if it was killed for its memory since the run started.
+/// Why the run failed, if its buildkitd was killed for its memory since the run started.
 async fn daemon_out_of_memory(
     ctx: &Context,
+    namespace: &str,
     status: &BuildRunStatus,
-) -> Result<Option<Pod>, ControllerError> {
+) -> Result<Option<String>, ControllerError> {
     let Some(pod) = &status.buildkitd_instance else {
         return Ok(None);
     };
@@ -1063,7 +1058,16 @@ async fn daemon_out_of_memory(
     let pod = Api::<Pod>::namespaced(ctx.client.clone(), &ctx.settings.daemon.namespace)
         .get_opt(pod)
         .await?;
-    Ok(pod.filter(|p| decide::oom_killed(p, since)))
+    let Some(pod) = pod.filter(|p| decide::oom_killed(p, since)) else {
+        return Ok(None);
+    };
+    let limits = namespace_limits(ctx, namespace).await?;
+    let wanted = daemon::memory_limit(&ctx.settings.daemon, namespace, &limits);
+    Ok(Some(decide::daemon_out_of_memory(
+        daemon::pod_memory_limit(&pod),
+        wanted.as_deref(),
+        ctx.settings.daemon.idle_after,
+    )))
 }
 
 async fn finish(
