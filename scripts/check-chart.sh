@@ -138,6 +138,29 @@ placed=$(helm template builder "$chart" "${base[@]}" \
   --set-json 'builds.tolerations=[{"key":"builder.zeabur.com/builds","operator":"Equal","value":"true","effect":"NoSchedule"}]')
 require "$placed" "build node" '- "--build-node-selector=builder.zeabur.com/builds=true"$' \
   '- "--build-toleration=\{\\"effect\\":\\"NoSchedule\\",\\"key\\":\\"builder.zeabur.com/builds\\",\\"operator\\":\\"Equal\\",\\"value\\":\\"true\\"\}"$'
+controller() { # $1 = rendered chart: the controller's Pod spec and metadata
+  yq 'select(.kind == "Deployment" and .metadata.name == "zeabur-builder") | .spec.template' <<<"$1"
+}
+if controller "$plain" | rg -q '^\s+(annotations|imagePullSecrets|nodeSelector|tolerations|affinity):'; then
+  echo "default install: the controller's Pod has settings that nobody asked for" >&2
+  exit 1
+fi
+require "$(controller "$plain")" "controller Pod defaults" 'runAsNonRoot: true$' 'type: RuntimeDefault$'
+pod=$(helm template builder "$chart" "${base[@]}" \
+  --set-json 'imagePullSecrets=[{"name":"mirror"}]' \
+  --set-json 'podLabels={"team":"builds","app.kubernetes.io/name":"other"}' \
+  --set podAnnotations.note=kept --set-json 'podSecurityContext={"runAsUser":2000}' \
+  --set-json 'nodeSelector={"pool":"system"}' \
+  --set-json 'tolerations=[{"key":"system","operator":"Exists"}]' \
+  --set-json 'affinity={"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"zone","operator":"In","values":["a"]}]}]}}}')
+pod=$(controller "$pod")
+require "$pod" "controller Pod values" '^\s+- name: mirror$' 'team: builds$' \
+  'app.kubernetes.io/name: zeabur-builder$' 'note: kept$' 'runAsUser: 2000$' 'pool: system$' \
+  'key: system$' 'key: zone$'
+if rg -q 'app.kubernetes.io/name: other$' <<<"$pod"; then
+  echo "controller Pod values: podLabels replaced a selector label" >&2
+  exit 1
+fi
 tokens=$plain
 require "$tokens" "registry tokens" 'value: "zot/zot-token-signer"$' 'namespace: zot$' \
   'resourceNames: \[zot-token-signer\]$' "request.namespace in \['default', 'zot'\]"
