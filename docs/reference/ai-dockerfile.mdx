@@ -113,9 +113,9 @@ The tool picks the Dockerfile in this order and stops at the first that applies:
 
 ## Use a service account token instead of an API key
 
-With Anthropic and OpenAI, the tool can exchange a Kubernetes service account token for a short-lived access token, so the cluster stores no API key. This is workload identity federation ([Anthropic](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation), [OpenAI](https://developers.openai.com/api/docs/guides/workload-identity-federation)). The tool reads the same variables as the provider's SDKs. When `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set, the tool uses the key instead.
+With Anthropic, OpenAI and Azure OpenAI, the tool can exchange a Kubernetes service account token for a short-lived access token, so the cluster stores no API key. This is workload identity federation ([Anthropic](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation), [OpenAI](https://developers.openai.com/api/docs/guides/workload-identity-federation), [Microsoft Entra](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-create-trust)). The tool reads the same variables as the provider's SDKs. When `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_API_KEY` or `AZURE_TOKEN` is set, the tool uses the key instead.
 
-These steps work for a cluster whose service account issuer cannot be reached from the internet, such as a default k3s cluster.
+For Anthropic and OpenAI, these steps work for a cluster whose service account issuer cannot be reached from the internet, such as a default k3s cluster. Microsoft Entra fetches the keys from the issuer itself, so for Azure OpenAI the issuer must be reachable from the internet first.
 
 For the `agent` builder, do the first two steps, then follow [Build a repository without a Dockerfile](../builds/no-dockerfile.mdx) instead of the third: the builder mounts the token and sets the variables.
 
@@ -130,21 +130,25 @@ kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
 kubectl get --raw /openid/v1/jwks
 ```
 
+For Azure OpenAI, serve these two documents over HTTPS at `<issuer>/.well-known/openid-configuration` and `<issuer>/openid/v1/jwks`, at an issuer URL that the internet can reach ([self-managed clusters](https://azure.github.io/azure-workload-identity/docs/installation/self-managed-clusters/oidc-issuer.html)). Then make the cluster sign tokens with that issuer: on k3s, start the server with `--kube-apiserver-arg=service-account-issuer=<issuer>` and `--kube-apiserver-arg=service-account-jwks-uri=<issuer>/openid/v1/jwks`, and copy both documents again. A cluster with a public issuer already, such as most managed clusters, skips this.
+
 </Step>
 
 <Step>
 
 ### Register the cluster with the provider
 
-| | Anthropic | OpenAI |
-| --- | --- | --- |
-| Where | Console: an issuer, a service account and a federation rule | Organization settings, Security: a workload identity provider and a mapping |
-| Issuer | The issuer from the last step | The issuer from the last step |
-| Keys | Inline JWKS: the `keys` array | Uploaded JWKS: the whole object |
-| Audience | `https://api.anthropic.com` | `https://api.openai.com/v1` |
-| Subject | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` |
+| | Anthropic | OpenAI | Azure OpenAI |
+| --- | --- | --- | --- |
+| Where | Console: an issuer, a service account and a federation rule | Organization settings, Security: a workload identity provider and a mapping | Microsoft Entra admin center: an app registration or a user-assigned managed identity, then Federated credentials, scenario "Kubernetes accessing Azure resources" |
+| Issuer | The issuer from the last step | The issuer from the last step | The published issuer from the last step |
+| Keys | Inline JWKS: the `keys` array | Uploaded JWKS: the whole object | None: Entra reads them from the issuer |
+| Audience | `https://api.anthropic.com` | `https://api.openai.com/v1` | `api://AzureADTokenExchange` |
+| Subject | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` | `system:serviceaccount:<namespace>:<name>` |
 
-The provider keeps a copy of the keys. Before the cluster rotates its service account signing key, upload the new JWKS to the provider. For Anthropic, a rule with the `workspace:inference` scope is enough.
+Anthropic and OpenAI keep a copy of the keys. Before the cluster rotates its service account signing key, upload the new JWKS to the provider. For Anthropic, a rule with the `workspace:inference` scope is enough.
+
+For Azure OpenAI, also give the app registration or managed identity the Cognitive Services OpenAI User role on the Azure OpenAI resource. The resource needs a custom subdomain ([Microsoft Entra ID authentication](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/managed-identity)). Run the tool with `--provider azure.openai`, the deployment name as `--model` and `--base-url https://<resource>.openai.azure.com`.
 
 </Step>
 
@@ -184,6 +188,7 @@ spec:
 | --- | --- |
 | Anthropic | `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_IDENTITY_TOKEN_FILE`. Add `ANTHROPIC_WORKSPACE_ID` when the rule has several workspaces. `ANTHROPIC_SERVICE_ACCOUNT_ID` is optional. |
 | OpenAI | `OPENAI_IDENTITY_PROVIDER_ID`, `OPENAI_SERVICE_ACCOUNT_ID`, `OPENAI_IDENTITY_TOKEN_FILE` |
+| Azure OpenAI | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_FEDERATED_TOKEN_FILE`. Outside Azure's public cloud, set `AZURE_AUTHORITY_HOST`. |
 
 </Step>
 

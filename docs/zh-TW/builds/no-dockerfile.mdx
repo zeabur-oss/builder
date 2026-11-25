@@ -59,7 +59,7 @@ spec:
 
 ## 不用 API 金鑰登入
 
-使用 Anthropic 與 OpenAI 時，run 可以拿 Kubernetes 服務帳戶權杖換取短效存取權杖，Namespace 裡就不必存放 API 金鑰。先依照 [用 AI 寫 Dockerfile](../reference/ai-dockerfile.mdx) 裡「用服務帳戶權杖取代 API 金鑰」一節，向供應商登記叢集。subject 填 `system:serviceaccount:<namespace>:builder-agent`。
+使用 Anthropic、OpenAI 與 Azure OpenAI 時，run 可以拿 Kubernetes 服務帳戶權杖換取短效存取權杖，Namespace 裡就不必存放 API 金鑰。先依照 [用 AI 寫 Dockerfile](../reference/ai-dockerfile.mdx) 裡「用服務帳戶權杖取代 API 金鑰」一節，向供應商登記叢集。subject 填 `system:serviceaccount:<namespace>:builder-agent`。
 
 在每個有 Build 使用 `agent` 建置器的 Namespace 建立這個 ServiceAccount：
 
@@ -95,6 +95,22 @@ agent:
       serviceAccountName: builder-agent
       identityProviderId: …
       serviceAccountId: …
+```
+
+使用 Azure OpenAI 時，`model` 填部署名稱，`baseUrl` 填資源的端點：
+
+```yaml
+agent:
+  enabled: true
+  provider: azure.openai
+  model: gpt-5.5
+  baseUrl: https://<resource>.openai.azure.com
+  auth:
+    type: azureFederation
+    azureFederation:
+      serviceAccountName: builder-agent
+      tenantId: …
+      clientId: …
 ```
 
 只有 plan 容器會掛載權杖，而且權杖只給供應商的 audience 使用。run 拿不到 Kubernetes API 的權杖。ServiceAccount 不存在時，run 會停在 `ModelKeyMissing` 等待。

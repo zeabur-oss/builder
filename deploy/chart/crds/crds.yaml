@@ -131,6 +131,35 @@
                                 ],
                                 "type": "object"
                               },
+                              "azureFederation": {
+                                "description": "The tenant and client, and the service account whose token the run exchanges.",
+                                "properties": {
+                                  "clientId": {
+                                    "description": "The application (client) ID of the app registration or managed identity.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "serviceAccountName": {
+                                    "description": "The Kubernetes service account, in each `Build`'s own namespace, whose token the run\nexchanges.",
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "tenantId": {
+                                    "description": "The directory (tenant) ID.",
+                                    "maxLength": 256,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "clientId",
+                                  "serviceAccountName",
+                                  "tenantId"
+                                ],
+                                "type": "object"
+                              },
                               "openaiFederation": {
                                 "description": "The identity provider, and the service account whose token the run exchanges.",
                                 "properties": {
@@ -161,11 +190,12 @@
                                 "type": "object"
                               },
                               "type": {
-                                "description": "`apiKey`: An API key in a Secret.\n\n`anthropicFederation`: Anthropic's workload identity federation: a service account token for a short-lived\naccess token.\n\n`openaiFederation`: OpenAI's workload identity federation: a service account token for a short-lived access\ntoken.",
+                                "description": "`apiKey`: An API key in a Secret.\n\n`anthropicFederation`: Anthropic's workload identity federation: a service account token for a short-lived\naccess token.\n\n`openaiFederation`: OpenAI's workload identity federation: a service account token for a short-lived access\ntoken.\n\n`azureFederation`: Microsoft Entra workload identity federation: a service account token for a short-lived\naccess token to Azure OpenAI.",
                                 "enum": [
                                   "apiKey",
                                   "anthropicFederation",
-                                  "openaiFederation"
+                                  "openaiFederation",
+                                  "azureFederation"
                                 ],
                                 "type": "string"
                               }
@@ -186,6 +216,10 @@
                               {
                                 "message": "openaiFederation is required for type openaiFederation, and only for it",
                                 "rule": "has(self.openaiFederation) == (self.type == 'openaiFederation')"
+                              },
+                              {
+                                "message": "azureFederation is required for type azureFederation, and only for it",
+                                "rule": "has(self.azureFederation) == (self.type == 'azureFederation')"
                               }
                             ]
                           },
@@ -222,6 +256,10 @@
                           {
                             "message": "openaiFederation needs provider openai",
                             "rule": "self.auth.type != 'openaiFederation' || self.provider == 'openai'"
+                          },
+                          {
+                            "message": "azureFederation needs provider azure.openai",
+                            "rule": "self.auth.type != 'azureFederation' || self.provider == 'azure.openai'"
                           }
                         ]
                       },

@@ -196,6 +196,10 @@ pub struct AgentPlanner {
         "rule": "self.auth.type != 'openaiFederation' || self.provider == 'openai'",
         "message": "openaiFederation needs provider openai",
     },
+    {
+        "rule": "self.auth.type != 'azureFederation' || self.provider == 'azure.openai'",
+        "message": "azureFederation needs provider azure.openai",
+    },
 ])))]
 pub struct ModelSpec {
     /// The provider, by Rig's name, such as `anthropic`, `openai`, `gcp.gemini` or `openrouter`.
@@ -241,6 +245,12 @@ pub enum ModelAuth {
         /// The identity provider, and the service account whose token the run exchanges.
         openai_federation: OpenAiFederation,
     },
+    /// Microsoft Entra workload identity federation: a service account token for a short-lived
+    /// access token to Azure OpenAI.
+    AzureFederation {
+        /// The tenant and client, and the service account whose token the run exchanges.
+        azure_federation: AzureFederation,
+    },
 }
 
 impl ModelAuth {
@@ -259,6 +269,13 @@ impl ModelAuth {
             | Self::OpenaiFederation {
                 openai_federation:
                     OpenAiFederation {
+                        service_account_name,
+                        ..
+                    },
+            }
+            | Self::AzureFederation {
+                azure_federation:
+                    AzureFederation {
                         service_account_name,
                         ..
                     },
@@ -327,6 +344,29 @@ pub struct OpenAiFederation {
 impl OpenAiFederation {
     /// The audience OpenAI takes service account tokens for.
     pub const AUDIENCE: &str = "https://api.openai.com/v1";
+}
+
+/// The Microsoft Entra application or user-assigned managed identity with a federated identity
+/// credential. The projected token's audience is `api://AzureADTokenExchange`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AzureFederation {
+    /// The Kubernetes service account, in each `Build`'s own namespace, whose token the run
+    /// exchanges.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
+    pub service_account_name: String,
+    /// The directory (tenant) ID.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
+    pub tenant_id: String,
+    /// The application (client) ID of the app registration or managed identity.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_ID)))]
+    pub client_id: String,
+}
+
+impl AzureFederation {
+    /// The audience Microsoft Entra takes federated tokens for.
+    pub const AUDIENCE: &str = "api://AzureADTokenExchange";
 }
 
 /// CPU and memory, as Kubernetes quantities.

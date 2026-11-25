@@ -113,9 +113,9 @@ zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
 
 ## 用服务账号令牌代替 API 密钥
 
-使用 Anthropic 和 OpenAI 时，工具可以用 Kubernetes 服务账号令牌换取短期有效的访问令牌，集群就不用保存 API 密钥。这个机制叫工作负载身份联合（[Anthropic](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation)、[OpenAI](https://developers.openai.com/api/docs/guides/workload-identity-federation)）。工具读取的环境变量和厂商 SDK 相同；设置了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` 时，工具改用密钥。
+使用 Anthropic、OpenAI 和 Azure OpenAI 时，工具可以用 Kubernetes 服务账号令牌换取短期有效的访问令牌，集群就不用保存 API 密钥。这个机制叫工作负载身份联合（[Anthropic](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation)、[OpenAI](https://developers.openai.com/api/docs/guides/workload-identity-federation)、[Microsoft Entra](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-create-trust)）。工具读取的环境变量和厂商 SDK 相同；设置了 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`AZURE_API_KEY` 或 `AZURE_TOKEN` 时，工具改用密钥。
 
-下面的步骤适用于服务账号签发者（issuer）无法从互联网访问的集群，例如默认的 k3s 集群。
+使用 Anthropic 和 OpenAI 时，即使服务账号签发者（issuer）无法从互联网访问，例如默认的 k3s 集群，也能按下面的步骤配置。Microsoft Entra 会自己去签发者读取密钥，所以使用 Azure OpenAI 前，签发者必须先能从互联网访问。
 
 使用 `agent` 构建器时，做完前两步后，第三步改按 [构建没有 Dockerfile 的仓库](../builds/no-dockerfile.mdx) 配置：构建器会自己挂载令牌并设置环境变量。
 
@@ -130,21 +130,25 @@ kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
 kubectl get --raw /openid/v1/jwks
 ```
 
+使用 Azure OpenAI 时，把这两份文档通过 HTTPS 放到互联网能访问的签发者地址下：`<issuer>/.well-known/openid-configuration` 和 `<issuer>/openid/v1/jwks`（[自管集群](https://azure.github.io/azure-workload-identity/docs/installation/self-managed-clusters/oidc-issuer.html)）。然后让集群用这个签发者签发令牌：k3s 启动 server 时加上 `--kube-apiserver-arg=service-account-issuer=<issuer>` 和 `--kube-apiserver-arg=service-account-jwks-uri=<issuer>/openid/v1/jwks`，再重新复制这两份文档。签发者已经公开的集群，例如大多数托管集群，可以跳过这段。
+
 </Step>
 
 <Step>
 
 ### 在厂商那边登记集群
 
-| | Anthropic | OpenAI |
-| --- | --- | --- |
-| 位置 | Console：创建签发者、服务账号和联合规则 | 组织设置的 Security：创建工作负载身份提供方和映射 |
-| 签发者 | 上一步拿到的签发者 | 上一步拿到的签发者 |
-| 密钥 | 内联 JWKS：填入 `keys` 数组 | 上传 JWKS：填入整个对象 |
-| 受众（audience） | `https://api.anthropic.com` | `https://api.openai.com/v1` |
-| 主体（subject） | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` |
+| | Anthropic | OpenAI | Azure OpenAI |
+| --- | --- | --- | --- |
+| 位置 | Console：创建签发者、服务账号和联合规则 | 组织设置的 Security：创建工作负载身份提供方和映射 | Microsoft Entra 管理中心：在应用注册或用户分配的托管标识上添加联合凭据，场景选“Kubernetes accessing Azure resources” |
+| 签发者 | 上一步拿到的签发者 | 上一步拿到的签发者 | 上一步公开的签发者 |
+| 密钥 | 内联 JWKS：填入 `keys` 数组 | 上传 JWKS：填入整个对象 | 不用填：Entra 会去签发者读取 |
+| 受众（audience） | `https://api.anthropic.com` | `https://api.openai.com/v1` | `api://AzureADTokenExchange` |
+| 主体（subject） | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` | `system:serviceaccount:<namespace>:<name>` |
 
-厂商那边存了一份密钥。集群轮换服务账号的签名密钥前，先把新的 JWKS 上传到厂商。Anthropic 的规则只需要 `workspace:inference` 范围。
+Anthropic 和 OpenAI 那边存了一份密钥。集群轮换服务账号的签名密钥前，先把新的 JWKS 上传到厂商。Anthropic 的规则只需要 `workspace:inference` 范围。
+
+使用 Azure OpenAI 时，还要在 Azure OpenAI 资源上给这个应用注册或托管标识分配 Cognitive Services OpenAI User 角色。资源必须有自定义子域（[Microsoft Entra ID 身份验证](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/managed-identity)）。运行工具时加上 `--provider azure.openai`，`--model` 填部署名称，`--base-url` 填 `https://<resource>.openai.azure.com`。
 
 </Step>
 
@@ -184,6 +188,7 @@ spec:
 | --- | --- |
 | Anthropic | `ANTHROPIC_FEDERATION_RULE_ID`、`ANTHROPIC_ORGANIZATION_ID`、`ANTHROPIC_IDENTITY_TOKEN_FILE`。规则涵盖多个工作区时，加上 `ANTHROPIC_WORKSPACE_ID`。`ANTHROPIC_SERVICE_ACCOUNT_ID` 可以不设。 |
 | OpenAI | `OPENAI_IDENTITY_PROVIDER_ID`、`OPENAI_SERVICE_ACCOUNT_ID`、`OPENAI_IDENTITY_TOKEN_FILE` |
+| Azure OpenAI | `AZURE_TENANT_ID`、`AZURE_CLIENT_ID`、`AZURE_FEDERATED_TOKEN_FILE`。不在 Azure 公有云时，再设置 `AZURE_AUTHORITY_HOST`。 |
 
 </Step>
 

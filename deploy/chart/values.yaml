@@ -44,8 +44,8 @@ agent:
   baseUrl: ""
   # How runs sign in to the model API, as the ClusterBuilder's spec.agent.model.auth. An API key:
   #   {type: apiKey, apiKey: {name: model, key: anthropic}}
-  # Workload identity federation: {type: anthropicFederation, anthropicFederation: {...}} or
-  # {type: openaiFederation, openaiFederation: {...}}.
+  # Workload identity federation: {type: anthropicFederation, anthropicFederation: {...}},
+  # {type: openaiFederation, openaiFederation: {...}} or {type: azureFederation, azureFederation: {...}}.
   auth: {}
 
 # Each namespace's buildkitd, rootful. The admission policy below allows only this image.

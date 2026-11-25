@@ -7,6 +7,7 @@
 //! token's lifetime have passed.
 
 mod anthropic;
+mod azure;
 mod openai;
 
 use std::fmt::Debug;
@@ -43,14 +44,18 @@ type Vars<'a> = dyn Fn(&str) -> Option<String> + 'a;
 type Read = fn(&Vars<'_>) -> Result<Option<Arc<dyn TokenSource>>, Refusal<Reason>>;
 
 /// The vendors with federation, by Rig's vendor name.
-const SOURCES: [(&str, Read); 2] = [("anthropic", anthropic::read), ("openai", openai::read)];
+const SOURCES: [(&str, Read); 3] = [
+    ("anthropic", anthropic::read),
+    ("azure.openai", azure::read),
+    ("openai", openai::read),
+];
 
 /// A vendor's token endpoint and the model it unlocks.
 pub(crate) trait TokenSource: Debug + Send + Sync {
     /// The vendor, for messages.
     fn name(&self) -> &'static str;
     /// The token endpoint.
-    fn url(&self) -> &'static str;
+    fn url(&self) -> &str;
     /// The service account token.
     fn token_file(&self) -> &Path;
     /// The request that exchanges `jwt`.
@@ -220,6 +225,7 @@ impl Renewing {
         value.set_sensitive(true);
         req.headers_mut().insert(http::header::AUTHORIZATION, value);
         req.headers_mut().remove("x-api-key");
+        req.headers_mut().remove("api-key");
         Ok(req)
     }
 }
@@ -355,6 +361,7 @@ mod tests {
     async fn a_fresh_access_token_replaces_the_key() {
         let req = Request::post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", "placeholder")
+            .header("api-key", "placeholder")
             .body(Bytes::new())
             .unwrap();
         let renewing = renewing(vendor(), Instant::now() + Duration::from_secs(60));
@@ -363,6 +370,7 @@ mod tests {
 
         assert_eq!(req.headers()["authorization"], "Bearer sk-ant-oat01-abc");
         assert!(req.headers().get("x-api-key").is_none());
+        assert!(req.headers().get("api-key").is_none());
     }
 
     #[tokio::test]

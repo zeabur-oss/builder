@@ -59,6 +59,17 @@ impl Body {
             bytes: serde_json::to_vec(value).unwrap_or_default(),
         }
     }
+
+    /// `pairs` as an HTML form.
+    pub(crate) fn form<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        Self {
+            content_type: "application/x-www-form-urlencoded",
+            bytes: form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(pairs)
+                .finish()
+                .into_bytes(),
+        }
+    }
 }
 
 /// An HTTPS client for model APIs.

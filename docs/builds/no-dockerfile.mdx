@@ -59,7 +59,7 @@ spec:
 
 ## Sign in without an API key
 
-With Anthropic and OpenAI, a run can exchange a Kubernetes service account token for a short-lived access token, so no Namespace stores an API key. First register the cluster with the provider as in "Use a service account token instead of an API key" in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx). Use the subject `system:serviceaccount:<namespace>:builder-agent`.
+With Anthropic, OpenAI and Azure OpenAI, a run can exchange a Kubernetes service account token for a short-lived access token, so no Namespace stores an API key. First register the cluster with the provider as in "Use a service account token instead of an API key" in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx). Use the subject `system:serviceaccount:<namespace>:builder-agent`.
 
 Create that ServiceAccount in each Namespace with a Build on the `agent` builder:
 
@@ -95,6 +95,22 @@ agent:
       serviceAccountName: builder-agent
       identityProviderId: …
       serviceAccountId: …
+```
+
+For Azure OpenAI, the model is the deployment name and `baseUrl` is the resource's endpoint:
+
+```yaml
+agent:
+  enabled: true
+  provider: azure.openai
+  model: gpt-5.5
+  baseUrl: https://<resource>.openai.azure.com
+  auth:
+    type: azureFederation
+    azureFederation:
+      serviceAccountName: builder-agent
+      tenantId: …
+      clientId: …
 ```
 
 Only the plan container mounts the token, and only for the provider's audience. The run gets no token for the Kubernetes API. While the ServiceAccount is missing, the run waits with `ModelKeyMissing`.
