@@ -391,3 +391,16 @@ pub enum Frontend {
         source: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CRD takes `cpu: 1` without quotes, and the API server stores it as a number.
+    #[test]
+    fn a_quantity_reads_from_a_number_or_text() {
+        let list: ResourceList = serde_json::from_str(r#"{"cpu": 1, "memory": "2Gi"}"#).unwrap();
+        assert_eq!(list.cpu, Some(Quantity("1".to_owned())));
+        assert_eq!(list.memory, Some(Quantity("2Gi".to_owned())));
+    }
+}
