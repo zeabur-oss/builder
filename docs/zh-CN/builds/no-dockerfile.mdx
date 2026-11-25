@@ -59,7 +59,7 @@ spec:
 
 ## 不用 API 密钥登录
 
-使用 Anthropic 和 OpenAI 时，run 可以用 Kubernetes 服务账号令牌换取短期访问令牌，Namespace 里就不用存放 API 密钥。先按照 [用 AI 写 Dockerfile](../reference/ai-dockerfile.mdx) 中“用服务账号令牌代替 API 密钥”一节，在提供商处登记集群。subject 填 `system:serviceaccount:<namespace>:builder-agent`。
+使用 Anthropic 和 OpenAI 时，run 可以用 Kubernetes 服务账号令牌换取短期访问令牌，Namespace 里就不用存放 API 密钥。使用 Amazon Bedrock 时，run 改用令牌代入 IAM 角色。先按照 [用 AI 写 Dockerfile](../reference/ai-dockerfile.mdx) 中“用服务账号令牌代替 API 密钥”一节，在提供商处登记集群。subject 填 `system:serviceaccount:<namespace>:builder-agent`。
 
 在每个有 Build 使用 `agent` 构建器的 Namespace 创建这个 ServiceAccount：
 
@@ -95,6 +95,21 @@ agent:
       serviceAccountName: builder-agent
       identityProviderId: …
       serviceAccountId: …
+```
+
+使用 Amazon Bedrock 时，model 填 Bedrock 的模型 ID：
+
+```yaml
+agent:
+  enabled: true
+  provider: aws_bedrock
+  model: anthropic.claude-sonnet-5-5
+  auth:
+    type: awsFederation
+    awsFederation:
+      serviceAccountName: builder-agent
+      roleArn: arn:aws:iam::<account>:role/<name>
+      region: us-east-1
 ```
 
 只有 plan 容器会挂载令牌，而且令牌只用于提供商的 audience。run 拿不到 Kubernetes API 的令牌。ServiceAccount 不存在时，run 会停在 `ModelKeyMissing` 等待。

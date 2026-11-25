@@ -149,8 +149,8 @@ async fn read_previous(dir: &Path) -> Option<Files> {
 
 /// `model` of `provider`, sending through [`HyperClient`], with `key`. Without it, Rig reads the
 /// key from the provider's own variable, such as `ANTHROPIC_API_KEY`; without that, an Anthropic
-/// or OpenAI run can exchange a service account token instead ([`federation`]). A model its
-/// catalogue does not list still connects.
+/// or OpenAI run can exchange a service account token instead ([`federation`]). Bedrock always
+/// assumes an IAM role ([`federation::aws`]). A model its catalogue does not list still connects.
 async fn connect(
     provider: &str,
     model: &str,
@@ -174,6 +174,16 @@ async fn connect(
         || ModelSpec::new(provider, model),
         |found| found.spec.clone(),
     );
+    if provider.vendor() == federation::aws::VENDOR {
+        if key.is_some() {
+            return Err(Refusal::new(
+                Reason::ModelFailed,
+                "aws_bedrock signs in with an IAM role, not an API key: set AWS_ROLE_ARN, \
+                 AWS_WEB_IDENTITY_TOKEN_FILE and AWS_REGION",
+            ));
+        }
+        return federation::aws::connect(model, base_url).await;
+    }
     let http = HyperClient::new().map_err(|e| Refusal::new(Reason::ModelFailed, e.to_string()))?;
     if key.is_none()
         && let Some(source) = federation::from_env(provider.vendor())?

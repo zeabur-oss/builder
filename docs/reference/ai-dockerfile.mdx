@@ -115,7 +115,9 @@ The tool picks the Dockerfile in this order and stops at the first that applies:
 
 With Anthropic and OpenAI, the tool can exchange a Kubernetes service account token for a short-lived access token, so the cluster stores no API key. This is workload identity federation ([Anthropic](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation), [OpenAI](https://developers.openai.com/api/docs/guides/workload-identity-federation)). The tool reads the same variables as the provider's SDKs. When `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set, the tool uses the key instead.
 
-These steps work for a cluster whose service account issuer cannot be reached from the internet, such as a default k3s cluster.
+With Amazon Bedrock, the tool assumes an IAM role with the token instead ([OIDC federation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc.html)) and signs each request with the role's temporary credentials. Bedrock takes no API key here.
+
+For Anthropic and OpenAI, these steps work for a cluster whose service account issuer cannot be reached from the internet, such as a default k3s cluster. IAM fetches the keys from the issuer itself, so for Amazon Bedrock the issuer must be reachable from the internet first.
 
 For the `agent` builder, do the first two steps, then follow [Build a repository without a Dockerfile](../builds/no-dockerfile.mdx) instead of the third: the builder mounts the token and sets the variables.
 
@@ -130,21 +132,46 @@ kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
 kubectl get --raw /openid/v1/jwks
 ```
 
+For Amazon Bedrock, serve these two documents over HTTPS at `<issuer>/.well-known/openid-configuration` and `<issuer>/openid/v1/jwks`, at an issuer URL with no port that the internet can reach ([create an OIDC identity provider](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html)). Then make the cluster sign tokens with that issuer: on k3s, start the server with `--kube-apiserver-arg=service-account-issuer=<issuer>` and `--kube-apiserver-arg=service-account-jwks-uri=<issuer>/openid/v1/jwks`, and copy both documents again. A cluster with a public issuer already, such as most managed clusters, skips this.
+
 </Step>
 
 <Step>
 
 ### Register the cluster with the provider
 
-| | Anthropic | OpenAI |
-| --- | --- | --- |
-| Where | Console: an issuer, a service account and a federation rule | Organization settings, Security: a workload identity provider and a mapping |
-| Issuer | The issuer from the last step | The issuer from the last step |
-| Keys | Inline JWKS: the `keys` array | Uploaded JWKS: the whole object |
-| Audience | `https://api.anthropic.com` | `https://api.openai.com/v1` |
-| Subject | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` |
+| | Anthropic | OpenAI | Amazon Bedrock |
+| --- | --- | --- | --- |
+| Where | Console: an issuer, a service account and a federation rule | Organization settings, Security: a workload identity provider and a mapping | IAM console: an OpenID Connect identity provider, then a role with the trusted entity type "Web identity" |
+| Issuer | The issuer from the last step | The issuer from the last step | The published issuer from the last step, as the provider URL |
+| Keys | Inline JWKS: the `keys` array | Uploaded JWKS: the whole object | None: IAM reads them from the issuer |
+| Audience | `https://api.anthropic.com` | `https://api.openai.com/v1` | `sts.amazonaws.com` |
+| Subject | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` | `<issuer host>:sub` = `system:serviceaccount:<namespace>:<name>` in the role's trust policy |
 
-The provider keeps a copy of the keys. Before the cluster rotates its service account signing key, upload the new JWKS to the provider. For Anthropic, a rule with the `workspace:inference` scope is enough.
+Anthropic and OpenAI keep a copy of the keys. Before the cluster rotates its service account signing key, upload the new JWKS to the provider. For Anthropic, a rule with the `workspace:inference` scope is enough.
+
+For Amazon Bedrock, the role's trust policy allows `sts:AssumeRoleWithWebIdentity` for the identity provider, with `StringEquals` on `<issuer host>:aud` and `<issuer host>:sub`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Federated": "arn:aws:iam::<account>:oidc-provider/<issuer host>" },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "<issuer host>:aud": "sts.amazonaws.com",
+          "<issuer host>:sub": "system:serviceaccount:<namespace>:<name>"
+        }
+      }
+    }
+  ]
+}
+```
+
+Give the role `bedrock:InvokeModel` on the model ([Converse API](https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html)). Run the tool with `--provider aws_bedrock` and the Bedrock model ID as `--model`.
 
 </Step>
 
@@ -184,6 +211,7 @@ spec:
 | --- | --- |
 | Anthropic | `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_IDENTITY_TOKEN_FILE`. Add `ANTHROPIC_WORKSPACE_ID` when the rule has several workspaces. `ANTHROPIC_SERVICE_ACCOUNT_ID` is optional. |
 | OpenAI | `OPENAI_IDENTITY_PROVIDER_ID`, `OPENAI_SERVICE_ACCOUNT_ID`, `OPENAI_IDENTITY_TOKEN_FILE` |
+| Amazon Bedrock | `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_REGION` |
 
 </Step>
 

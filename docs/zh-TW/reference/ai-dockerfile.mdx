@@ -115,7 +115,9 @@ zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
 
 使用 Anthropic 和 OpenAI 時，工具可以用 Kubernetes 服務帳戶權杖換取短期有效的存取權杖，叢集就不必保存 API 金鑰。這個機制叫工作負載身分聯合（[Anthropic](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation)、[OpenAI](https://developers.openai.com/api/docs/guides/workload-identity-federation)）。工具讀取的環境變數和供應商 SDK 相同；設定了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY` 時，工具改用金鑰。
 
-如果叢集的服務帳戶簽發者（issuer）從網際網路連不到，例如預設的 k3s 叢集，請照下面的步驟設定。
+使用 Amazon Bedrock 時，工具改用權杖擔任 IAM 角色（[OIDC 聯合](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_oidc.html)），再用角色的臨時憑證簽署每個請求。這裡的 Bedrock 不用 API 金鑰。
+
+使用 Anthropic 和 OpenAI 時，就算叢集的服務帳戶簽發者（issuer）從網際網路連不到，例如預設的 k3s 叢集，也能照下面的步驟設定。IAM 會自己到簽發者那裡讀取金鑰，所以使用 Amazon Bedrock 時，要先讓網際網路連得到簽發者。
 
 使用 `agent` 建置器時，做完前兩步後，第三步改照 [建置沒有 Dockerfile 的儲存庫](../builds/no-dockerfile.mdx) 設定：建置器會自己掛載權杖並設定環境變數。
 
@@ -130,21 +132,46 @@ kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
 kubectl get --raw /openid/v1/jwks
 ```
 
+使用 Amazon Bedrock 時，在網際網路連得到、不含連接埠的簽發者網址下，用 HTTPS 提供這兩份文件：`<issuer>/.well-known/openid-configuration` 和 `<issuer>/openid/v1/jwks`（[建立 OIDC 身分提供者](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html)）。接著讓叢集用這個簽發者簽發權杖：k3s 的伺服器啟動時加上 `--kube-apiserver-arg=service-account-issuer=<issuer>` 和 `--kube-apiserver-arg=service-account-jwks-uri=<issuer>/openid/v1/jwks`，再重新複製這兩份文件。簽發者已經公開的叢集（多數託管叢集都是）可以跳過這一步。
+
 </Step>
 
 <Step>
 
 ### 在供應商那邊登記叢集
 
-| | Anthropic | OpenAI |
-| --- | --- | --- |
-| 位置 | Console：建立簽發者、服務帳戶和聯合規則 | 組織設定的 Security：建立工作負載身分提供者和對應 |
-| 簽發者 | 上一步取得的簽發者 | 上一步取得的簽發者 |
-| 金鑰 | 內嵌 JWKS：填入 `keys` 陣列 | 上傳 JWKS：填入整個物件 |
-| 受眾（audience） | `https://api.anthropic.com` | `https://api.openai.com/v1` |
-| 主體（subject） | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` |
+| | Anthropic | OpenAI | Amazon Bedrock |
+| --- | --- | --- | --- |
+| 位置 | Console：建立簽發者、服務帳戶和聯合規則 | 組織設定的 Security：建立工作負載身分提供者和對應 | IAM 主控台：建立 OpenID Connect 身分提供者，再建立受信任實體類型為「Web identity」的角色 |
+| 簽發者 | 上一步取得的簽發者 | 上一步取得的簽發者 | 上一步公開的簽發者，填在提供者網址 |
+| 金鑰 | 內嵌 JWKS：填入 `keys` 陣列 | 上傳 JWKS：填入整個物件 | 不用填：IAM 會到簽發者那裡讀取 |
+| 受眾（audience） | `https://api.anthropic.com` | `https://api.openai.com/v1` | `sts.amazonaws.com` |
+| 主體（subject） | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` | 在角色的信任政策裡設 `<issuer host>:sub` = `system:serviceaccount:<namespace>:<name>` |
 
-供應商那邊存了一份金鑰。叢集輪替服務帳戶的簽署金鑰前，先把新的 JWKS 上傳到供應商。Anthropic 的規則只要 `workspace:inference` 範圍就夠了。
+Anthropic 和 OpenAI 那邊存了一份金鑰。叢集輪替服務帳戶的簽署金鑰前，先把新的 JWKS 上傳到供應商。Anthropic 的規則只要 `workspace:inference` 範圍就夠了。
+
+使用 Amazon Bedrock 時，角色的信任政策要允許身分提供者執行 `sts:AssumeRoleWithWebIdentity`，並用 `StringEquals` 比對 `<issuer host>:aud` 和 `<issuer host>:sub`：
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Federated": "arn:aws:iam::<account>:oidc-provider/<issuer host>" },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "<issuer host>:aud": "sts.amazonaws.com",
+          "<issuer host>:sub": "system:serviceaccount:<namespace>:<name>"
+        }
+      }
+    }
+  ]
+}
+```
+
+再給角色模型的 `bedrock:InvokeModel` 權限（[Converse API](https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html)）。執行工具時加上 `--provider aws_bedrock`，`--model` 填 Bedrock 的模型 ID。
 
 </Step>
 
@@ -184,6 +211,7 @@ spec:
 | --- | --- |
 | Anthropic | `ANTHROPIC_FEDERATION_RULE_ID`、`ANTHROPIC_ORGANIZATION_ID`、`ANTHROPIC_IDENTITY_TOKEN_FILE`。規則涵蓋多個工作區時，加上 `ANTHROPIC_WORKSPACE_ID`。`ANTHROPIC_SERVICE_ACCOUNT_ID` 可不設。 |
 | OpenAI | `OPENAI_IDENTITY_PROVIDER_ID`、`OPENAI_SERVICE_ACCOUNT_ID`、`OPENAI_IDENTITY_TOKEN_FILE` |
+| Amazon Bedrock | `AWS_ROLE_ARN`、`AWS_WEB_IDENTITY_TOKEN_FILE`、`AWS_REGION` |
 
 </Step>
 

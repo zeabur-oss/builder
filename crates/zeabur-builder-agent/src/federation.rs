@@ -7,6 +7,7 @@
 //! token's lifetime have passed.
 
 mod anthropic;
+pub(crate) mod aws;
 mod openai;
 
 use std::fmt::Debug;

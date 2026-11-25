@@ -1,0 +1,372 @@
+[
+  {
+    "apiVersion": "batch/v1",
+    "kind": "Job",
+    "metadata": {
+      "annotations": {
+        "builder.zeabur.com/image": "registry.internal/team-a/api",
+        "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
+      },
+      "labels": {
+        "app.kubernetes.io/managed-by": "zeabur-builder",
+        "builder.zeabur.com/build": "api",
+        "builder.zeabur.com/builder": "agent",
+        "builder.zeabur.com/buildrun": "api-x7k2p"
+      },
+      "name": "api-x7k2p",
+      "namespace": "team-a",
+      "ownerReferences": [
+        {
+          "apiVersion": "builder.zeabur.com/v1alpha1",
+          "blockOwnerDeletion": true,
+          "controller": true,
+          "kind": "BuildRun",
+          "name": "api-x7k2p",
+          "uid": "6f1c2b8e-0d7a-4c1e-9a43-2f5b7e8d9c10"
+        }
+      ]
+    },
+    "spec": {
+      "activeDeadlineSeconds": 3600,
+      "backoffLimit": 0,
+      "template": {
+        "metadata": {
+          "annotations": {
+            "builder.zeabur.com/image": "registry.internal/team-a/api",
+            "builder.zeabur.com/revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
+          },
+          "labels": {
+            "app.kubernetes.io/managed-by": "zeabur-builder",
+            "builder.zeabur.com/build": "api",
+            "builder.zeabur.com/builder": "agent",
+            "builder.zeabur.com/buildrun": "api-x7k2p"
+          }
+        },
+        "spec": {
+          "automountServiceAccountToken": false,
+          "containers": [
+            {
+              "command": [
+                "zeabur-builder-job",
+                "build",
+                "/etc/zeabur-builder/build-plan/plan.json"
+              ],
+              "env": [
+                {
+                  "name": "HOME",
+                  "value": "/tmp"
+                },
+                {
+                  "name": "DOCKER_CONFIG",
+                  "value": "/etc/zeabur-builder/registry"
+                }
+              ],
+              "image": "ghcr.io/zeabur-oss/builder-job:v0.0.1",
+              "name": "build",
+              "resources": {
+                "limits": {
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "memory": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true
+              },
+              "terminationMessagePath": "/dev/termination-log",
+              "terminationMessagePolicy": "File",
+              "volumeMounts": [
+                {
+                  "mountPath": "/workspace",
+                  "name": "workspace"
+                },
+                {
+                  "mountPath": "/tmp",
+                  "name": "tmp"
+                },
+                {
+                  "mountPath": "/etc/zeabur-builder/buildkit",
+                  "name": "buildkit-client-tls",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/etc/zeabur-builder/registry",
+                  "name": "registry-auth",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/etc/zeabur-builder/build-plan",
+                  "name": "build-plan",
+                  "readOnly": true
+                }
+              ]
+            }
+          ],
+          "enableServiceLinks": false,
+          "initContainers": [
+            {
+              "args": [
+                "https://github.com/acme/web",
+                "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c"
+              ],
+              "command": [
+                "sh",
+                "-c",
+                "set -eu\nstart=$(date +%s)\nmkdir -p /workspace/plan /workspace/out\nif [ -f /etc/zeabur-builder/git/ssh-privatekey ]; then\n  install -m 0600 /etc/zeabur-builder/git/ssh-privatekey /tmp/id\n  export GIT_SSH_COMMAND=\"ssh -i /tmp/id -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/zeabur-builder/git/known_hosts\"\nfi\nif [ -f /etc/zeabur-builder/git/password ]; then\n  authority=${1#*://}\n  authority=${authority%%/*}\n  git config --global \"credential.${1%%://*}://${authority##*@}.helper\" '!f() { echo username=$(cat /etc/zeabur-builder/git/username); echo password=$(cat /etc/zeabur-builder/git/password); }; f'\nfi\ngit init -q /workspace/src\ngit -C /workspace/src remote add origin -- \"$1\"\ngit -C /workspace/src fetch -q --depth=1 --no-tags origin \"$2\"\ngit -C /workspace/src checkout -q --detach FETCH_HEAD\ntest \"$(git -C /workspace/src rev-parse HEAD)\" = \"$2\"\ngit -C /workspace/src submodule update -q --init --recursive --depth=1\necho \"{\\\"fetch\\\":$(( $(date +%s) - start ))}\" > /workspace/out/fetch.json\n",
+                "fetch"
+              ],
+              "env": [
+                {
+                  "name": "HOME",
+                  "value": "/tmp"
+                },
+                {
+                  "name": "GIT_TERMINAL_PROMPT",
+                  "value": "0"
+                },
+                {
+                  "name": "GIT_CONFIG_NOSYSTEM",
+                  "value": "1"
+                },
+                {
+                  "name": "GIT_ALLOW_PROTOCOL",
+                  "value": "https:http:ssh:git"
+                }
+              ],
+              "image": "ghcr.io/zeabur-oss/builder-job:v0.0.1",
+              "name": "fetch",
+              "resources": {
+                "limits": {
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "memory": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true
+              },
+              "terminationMessagePolicy": "FallbackToLogsOnError",
+              "volumeMounts": [
+                {
+                  "mountPath": "/workspace",
+                  "name": "workspace"
+                },
+                {
+                  "mountPath": "/tmp",
+                  "name": "tmp"
+                }
+              ]
+            },
+            {
+              "args": [
+                "zeabur-builder-agent",
+                "--context",
+                "/workspace/src",
+                "--buildkit",
+                "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
+                "--tlsdir",
+                "/etc/zeabur-builder/buildkit",
+                "--out",
+                "/workspace/plan",
+                "--provider",
+                "aws_bedrock",
+                "--model",
+                "claude-opus-5-5"
+              ],
+              "command": [
+                "sh",
+                "-c",
+                "set -u\nstart=$(date +%s)\n\"$@\"\ncode=$?\n# BusyBox cp does not overwrite /dev/termination-log.\ncat /workspace/plan/info.json > /dev/termination-log\necho \"{\\\"plan\\\":$(( $(date +%s) - start ))}\" > /workspace/out/plan.json\nexit \"$code\"\n",
+                "plan"
+              ],
+              "env": [
+                {
+                  "name": "HOME",
+                  "value": "/tmp"
+                },
+                {
+                  "name": "AWS_ROLE_ARN",
+                  "value": "arn:aws:iam::123456789012:role/builder"
+                },
+                {
+                  "name": "AWS_REGION",
+                  "value": "us-east-1"
+                },
+                {
+                  "name": "AWS_WEB_IDENTITY_TOKEN_FILE",
+                  "value": "/var/run/secrets/zeabur.com/model/token"
+                }
+              ],
+              "image": "ghcr.io/zeabur-oss/builder-agent:v0.0.1",
+              "name": "plan",
+              "resources": {
+                "limits": {
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "memory": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true
+              },
+              "terminationMessagePolicy": "FallbackToLogsOnError",
+              "volumeMounts": [
+                {
+                  "mountPath": "/workspace",
+                  "name": "workspace"
+                },
+                {
+                  "mountPath": "/tmp",
+                  "name": "tmp"
+                },
+                {
+                  "mountPath": "/etc/zeabur-builder/buildkit",
+                  "name": "buildkit-client-tls",
+                  "readOnly": true
+                },
+                {
+                  "mountPath": "/var/run/secrets/zeabur.com/model",
+                  "name": "model-token",
+                  "readOnly": true
+                }
+              ]
+            }
+          ],
+          "restartPolicy": "Never",
+          "securityContext": {
+            "fsGroup": 1000,
+            "runAsGroup": 1000,
+            "runAsNonRoot": true,
+            "runAsUser": 1000,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "serviceAccountName": "builder-agent",
+          "volumes": [
+            {
+              "emptyDir": {},
+              "name": "workspace"
+            },
+            {
+              "emptyDir": {},
+              "name": "tmp"
+            },
+            {
+              "name": "buildkit-client-tls",
+              "secret": {
+                "defaultMode": 288,
+                "optional": false,
+                "secretName": "zeabur-builder-buildkit-client"
+              }
+            },
+            {
+              "name": "registry-auth",
+              "secret": {
+                "defaultMode": 288,
+                "items": [
+                  {
+                    "key": ".dockerconfigjson",
+                    "path": "config.json"
+                  }
+                ],
+                "optional": false,
+                "secretName": "api-x7k2p-registry"
+              }
+            },
+            {
+              "downwardAPI": {
+                "items": [
+                  {
+                    "fieldRef": {
+                      "fieldPath": "metadata.annotations['builder.zeabur.com/build-plan']"
+                    },
+                    "path": "plan.json"
+                  }
+                ]
+              },
+              "name": "build-plan"
+            },
+            {
+              "name": "model-token",
+              "projected": {
+                "defaultMode": 288,
+                "sources": [
+                  {
+                    "serviceAccountToken": {
+                      "audience": "sts.amazonaws.com",
+                      "expirationSeconds": 3600,
+                      "path": "token"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "ttlSecondsAfterFinished": 600
+    }
+  },
+  {
+    "savePlan": {
+      "repository": "registry.internal/team-a/api",
+      "tag": "zeabur-plan-0b6e3f52-8c1d-4a7e-b0f9-1d2c3e4f5a6b"
+    },
+    "builds": [
+      {
+        "command": [
+          "buildctl",
+          "--addr",
+          "tcp://buildkitd-team-a-0.buildkitd-team-a.builder-system.svc:1234",
+          "--tlsdir",
+          "/etc/zeabur-builder/buildkit",
+          "build",
+          "--progress",
+          "rawjson",
+          "--local",
+          "context=/workspace/src",
+          "--frontend",
+          "dockerfile.v0",
+          "--local",
+          "dockerfile=/workspace/plan",
+          "--opt",
+          "filename=Dockerfile"
+        ],
+        "metadataFile": "/workspace/out/metadata.json",
+        "output": {
+          "repository": "registry.internal/team-a/api",
+          "tags": [
+            "main-1761058800-3e1a9c2",
+            "latest"
+          ],
+          "annotations": {
+            "org.opencontainers.image.revision": "3e1a9c2d4f0b5a6c7d8e9f0a1b2c3d4e5f6a7b8c",
+            "org.opencontainers.image.source": "https://github.com/acme/web"
+          }
+        }
+      }
+    ]
+  }
+]

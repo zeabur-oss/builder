@@ -59,7 +59,7 @@ spec:
 
 ## Sign in without an API key
 
-With Anthropic and OpenAI, a run can exchange a Kubernetes service account token for a short-lived access token, so no Namespace stores an API key. First register the cluster with the provider as in "Use a service account token instead of an API key" in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx). Use the subject `system:serviceaccount:<namespace>:builder-agent`.
+With Anthropic and OpenAI, a run can exchange a Kubernetes service account token for a short-lived access token, so no Namespace stores an API key. With Amazon Bedrock, a run assumes an IAM role with the token instead. First register the cluster with the provider as in "Use a service account token instead of an API key" in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx). Use the subject `system:serviceaccount:<namespace>:builder-agent`.
 
 Create that ServiceAccount in each Namespace with a Build on the `agent` builder:
 
@@ -95,6 +95,21 @@ agent:
       serviceAccountName: builder-agent
       identityProviderId: …
       serviceAccountId: …
+```
+
+For Amazon Bedrock, the model is the Bedrock model ID:
+
+```yaml
+agent:
+  enabled: true
+  provider: aws_bedrock
+  model: anthropic.claude-sonnet-5-5
+  auth:
+    type: awsFederation
+    awsFederation:
+      serviceAccountName: builder-agent
+      roleArn: arn:aws:iam::<account>:role/<name>
+      region: us-east-1
 ```
 
 Only the plan container mounts the token, and only for the provider's audience. The run gets no token for the Kubernetes API. While the ServiceAccount is missing, the run waits with `ModelKeyMissing`.

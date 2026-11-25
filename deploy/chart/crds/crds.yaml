@@ -131,6 +131,35 @@
                                 ],
                                 "type": "object"
                               },
+                              "awsFederation": {
+                                "description": "The role and region, and the service account whose token the run exchanges.",
+                                "properties": {
+                                  "region": {
+                                    "description": "The region of Amazon Bedrock and STS, such as `us-east-1`.",
+                                    "maxLength": 64,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "roleArn": {
+                                    "description": "The role, `arn:aws:iam::<account>:role/<name>`, whose trust policy names the cluster's\nIAM OIDC identity provider.",
+                                    "maxLength": 2048,
+                                    "minLength": 20,
+                                    "type": "string"
+                                  },
+                                  "serviceAccountName": {
+                                    "description": "The Kubernetes service account, in each `Build`'s own namespace, whose token the run\nexchanges.",
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "region",
+                                  "roleArn",
+                                  "serviceAccountName"
+                                ],
+                                "type": "object"
+                              },
                               "openaiFederation": {
                                 "description": "The identity provider, and the service account whose token the run exchanges.",
                                 "properties": {
@@ -161,11 +190,12 @@
                                 "type": "object"
                               },
                               "type": {
-                                "description": "`apiKey`: An API key in a Secret.\n\n`anthropicFederation`: Anthropic's workload identity federation: a service account token for a short-lived\naccess token.\n\n`openaiFederation`: OpenAI's workload identity federation: a service account token for a short-lived access\ntoken.",
+                                "description": "`apiKey`: An API key in a Secret.\n\n`anthropicFederation`: Anthropic's workload identity federation: a service account token for a short-lived\naccess token.\n\n`openaiFederation`: OpenAI's workload identity federation: a service account token for a short-lived access\ntoken.\n\n`awsFederation`: An IAM role assumed with a service account token: temporary credentials that sign each\nAmazon Bedrock request.",
                                 "enum": [
                                   "apiKey",
                                   "anthropicFederation",
-                                  "openaiFederation"
+                                  "openaiFederation",
+                                  "awsFederation"
                                 ],
                                 "type": "string"
                               }
@@ -186,6 +216,10 @@
                               {
                                 "message": "openaiFederation is required for type openaiFederation, and only for it",
                                 "rule": "has(self.openaiFederation) == (self.type == 'openaiFederation')"
+                              },
+                              {
+                                "message": "awsFederation is required for type awsFederation, and only for it",
+                                "rule": "has(self.awsFederation) == (self.type == 'awsFederation')"
                               }
                             ]
                           },
@@ -222,6 +256,10 @@
                           {
                             "message": "openaiFederation needs provider openai",
                             "rule": "self.auth.type != 'openaiFederation' || self.provider == 'openai'"
+                          },
+                          {
+                            "message": "provider aws_bedrock signs in with awsFederation, and only it",
+                            "rule": "(self.auth.type == 'awsFederation') == (self.provider == 'aws_bedrock')"
                           }
                         ]
                       },

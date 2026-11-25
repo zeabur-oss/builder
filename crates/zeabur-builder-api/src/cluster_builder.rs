@@ -196,6 +196,10 @@ pub struct AgentPlanner {
         "rule": "self.auth.type != 'openaiFederation' || self.provider == 'openai'",
         "message": "openaiFederation needs provider openai",
     },
+    {
+        "rule": "(self.auth.type == 'awsFederation') == (self.provider == 'aws_bedrock')",
+        "message": "provider aws_bedrock signs in with awsFederation, and only it",
+    },
 ])))]
 pub struct ModelSpec {
     /// The provider, by Rig's name, such as `anthropic`, `openai`, `gcp.gemini` or `openrouter`.
@@ -241,6 +245,12 @@ pub enum ModelAuth {
         /// The identity provider, and the service account whose token the run exchanges.
         openai_federation: OpenAiFederation,
     },
+    /// An IAM role assumed with a service account token: temporary credentials that sign each
+    /// Amazon Bedrock request.
+    AwsFederation {
+        /// The role and region, and the service account whose token the run exchanges.
+        aws_federation: AwsFederation,
+    },
 }
 
 impl ModelAuth {
@@ -259,6 +269,13 @@ impl ModelAuth {
             | Self::OpenaiFederation {
                 openai_federation:
                     OpenAiFederation {
+                        service_account_name,
+                        ..
+                    },
+            }
+            | Self::AwsFederation {
+                aws_federation:
+                    AwsFederation {
                         service_account_name,
                         ..
                     },
@@ -327,6 +344,30 @@ pub struct OpenAiFederation {
 impl OpenAiFederation {
     /// The audience OpenAI takes service account tokens for.
     pub const AUDIENCE: &str = "https://api.openai.com/v1";
+}
+
+/// The IAM role a run assumes with `AssumeRoleWithWebIdentity`. The projected token's audience is
+/// `sts.amazonaws.com`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AwsFederation {
+    /// The Kubernetes service account, in each `Build`'s own namespace, whose token the run
+    /// exchanges.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
+    pub service_account_name: String,
+    /// The role, `arn:aws:iam::<account>:role/<name>`, whose trust policy names the cluster's
+    /// IAM OIDC identity provider.
+    #[cfg_attr(feature = "schema", schemars(length(min = 20, max = 2048)))]
+    pub role_arn: String,
+    /// The region of Amazon Bedrock and STS, such as `us-east-1`.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = 64)))]
+    pub region: String,
+}
+
+impl AwsFederation {
+    /// The audience AWS STS takes web identity tokens for, as Amazon EKS uses.
+    pub const AUDIENCE: &str = "sts.amazonaws.com";
 }
 
 /// CPU and memory, as Kubernetes quantities.

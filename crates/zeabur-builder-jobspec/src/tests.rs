@@ -11,8 +11,8 @@ use zeabur_builder_api::build::{
 };
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{
-    AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, MAX_IMAGE, MAX_OPT_KEY,
-    MAX_OPT_VALUE, MAX_OPTS, ModelAuth, ModelSpec, Planner, PlannerSpec,
+    AgentPlanner, AnthropicFederation, AwsFederation, Frontend, FrontendSpec, MAX_IMAGE,
+    MAX_OPT_KEY, MAX_OPT_VALUE, MAX_OPTS, ModelAuth, ModelSpec, Planner, PlannerSpec,
 };
 use zeabur_builder_api::common::SecretKeyRef;
 
@@ -342,6 +342,40 @@ fn agent_with_anthropic_federation() {
     golden(
         "agent-federation",
         include_str!("../golden/agent-federation.json"),
+        &job,
+    );
+}
+
+/// A Bedrock run gets the variables the AWS SDKs read and a token for STS's audience.
+#[test]
+fn agent_with_aws_federation() {
+    let run = build_run();
+    let mut build = build("https://github.com/acme/web", None, Vec::new());
+    build.metadata.uid = Some(UID.to_owned());
+    let mut builder = agent();
+    if let Planner::Agent { agent } = &mut builder.planner {
+        agent.model.provider = "aws_bedrock".to_owned();
+        agent.model.auth = ModelAuth::AwsFederation {
+            aws_federation: AwsFederation {
+                service_account_name: "builder-agent".to_owned(),
+                role_arn: "arn:aws:iam::123456789012:role/builder".to_owned(),
+                region: "us-east-1".to_owned(),
+            },
+        };
+    }
+    let tags = tags();
+    let job = job(&inputs(
+        &run,
+        &build,
+        "agent",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    ))
+    .unwrap();
+    golden(
+        "agent-aws-federation",
+        include_str!("../golden/agent-aws-federation.json"),
         &job,
     );
 }

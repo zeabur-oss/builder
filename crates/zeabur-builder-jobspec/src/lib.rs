@@ -49,8 +49,8 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference}
 use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar, SourceKind};
 use zeabur_builder_api::build_run::BuildRun;
 use zeabur_builder_api::cluster_builder::{
-    AgentPlanner, AnthropicFederation, ClusterBuilderSpec, Frontend as FrontendKind, ModelAuth,
-    OpenAiFederation, Planner, PlannerSpec,
+    AgentPlanner, AnthropicFederation, AwsFederation, ClusterBuilderSpec, Frontend as FrontendKind,
+    ModelAuth, OpenAiFederation, Planner, PlannerSpec,
 };
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::build_plan::{self, BuildPlan, Image, NonRoot, Output, PREVIOUS_DIGEST};
@@ -735,6 +735,19 @@ fn sign_in(auth: &ModelAuth) -> SignIn<'_> {
             token: Some(ModelToken {
                 service_account: &federation.service_account_name,
                 audience: OpenAiFederation::AUDIENCE,
+            }),
+        },
+        ModelAuth::AwsFederation {
+            aws_federation: federation,
+        } => SignIn {
+            env: vec![
+                env("AWS_ROLE_ARN", &federation.role_arn),
+                env("AWS_REGION", &federation.region),
+                env("AWS_WEB_IDENTITY_TOKEN_FILE", MODEL_TOKEN),
+            ],
+            token: Some(ModelToken {
+                service_account: &federation.service_account_name,
+                audience: AwsFederation::AUDIENCE,
             }),
         },
     }
