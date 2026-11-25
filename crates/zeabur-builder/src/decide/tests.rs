@@ -162,6 +162,17 @@ fn the_crd_admits_the_durations_the_controller_reads() {
 }
 
 #[test]
+fn the_crd_admits_quantities_and_refuses_words() {
+    let pattern = regex::Regex::new(zeabur_builder_api::common::QUANTITY_PATTERN).unwrap();
+    for text in ["2Gi", "500m", "1", "0.5", "1.5Gi", "1e3", "128M"] {
+        assert!(pattern.is_match(text), "{text}");
+    }
+    for text in ["lots", "", "2 Gi", "Gi", "2GB", "1.5.5"] {
+        assert!(!pattern.is_match(text), "{text}");
+    }
+}
+
+#[test]
 fn conditions_keep_their_transition_time() {
     let mut conditions = Vec::new();
     let earlier: Timestamp = "2026-10-22T07:00:00Z".parse().unwrap();

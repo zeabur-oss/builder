@@ -544,4 +544,58 @@ mod tests {
         assert!(node_label("=true").is_err());
         assert!(toleration("key=x").is_err());
     }
+
+    #[tokio::test]
+    #[ignore = "needs a disposable cluster in KUBECONFIG (scripts/ci/kubernetes.sh)"]
+    async fn the_api_server_refuses_a_planner_memory_that_is_not_a_quantity() {
+        use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+        use kube::api::{Patch, PatchParams};
+        use kube::runtime::wait::{await_condition, conditions};
+        use kube::{Api, Client, CustomResourceExt as _};
+        use zeabur_builder_api::cluster_builder::ClusterBuilder;
+
+        let client = Client::try_default().await.unwrap();
+        let definitions: Api<CustomResourceDefinition> = Api::all(client.clone());
+        let definition = write::apply(&definitions, &ClusterBuilder::crd())
+            .await
+            .unwrap();
+        let name = definition.metadata.name.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            await_condition(definitions, &name, conditions::is_crd_established()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let builders: Api<ClusterBuilder> = Api::all(client);
+        let dry_run = PatchParams::apply(write::MANAGER).dry_run();
+        let with_memory = |memory: &str| -> ClusterBuilder {
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "builder.zeabur.com/v1alpha1",
+                "kind": "ClusterBuilder",
+                "metadata": {"name": "quantity-probe"},
+                "spec": {
+                    "type": "railpack",
+                    "railpack": {
+                        "image": "ghcr.io/zeabur-oss/builder-job:dev",
+                        "resources": {"limits": {"memory": memory}},
+                    },
+                    "frontend": {"type": "dockerfile.v0"},
+                },
+            }))
+            .unwrap()
+        };
+        let apply = |memory| Patch::Apply(with_memory(memory));
+        builders
+            .patch("quantity-probe", &dry_run, &apply("2Gi"))
+            .await
+            .unwrap();
+        let refused = builders
+            .patch("quantity-probe", &dry_run, &apply("lots"))
+            .await;
+        assert!(
+            matches!(&refused, Err(kube::Error::Api(status)) if status.is_invalid()),
+            "{refused:?}"
+        );
+    }
 }
