@@ -366,7 +366,7 @@ pub struct AwsFederation {
 }
 
 impl AwsFederation {
-    /// The audience AWS STS takes web identity tokens for, as Amazon EKS uses.
+    /// The audience the run asks for; the IAM OIDC identity provider lists it.
     pub const AUDIENCE: &str = "sts.amazonaws.com";
 }
 
