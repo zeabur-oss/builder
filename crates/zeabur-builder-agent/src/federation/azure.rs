@@ -22,8 +22,10 @@ use crate::plan::Reason;
 
 /// Microsoft Entra in the public cloud.
 const AUTHORITY: &str = "https://login.microsoftonline.com/";
-/// The data plane of Azure OpenAI.
-const SCOPE: &str = "https://ai.azure.com/.default";
+/// The OAuth 2.0 scope of the Azure OpenAI data plane ([REST reference]).
+///
+/// [REST reference]: https://learn.microsoft.com/en-us/rest/api/microsoft-foundry/azureopenai/chat
+const SCOPE: &str = "https://cognitiveservices.azure.com/.default";
 
 /// The `AZURE_*` variables of the Azure SDKs and azure-workload-identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,7 +303,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(body.bytes).unwrap(),
             "grant_type=client_credentials&client_id=client-1\
-             &scope=https%3A%2F%2Fai.azure.com%2F.default\
+             &scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default\
              &client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer\
              &client_assertion=a.b%2Bc"
         );
