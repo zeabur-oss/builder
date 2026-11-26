@@ -37,7 +37,7 @@
 //! [statuses]: https://docs.github.com/en/rest/commits/statuses#create-a-commit-status
 //! [permissions]: https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -47,7 +47,7 @@ use aws_lc_rs::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use bytes::Bytes;
-use http::{Method, Request, StatusCode, header};
+use http::{Method, Request, StatusCode, Uri, header};
 use http_body_util::{BodyExt as _, Full, Limited};
 use jiff::Timestamp;
 use k8s_openapi::api::core::v1::{ConfigMap, Secret};
@@ -55,7 +55,9 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::Api;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeabur_builder_api::annotations;
 use zeabur_builder_api::build::ConditionReason;
+use zeabur_builder_api::build_run::{BuildRunStatus, Phase, Reason};
 use zeabur_builder_core::refusal::Refusal;
 use zeabur_builder_core::repo::RepoKey;
 
@@ -348,14 +350,51 @@ pub(crate) struct StatusBody<'a> {
     state: &'static str,
     context: &'a str,
     description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_url: Option<&'a str>,
 }
 
-/// The body of a commit status.
-pub(crate) fn status_body<'a>(state: State, context: &'a str, description: &str) -> StatusBody<'a> {
+/// The body of a commit status, linked to `details` when it is set.
+pub(crate) fn status_body<'a>(
+    state: State,
+    context: &'a str,
+    description: &str,
+    details: Option<&'a str>,
+) -> StatusBody<'a> {
     StatusBody {
         state: state.as_str(),
         context,
         description: description.chars().take(MAX_DESCRIPTION).collect(),
+        target_url: details,
+    }
+}
+
+/// A `Build`'s [`annotations::DETAILS_URL`], when it is an absolute `http` or `https` URL.
+pub(crate) fn details_url(annotated: &BTreeMap<String, String>) -> Option<&str> {
+    let value = annotated.get(annotations::DETAILS_URL)?;
+    let uri = value.parse::<Uri>().ok()?;
+    let web = matches!(uri.scheme_str(), Some("http" | "https"));
+    (web && uri.authority().is_some()).then_some(value.as_str())
+}
+
+/// The description of a finished run's status: one short line. The tag and digest stay in the
+/// run's Event.
+pub(crate) fn finished_description(build: &str, status: &BuildRunStatus) -> String {
+    if status.phase == Some(Phase::Succeeded) {
+        return format!("Built and pushed {build}");
+    }
+    let step = status.failed_step.as_ref().map(|s| s.name.as_str());
+    match (status.reason, step) {
+        (Some(Reason::BuildFailed), Some(step)) => format!("Build failed: {step}"),
+        (Some(Reason::BuildFailed), None) => "Build failed".to_owned(),
+        (Some(Reason::PlanFailed), _) => "Planning failed".to_owned(),
+        (Some(Reason::SourceFailed), _) => "Could not fetch the source".to_owned(),
+        (Some(Reason::OutOfMemory), _) => "Ran out of memory".to_owned(),
+        (Some(Reason::Timeout), _) => "Timed out".to_owned(),
+        (Some(Reason::Cancelled), _) => "Cancelled".to_owned(),
+        (Some(Reason::RegistryCredentialsMissing), _) => "Registry credentials missing".to_owned(),
+        (Some(Reason::ModelKeyMissing), _) => "Model key missing".to_owned(),
+        _ => "Build infrastructure failed".to_owned(),
     }
 }
 
@@ -787,9 +826,100 @@ mod tests {
 
     #[test]
     fn status_descriptions_are_cut() {
-        let body = status_body(State::Failure, "zeabur-builder/a/b", &"x".repeat(500));
+        let body = status_body(State::Failure, "zeabur-builder/a/b", &"x".repeat(500), None);
         assert_eq!(body.state, "failure");
         assert_eq!(body.description.len(), MAX_DESCRIPTION);
+    }
+
+    #[test]
+    fn status_links_to_details_only_when_set() {
+        let linked = status_body(
+            State::Pending,
+            "zeabur-builder/a/b",
+            "Building",
+            Some("https://zeabur.example/projects/a"),
+        );
+        assert_eq!(
+            serde_json::to_value(&linked).unwrap(),
+            json!({
+                "state": "pending",
+                "context": "zeabur-builder/a/b",
+                "description": "Building",
+                "target_url": "https://zeabur.example/projects/a",
+            })
+        );
+        let plain = status_body(State::Pending, "zeabur-builder/a/b", "Building", None);
+        assert!(serde_json::to_value(&plain).unwrap().get("target_url").is_none());
+    }
+
+    fn annotated(value: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([(annotations::DETAILS_URL.to_owned(), value.to_owned())])
+    }
+
+    #[test]
+    fn details_url_takes_only_web_urls() {
+        let page = "https://zeabur.example/projects/p/services/Deployment/newsletter?tab=builds";
+        assert_eq!(details_url(&annotated(page)), Some(page));
+        assert_eq!(
+            details_url(&annotated("http://zeabur.localhost/projects/p")),
+            Some("http://zeabur.localhost/projects/p")
+        );
+        for refused in ["/projects/p", "javascript:alert(1)", "ftp://host/x", "not a url", ""] {
+            assert_eq!(details_url(&annotated(refused)), None, "{refused}");
+        }
+        assert_eq!(details_url(&BTreeMap::new()), None);
+    }
+
+    fn finished(phase: Phase, reason: Option<Reason>, step: Option<&str>) -> BuildRunStatus {
+        BuildRunStatus {
+            phase: Some(phase),
+            reason,
+            message: Some("a long message from the Job".to_owned()),
+            image_digest: Some(format!("sha256:{}", "1".repeat(64))),
+            tags: vec!["main-1795666814-06fffd3".to_owned()],
+            failed_step: step.map(|name| zeabur_builder_api::build_run::Step {
+                name: name.to_owned(),
+                state: zeabur_builder_api::build_run::StepState::Failed,
+                cached: false,
+                start_time: None,
+                completion_time: None,
+                message: "exit code 1".to_owned(),
+            }),
+            ..BuildRunStatus::default()
+        }
+    }
+
+    #[test]
+    fn finished_descriptions_are_one_short_line() {
+        let cases = [
+            (finished(Phase::Succeeded, None, None), "Built and pushed newsletter"),
+            (
+                finished(Phase::Failed, Some(Reason::BuildFailed), Some("[2/3] RUN npm ci")),
+                "Build failed: [2/3] RUN npm ci",
+            ),
+            (finished(Phase::Failed, Some(Reason::BuildFailed), None), "Build failed"),
+            (finished(Phase::Failed, Some(Reason::PlanFailed), Some("plan")), "Planning failed"),
+            (
+                finished(Phase::Failed, Some(Reason::SourceFailed), Some("fetch")),
+                "Could not fetch the source",
+            ),
+            (finished(Phase::Failed, Some(Reason::OutOfMemory), None), "Ran out of memory"),
+            (finished(Phase::Failed, Some(Reason::Timeout), None), "Timed out"),
+            (finished(Phase::Cancelled, Some(Reason::Cancelled), None), "Cancelled"),
+            (
+                finished(Phase::Failed, Some(Reason::RegistryCredentialsMissing), None),
+                "Registry credentials missing",
+            ),
+            (finished(Phase::Failed, Some(Reason::ModelKeyMissing), None), "Model key missing"),
+            (
+                finished(Phase::Failed, Some(Reason::InfraError), None),
+                "Build infrastructure failed",
+            ),
+            (finished(Phase::Failed, None, None), "Build infrastructure failed"),
+        ];
+        for (status, want) in cases {
+            assert_eq!(finished_description("newsletter", &status), want);
+        }
     }
 
     #[test]

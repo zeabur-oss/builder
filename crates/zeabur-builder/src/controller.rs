@@ -806,8 +806,8 @@ async fn app_token(
     ctx.github.token(app.installation_id, &key, access).await
 }
 
-/// Sets the commit status of a `githubApp` source's run. Nothing happens for other sources,
-/// archive sources among them.
+/// Sets the commit status of a `githubApp` source's run, linked to the `Build`'s details URL.
+/// Nothing happens for other sources, archive sources among them.
 async fn report(ctx: &Context, build: &Build, sha: &str, state: State, description: &str) {
     let (Some(git), Some(app)) = (build.spec.source.git(), build.spec.source.github_app()) else {
         return;
@@ -825,7 +825,7 @@ async fn report(ctx: &Context, build: &Build, sha: &str, state: State, descripti
         return;
     }
     let context = format!("zeabur-builder/{namespace}/{}", build.name_any());
-    let body = github::status_body(state, &context, description);
+    let body = github::status_body(state, &context, description, github::details_url(build.annotations()));
     ctx.github
         .report(app.installation_id, &key, sha, &body)
         .await;
@@ -1123,7 +1123,8 @@ async fn finish(
             (_, Some(Reason::PlanFailed | Reason::BuildFailed)) => State::Failure,
             _ => State::Error,
         };
-        report(ctx, &build, &run.spec.revision, state, &note).await;
+        let description = github::finished_description(&build.name_any(), &status);
+        report(ctx, &build, &run.spec.revision, state, &description).await;
     }
     Ok(Action::await_change())
 }
@@ -1687,7 +1688,7 @@ async fn start(
     job_created(ctx, run, status, &woken.pod, tags).await?;
     record_clamps(ctx, run, &limits).await;
     tracing::info!(buildrun = %name, namespace = %namespace, buildkitd = %woken.pod, image = %image, "job created");
-    report(ctx, &build, &run.spec.revision, State::Pending, "building").await;
+    report(ctx, &build, &run.spec.revision, State::Pending, "Building").await;
     Ok(Action::await_change())
 }
 
