@@ -161,20 +161,20 @@ fn parse<T: DeserializeOwned>(
 
 /// Why an image with `user` does not start under `runAsNonRoot`, or `None` when it does.
 pub(crate) fn runs_as_root(user: &str) -> Option<String> {
-    let uid = user.split(':').next().unwrap_or_default();
-    let problem = if uid.is_empty() {
+    let before_group = user.split(':').next().unwrap_or_default();
+    let problem = if before_group.is_empty() {
         "the image sets no user, so it runs as root".to_owned()
-    } else if !uid.bytes().all(|b| b.is_ascii_digit()) {
+    } else if !before_group.bytes().all(|b| b.is_ascii_digit()) {
         format!("the image runs as `{user}`, a user name: Kubernetes accepts only a numeric UID")
-    } else if uid
+    } else if before_group
         .parse::<u64>()
-        .is_ok_and(|uid| (1..=MAX_UID).contains(&uid))
+        .is_ok_and(|number| (1..=MAX_UID).contains(&number))
     {
         return None;
-    } else if uid.bytes().all(|b| b == b'0') {
+    } else if before_group.bytes().all(|b| b == b'0') {
         "the image runs as root (UID 0)".to_owned()
     } else {
-        format!("the image runs as UID {uid}, which is not in 1 to {MAX_UID}")
+        format!("the image runs as UID {before_group}, which is not in 1 to {MAX_UID}")
     };
     Some(format!(
         "{problem}. The service runs with `runAsNonRoot` and would not start. End the final stage \
