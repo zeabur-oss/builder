@@ -112,7 +112,7 @@ With another provider, `tokenExchange` sends the service account token to any OA
 - `subjectField`: the form field that carries the service account token.
 - `form`: the other form fields, sent as they are. The ClusterBuilder is not a Secret, so put no secret in `form`.
 
-The model API must accept the access token as `Authorization: Bearer`. For Azure OpenAI with Microsoft Entra ID, add a federated credential to an app registration with the cluster's issuer, the subject `system:serviceaccount:<namespace>:builder-agent` and the audience `api://AzureADTokenExchange`. Entra must reach the issuer's discovery document. Give the app the role Cognitive Services OpenAI User on the resource. The maintainers have not tested this example:
+The model API must accept the access token as `Authorization: Bearer`. For Azure OpenAI with Microsoft Entra ID, add a federated credential to an app registration with the cluster's issuer, the subject `system:serviceaccount:<namespace>:builder-agent` and the audience `api://AzureADTokenExchange`. Entra must reach the issuer's discovery document. Give the app the role Cognitive Services OpenAI User on the resource. Then set `agent.auth`:
 
 ```yaml
 agent:

@@ -112,7 +112,7 @@ agent:
 - `subjectField`：放服务账号令牌的表单字段。
 - `form`：其他表单字段，原样发送。ClusterBuilder 不是 Secret，所以 `form` 中不要放任何机密。
 
-模型 API 必须接受以 `Authorization: Bearer` 发送的访问令牌。Azure OpenAI 配合 Microsoft Entra ID 时，在应用注册中添加联合凭据，填入集群的 issuer、subject `system:serviceaccount:<namespace>:builder-agent` 和 audience `api://AzureADTokenExchange`。Entra 必须能访问 issuer 的发现文档。在资源上给这个应用 Cognitive Services OpenAI User 角色。维护者没有测试过这个示例：
+模型 API 必须接受以 `Authorization: Bearer` 发送的访问令牌。Azure OpenAI 配合 Microsoft Entra ID 时，在应用注册中添加联合凭据，填入集群的 issuer、subject `system:serviceaccount:<namespace>:builder-agent` 和 audience `api://AzureADTokenExchange`。Entra 必须能访问 issuer 的发现文档。在资源上给这个应用 Cognitive Services OpenAI User 角色。再设置 `agent.auth`：
 
 ```yaml
 agent:
