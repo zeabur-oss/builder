@@ -30,7 +30,8 @@
 //!
 //! The Pod runs as a non-root user with a read-only root filesystem, no capabilities and no
 //! service account token: `RUN` steps execute in buildkitd, so the Job needs no
-//! privileges. Every container has the same memory request and limit ([`JobMemory`]).
+//! privileges. Every container has the same memory request and limit ([`JobMemory`]). The
+//! `plan` container of a planner that sets `resources` gets those instead.
 
 pub mod buildkitd;
 
@@ -50,7 +51,7 @@ use zeabur_builder_api::build::{Build, EnvVar as BuildEnvVar, SourceKind};
 use zeabur_builder_api::build_run::BuildRun;
 use zeabur_builder_api::cluster_builder::{
     AgentPlanner, AnthropicFederation, ClusterBuilderSpec, Frontend as FrontendKind, ModelAuth,
-    OpenAiFederation, Planner, PlannerSpec,
+    OpenAiFederation, Planner, PlannerSpec, ResourceList,
 };
 use zeabur_builder_api::{annotations, labels};
 use zeabur_builder_core::build_plan::{self, BuildPlan, Image, NonRoot, Output, PREVIOUS_DIGEST};
@@ -325,16 +326,16 @@ pub fn job(inputs: &JobInputs<'_>) -> Result<Job, JobError> {
     let resolved = resolve(inputs, &context);
     let annotations = job_annotations(inputs, &resolved, revision);
 
-    let fetch = match &source.kind {
+    let mut fetch = match &source.kind {
         SourceKind::Git { git } => fetch_container(inputs, &git.url),
         SourceKind::Archive { .. } => archive_container(inputs, namespace),
     };
-    let mut init_containers = vec![fetch];
-    init_containers.extend(plan_container(inputs, &resolved, &context));
     let resources = inputs.memory.requirements();
-    for container in &mut init_containers {
-        container.resources = Some(resources.clone());
-    }
+    fetch.resources = Some(resources.clone());
+    let init_containers = [Some(fetch), plan_container(inputs, &resolved, &context)]
+        .into_iter()
+        .flatten()
+        .collect();
     let plan = build_plan(inputs, &resolved, &context, repo.as_ref());
     let mut pod_annotations = annotations.clone();
     pod_annotations.insert(
@@ -530,11 +531,46 @@ fn plan_container(
     resolved: &Resolved<'_>,
     context: &str,
 ) -> Option<Container> {
-    match resolved.plan {
-        Plan::None => None,
-        Plan::Restore(digest) => Some(restore_container(inputs, digest)),
-        Plan::Railpack(planner) => Some(railpack_container(inputs, planner, context)),
-        Plan::Agent(agent) => Some(agent_container(inputs, agent, context)),
+    let container = match resolved.plan {
+        Plan::None => return None,
+        Plan::Restore(digest) => restore_container(inputs, digest),
+        Plan::Railpack(planner) => railpack_container(inputs, planner, context),
+        Plan::Agent(agent) => agent_container(inputs, agent, context),
+    };
+    Some(Container {
+        resources: Some(plan_requirements(&resolved.plan, inputs.memory)),
+        ..container
+    })
+}
+
+/// The `plan` container's requests and limits: the planner's `resources`, with the Job memory when
+/// they set no memory. Without `resources`, and for a restored plan, the Job memory alone.
+fn plan_requirements(plan: &Plan<'_>, memory: &JobMemory) -> ResourceRequirements {
+    let planner = match plan {
+        Plan::Railpack(planner) => Some(*planner),
+        Plan::Agent(agent) => Some(&agent.planner),
+        Plan::None | Plan::Restore(_) => None,
+    };
+    let Some(resources) = planner.and_then(|planner| planner.resources.as_ref()) else {
+        return memory.requirements();
+    };
+    let quantities = |list: Option<&ResourceList>| -> BTreeMap<String, Quantity> {
+        list.into_iter()
+            .flat_map(|list| [("cpu", &list.cpu), ("memory", &list.memory)])
+            .filter_map(|(name, quantity)| Some((name.to_owned(), quantity.clone()?)))
+            .collect()
+    };
+    let mut requests = quantities(resources.requests.as_ref());
+    let mut limits = quantities(resources.limits.as_ref());
+    if !requests.contains_key("memory") && !limits.contains_key("memory") {
+        let job = memory.requirements();
+        requests.extend(job.requests.unwrap_or_default());
+        limits.extend(job.limits.unwrap_or_default());
+    }
+    ResourceRequirements {
+        requests: (!requests.is_empty()).then_some(requests),
+        limits: (!limits.is_empty()).then_some(limits),
+        ..ResourceRequirements::default()
     }
 }
 
