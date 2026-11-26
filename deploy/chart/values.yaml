@@ -12,6 +12,10 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+# Secrets the controller's Pod pulls its image with, such as [{name: mirror-credentials}]. Build Jobs
+# and buildkitd do not use them.
+imagePullSecrets: []
+
 # The build Job's image: buildctl, git and ssh. Same tag and digest rules as image.
 jobImage:
   repository: ghcr.io/zeabur-oss/builder-job
@@ -148,6 +152,17 @@ extraArgs: []
 resources:
   requests: {cpu: 10m, memory: 32Mi}
   limits: {memory: 256Mi}
+
+# The controller's Pod, as `helm create` names them. builds.nodeSelector and builds.tolerations
+# place build Jobs and buildkitd.
+podLabels: {}
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: {type: RuntimeDefault}
+nodeSelector: {}
+tolerations: []
+affinity: {}
 
 githubApp:
   # The App's Secret and the ConfigMap that grants installations to namespaces, both in this
