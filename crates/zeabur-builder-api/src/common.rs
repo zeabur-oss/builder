@@ -18,6 +18,29 @@ pub const MAX_NAME: usize = 253;
 /// first and each once, with a fraction only on the last. jiff reads all of it.
 pub const DURATION_PATTERN: &str = r"^(([0-9]{1,6}h)?([0-9]{1,6}m)?([0-9]{1,6}s)?[0-9]{1,6}(\.[0-9]{1,3})?ms|([0-9]{1,6}h)?([0-9]{1,6}m)?[0-9]{1,6}(\.[0-9]{1,3})?s|([0-9]{1,6}h)?[0-9]{1,6}(\.[0-9]{1,3})?m|[0-9]{1,6}(\.[0-9]{1,3})?h)$";
 
+/// A Kubernetes quantity in text, such as `500m` or `2Gi`. The pattern controller-gen writes for
+/// `resource.Quantity` ([`known_types.go`]).
+///
+/// [`known_types.go`]: https://github.com/kubernetes-sigs/controller-tools/blob/main/pkg/crd/known_types.go
+pub const QUANTITY_PATTERN: &str = r"^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$";
+
+/// Longest quantity.
+pub const MAX_QUANTITY: usize = 64;
+
+/// The schema of an optional quantity: an integer, or a string in [`QUANTITY_PATTERN`], as
+/// controller-gen writes it for `resource.Quantity` ([`known_types.go`]).
+///
+/// [`known_types.go`]: https://github.com/kubernetes-sigs/controller-tools/blob/main/pkg/crd/known_types.go
+#[cfg(feature = "schema")]
+pub(crate) fn quantity(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "x-kubernetes-int-or-string": true,
+        "pattern": QUANTITY_PATTERN,
+        "maxLength": MAX_QUANTITY,
+        "nullable": true,
+    })
+}
+
 /// What a build built from: a full commit SHA, or an archive's manifest digest.
 pub const REVISION_PATTERN: &str = "^([0-9a-f]{40}|sha256:[0-9a-f]{64})$";
 

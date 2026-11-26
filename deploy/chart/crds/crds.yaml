@@ -235,15 +235,17 @@
                             "properties": {
                               "cpu": {
                                 "description": "CPU, such as `500m`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               },
                               "memory": {
                                 "description": "Memory, such as `1Gi`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               }
                             },
                             "type": "object"
@@ -254,15 +256,17 @@
                             "properties": {
                               "cpu": {
                                 "description": "CPU, such as `500m`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               },
                               "memory": {
                                 "description": "Memory, such as `1Gi`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               }
                             },
                             "type": "object"
@@ -347,15 +351,17 @@
                             "properties": {
                               "cpu": {
                                 "description": "CPU, such as `500m`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               },
                               "memory": {
                                 "description": "Memory, such as `1Gi`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               }
                             },
                             "type": "object"
@@ -366,15 +372,17 @@
                             "properties": {
                               "cpu": {
                                 "description": "CPU, such as `500m`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               },
                               "memory": {
                                 "description": "Memory, such as `1Gi`.",
-                                "maxLength": 32,
+                                "maxLength": 64,
                                 "nullable": true,
-                                "type": "string"
+                                "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                                "x-kubernetes-int-or-string": true
                               }
                             },
                             "type": "object"
@@ -433,13 +441,15 @@
                         "description": "`--buildkitd-cpu-max`; missing: no ceiling.",
                         "maxLength": 64,
                         "nullable": true,
-                        "type": "string"
+                        "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                        "x-kubernetes-int-or-string": true
                       },
                       "memory": {
                         "description": "`--buildkitd-memory-max`; missing: no ceiling.",
                         "maxLength": 64,
                         "nullable": true,
-                        "type": "string"
+                        "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                        "x-kubernetes-int-or-string": true
                       }
                     },
                     "type": "object"
@@ -456,13 +466,15 @@
                             "description": "CPU, such as `100m` or `1`.",
                             "maxLength": 64,
                             "nullable": true,
-                            "type": "string"
+                            "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                            "x-kubernetes-int-or-string": true
                           },
                           "memory": {
                             "description": "Memory, such as `256Mi`.",
                             "maxLength": 64,
                             "nullable": true,
-                            "type": "string"
+                            "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                            "x-kubernetes-int-or-string": true
                           }
                         },
                         "type": "object"
@@ -475,13 +487,15 @@
                             "description": "CPU, such as `100m` or `1`.",
                             "maxLength": 64,
                             "nullable": true,
-                            "type": "string"
+                            "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                            "x-kubernetes-int-or-string": true
                           },
                           "memory": {
                             "description": "Memory, such as `256Mi`.",
                             "maxLength": 64,
                             "nullable": true,
-                            "type": "string"
+                            "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+                            "x-kubernetes-int-or-string": true
                           }
                         },
                         "type": "object"

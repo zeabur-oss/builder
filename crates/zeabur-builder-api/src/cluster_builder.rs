@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::build::MAX_CONDITIONS;
 use crate::common::{Condition, SecretKeyRef};
 #[cfg(feature = "schema")]
-use crate::common::{DURATION_PATTERN, MAX_NAME};
+use crate::common::{DURATION_PATTERN, MAX_NAME, quantity};
 
 /// Longest image reference.
 pub const MAX_IMAGE: usize = 512;
@@ -23,15 +23,13 @@ pub const MAX_OPT_KEY: usize = 128;
 /// Longest frontend option value, in characters. With the other limits, the build plan of the
 /// largest Build stays under the 256 KiB a Pod's annotations may hold, even in 4-byte characters.
 pub const MAX_OPT_VALUE: usize = 512;
-/// Longest quantity in the status.
-pub const MAX_QUANTITY: usize = 64;
 /// Longest model provider id, such as a federation rule.
 #[cfg(feature = "schema")]
 const MAX_ID: usize = 256;
 
 /// A way to build. Every builder reduces to the same shape: an optional planner that writes files
 /// into `/workspace/plan`, then a `BuildKit` frontend with options that reads them.
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[kube(
     group = "builder.zeabur.com",
@@ -111,11 +109,11 @@ pub struct BuildDefaults {
 pub struct BuildQuantities {
     /// CPU, such as `100m` or `1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
+    #[cfg_attr(feature = "schema", schemars(schema_with = "quantity"))]
     pub cpu: Option<Quantity>,
     /// Memory, such as `256Mi`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
+    #[cfg_attr(feature = "schema", schemars(schema_with = "quantity"))]
     pub memory: Option<Quantity>,
 }
 
@@ -126,16 +124,16 @@ pub struct BuildQuantities {
 pub struct BuildCeiling {
     /// `--buildkitd-cpu-max`; missing: no ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
+    #[cfg_attr(feature = "schema", schemars(schema_with = "quantity"))]
     pub cpu: Option<Quantity>,
     /// `--buildkitd-memory-max`; missing: no ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>", length(max = MAX_QUANTITY)))]
+    #[cfg_attr(feature = "schema", schemars(schema_with = "quantity"))]
     pub memory: Option<Quantity>,
 }
 
 /// The planners.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[cfg_attr(feature = "schema", schemars(transform = crate::union::tagged))]
@@ -155,7 +153,7 @@ pub enum Planner {
 }
 
 /// A planner's container.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct PlannerSpec {
@@ -172,7 +170,7 @@ pub struct PlannerSpec {
 }
 
 /// The agent planner and the model it calls.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPlanner {
@@ -330,7 +328,7 @@ impl OpenAiFederation {
 }
 
 /// CPU and memory, as Kubernetes quantities.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct Resources {
     /// Requests.
@@ -342,17 +340,17 @@ pub struct Resources {
 }
 
 /// A CPU and memory amount.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct ResourceList {
     /// CPU, such as `500m`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schemars(length(max = 32)))]
-    pub cpu: Option<String>,
+    #[cfg_attr(feature = "schema", schemars(schema_with = "quantity"))]
+    pub cpu: Option<Quantity>,
     /// Memory, such as `1Gi`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schema", schemars(length(max = 32)))]
-    pub memory: Option<String>,
+    #[cfg_attr(feature = "schema", schemars(schema_with = "quantity"))]
+    pub memory: Option<Quantity>,
 }
 
 /// The `BuildKit` frontend.
@@ -392,4 +390,17 @@ pub enum Frontend {
         #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_IMAGE)))]
         source: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CRD takes `cpu: 1` without quotes, and the API server stores it as a number.
+    #[test]
+    fn a_quantity_reads_from_a_number_or_text() {
+        let list: ResourceList = serde_json::from_str(r#"{"cpu": 1, "memory": "2Gi"}"#).unwrap();
+        assert_eq!(list.cpu, Some(Quantity("1".to_owned())));
+        assert_eq!(list.memory, Some(Quantity("2Gi".to_owned())));
+    }
 }
