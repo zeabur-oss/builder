@@ -65,7 +65,7 @@ A running buildkitd keeps its settings. If you change the cache size, storage cl
 
 Each build has one Job. The Job runs `buildctl` and doesn't need privileges.
 
-Each container of the Job requests 128 MiB of memory and may use up to 512 MiB (chart value `jobResources`). `RUN` steps run in buildkitd and count against `buildkitd.resources` instead.
+Each container of the Job requests 128 MiB of memory and may use up to 512 MiB (chart value `jobResources`). `RUN` steps run in buildkitd and count against `buildkitd.resources` instead. If a ClusterBuilder's planner sets `resources`, its `plan` container gets them in place of this memory.
 
 The Namespace annotation `builder.zeabur.com/build-memory`, such as `2Gi`, sets the memory limit of one build on buildkitd and of each container of the Job. If a container of the Job or buildkitd runs out of memory, the build fails with `OutOfMemory`. A raised limit reaches the Job at once, but buildkitd gets it only after it has been idle and is replaced. Until then, the `OutOfMemory` message says that buildkitd still has the old limit.
 

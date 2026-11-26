@@ -65,7 +65,7 @@ buildkitd 閒置 10 分鐘後會縮到零。
 
 每次建置都有一個 Job。Job 會執行 `buildctl`，不需要特權。
 
-Job 的每個容器要 128 MiB 記憶體，最多能用 512 MiB（chart 的 `jobResources`）。`RUN` 步驟在 buildkitd 裡跑，算在 `buildkitd.resources`。
+Job 的每個容器要 128 MiB 記憶體，最多能用 512 MiB（chart 的 `jobResources`）。`RUN` 步驟在 buildkitd 裡跑，算在 `buildkitd.resources`。如果 ClusterBuilder 的 planner 設了 `resources`，`plan` 容器就改用這些值。
 
 Namespace 的註解 `builder.zeabur.com/build-memory`（例如 `2Gi`）會同時設定一次建置在 buildkitd 上的記憶體上限，和 Job 每個容器的上限。Job 的容器或 buildkitd 記憶體不夠時，建置會以 `OutOfMemory` 失敗。調高的上限會立刻套用到 Job，但 buildkitd 要等閒置、被替換後才會套用。在那之前，`OutOfMemory` 的訊息會說明 buildkitd 還是舊的上限。
 

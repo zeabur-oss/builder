@@ -12,7 +12,7 @@ use zeabur_builder_api::build::{
 use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{
     AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, MAX_IMAGE, MAX_OPT_KEY,
-    MAX_OPT_VALUE, MAX_OPTS, ModelAuth, ModelSpec, Planner, PlannerSpec,
+    MAX_OPT_VALUE, MAX_OPTS, ModelAuth, ModelSpec, Planner, PlannerSpec, ResourceList, Resources,
 };
 use zeabur_builder_api::common::SecretKeyRef;
 
@@ -250,6 +250,7 @@ fn dockerfile_in_a_monorepo() {
     );
 }
 
+/// The plan container takes the `ClusterBuilder`'s `resources` in place of the Job memory.
 #[test]
 fn railpack_with_secrets() {
     let run = build_run();
@@ -271,7 +272,19 @@ fn railpack_with_secrets() {
         },
     ];
     let build = build("https://github.com/acme/web", None, env);
-    let builder = railpack();
+    let mut builder = railpack();
+    if let Planner::Railpack { railpack } = &mut builder.planner {
+        railpack.resources = Some(Resources {
+            requests: Some(ResourceList {
+                cpu: Some(Quantity("500m".to_owned())),
+                memory: None,
+            }),
+            limits: Some(ResourceList {
+                cpu: None,
+                memory: Some(Quantity("2Gi".to_owned())),
+            }),
+        });
+    }
     let tags = tags();
     let auth = GitAuth::Basic {
         secret: "api-x7k2p-git",
@@ -734,6 +747,53 @@ fn jobs_run_on_the_build_node() {
     let pod = job(&inputs).unwrap().spec.unwrap().template.spec.unwrap();
     assert_eq!(pod.node_selector, Some(placement.node_selector));
     assert_eq!(pod.tolerations, Some(placement.tolerations));
+}
+
+/// A planner's `resources` without memory keep the Job memory for the plan container.
+#[test]
+fn a_planner_without_memory_keeps_the_job_memory() {
+    let run = build_run();
+    let build = build("https://github.com/acme/api", None, Vec::new());
+    let mut builder = railpack();
+    if let Planner::Railpack { railpack } = &mut builder.planner {
+        railpack.resources = Some(Resources {
+            requests: None,
+            limits: Some(ResourceList {
+                cpu: Some(Quantity("2".to_owned())),
+                memory: None,
+            }),
+        });
+    }
+    let tags = tags();
+    let inputs = inputs(
+        &run,
+        &build,
+        "railpack",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    );
+    let pod = job(&inputs).unwrap().spec.unwrap().template.spec.unwrap();
+    let plan = pod
+        .init_containers
+        .unwrap()
+        .into_iter()
+        .find(|container| container.name == "plan")
+        .unwrap();
+    let resources = plan.resources.unwrap();
+    let quantities = |pairs: &[(&str, &str)]| {
+        Some(
+            pairs
+                .iter()
+                .map(|(name, quantity)| ((*name).to_owned(), Quantity((*quantity).to_owned())))
+                .collect::<BTreeMap<_, _>>(),
+        )
+    };
+    assert_eq!(resources.requests, quantities(&[("memory", "128Mi")]));
+    assert_eq!(
+        resources.limits,
+        quantities(&[("cpu", "2"), ("memory", "512Mi")])
+    );
 }
 
 #[test]
