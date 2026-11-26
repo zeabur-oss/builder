@@ -77,7 +77,7 @@ impl TokenSource for Anthropic {
         "Anthropic"
     }
 
-    fn url(&self) -> &'static str {
+    fn url(&self) -> &str {
         TOKEN_URL
     }
 

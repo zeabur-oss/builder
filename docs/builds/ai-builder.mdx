@@ -103,6 +103,39 @@ agent:
 
 Only the plan container mounts the token, and only for the provider's audience. The run gets no token for the Kubernetes API. While the ServiceAccount is missing, the run waits with `ModelKeyMissing`.
 
+### Another token endpoint
+
+With another provider, `tokenExchange` sends the service account token to any OAuth 2.0 token endpoint as a form and uses the `access_token` of the reply as a bearer token. The reply must have `token_type` `Bearer` and `expires_in`. The run gets a new token before the old one expires.
+
+- `audience`: the audience of the service account token that the token endpoint accepts.
+- `url`: the token endpoint. It must start with `https://`.
+- `subjectField`: the form field that carries the service account token.
+- `form`: the other form fields, sent as they are. The ClusterBuilder is not a Secret, so put no secret in `form`.
+
+The model API must accept the access token as `Authorization: Bearer`. For Azure OpenAI with Microsoft Entra ID, add a federated credential to an app registration with the cluster's issuer, the subject `system:serviceaccount:<namespace>:builder-agent` and the audience `api://AzureADTokenExchange`. Entra must reach the issuer's discovery document. Give the app the role Cognitive Services OpenAI User on the resource. Then set `agent.auth`:
+
+```yaml
+agent:
+  enabled: true
+  provider: openai
+  model: <deployment>
+  baseUrl: https://<resource>.openai.azure.com/openai/v1/
+  auth:
+    type: tokenExchange
+    tokenExchange:
+      serviceAccountName: builder-agent
+      audience: api://AzureADTokenExchange
+      url: https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
+      subjectField: client_assertion
+      form:
+        grant_type: client_credentials
+        client_id: <application client ID>
+        client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+        scope: https://cognitiveservices.azure.com/.default
+```
+
+A model API that does not take a bearer token, such as Amazon Bedrock with AWS Signature Version 4, needs a gateway that does: set `agent.baseUrl` to the gateway and sign in to it with an API key or a token exchange.
+
 ## Read the result
 
 List the Build's runs, then read `status.plan` of one of them:
