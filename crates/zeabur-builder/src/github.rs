@@ -849,11 +849,9 @@ mod tests {
             })
         );
         let plain = status_body(State::Pending, "zeabur-builder/a/b", "Building", None);
-        assert!(
-            serde_json::to_value(&plain)
-                .unwrap()
-                .get("target_url")
-                .is_none()
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            json!({"state": "pending", "context": "zeabur-builder/a/b", "description": "Building"})
         );
     }
 
