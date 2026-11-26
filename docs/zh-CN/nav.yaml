@@ -6,13 +6,13 @@
 - group: builds
   label: 构建
   pages:
+    ai-builder: 用 AI 构建器构建
     triggers: 触发构建
     private-repos: 构建私有仓库
     archive-source: 从上传的文件夹构建
     rollout: 部署构建好的镜像
     external-registries: 推送到外部镜像仓库
     build-nodes: 在构建节点上构建
-    no-dockerfile: 构建没有 Dockerfile 的仓库
 - group: operations
   label: 运维
   pages:
@@ -24,4 +24,4 @@
   pages:
     how-it-works: 工作原理
     security: 安全性与信任模型
-    ai-dockerfile: 用 AI 写 Dockerfile
+    ai-dockerfile: 在集群外运行 AI 构建器

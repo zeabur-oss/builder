@@ -3,7 +3,7 @@ title: Get started with Zeabur Builder
 description: Push your code to GitHub and it is built and deployed. Use Zeabur Builder through Zeabur OSS, or on its own to build images from Git with BuildKit.
 ---
 
-Zeabur Builder turns a Git repository into an image that can run. It finds the language your code is in with [Railpack](https://railpack.com) (Node.js, Python, Go, PHP, Ruby, Java, Rust, Elixir, Deno, .NET, Gleam, C++, Zig, static sites and shell scripts), or builds your Dockerfile, and builds again when the branch changes.
+Zeabur Builder turns a Git repository into an image that can run. It finds the language your code is in with [Railpack](https://railpack.com) (Node.js, Python, Go, PHP, Ruby, Java, Rust, Elixir, Deno, .NET, Gleam, C++, Zig, static sites and shell scripts), builds your Dockerfile, or has a model write one with the [AI builder](builds/ai-builder.mdx), and builds again when the branch changes.
 
 ## I use Zeabur OSS
 
@@ -41,7 +41,7 @@ Install the controller with the Helm chart, then create your first `Build`. Each
 - [Deploy built images](builds/rollout.mdx): Tags and Keel notifications.
 - [Push to external registries](builds/external-registries.mdx)
 - [Run builds on a build node](builds/build-nodes.mdx)
-- [Build a repository without a Dockerfile](builds/no-dockerfile.mdx): A model writes one, and later runs reuse it.
+- [Build with the AI builder](builds/ai-builder.mdx): When there is no Dockerfile and Railpack can't build it, a model writes one, and later runs reuse it.
 
 ### Operate the cluster
 
@@ -53,4 +53,4 @@ Install the controller with the Helm chart, then create your first `Build`. Each
 
 - [How it works](reference/how-it-works.mdx)
 - [Security and trust model](reference/security.mdx): buildkitd runs privileged; read this before you let people you don't trust build.
-- [Write a Dockerfile with AI](reference/ai-dockerfile.mdx): Run the agent yourself and read what it reports.
+- [Run the AI builder outside a cluster](reference/ai-dockerfile.mdx): Run the agent yourself and read what it reports.

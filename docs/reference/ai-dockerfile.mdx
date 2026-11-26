@@ -1,9 +1,9 @@
 ---
-title: Write a Dockerfile with AI
+title: Run the AI builder outside a cluster
 description: Run zeabur-builder-agent on a repository without a Dockerfile to get one that passed a trial build, then use it with Zeabur Builder.
 ---
 
-When a repository has no Dockerfile, run `zeabur-builder-agent`. A model reads the code, writes a Dockerfile and trial-builds it on a BuildKit daemon (`buildkitd`). You only get a Dockerfile that built. On this page you run the command yourself. To have Zeabur Builder run it for a Build, see [Build a repository without a Dockerfile](../builds/no-dockerfile.mdx).
+When a repository has no Dockerfile, run `zeabur-builder-agent`. A model reads the code, writes a Dockerfile and trial-builds it on a BuildKit daemon (`buildkitd`). You only get a Dockerfile that built. On this page you run the command yourself. To have Zeabur Builder run it for a Build, see [Build with the AI builder](../builds/ai-builder.mdx).
 
 ## Run it
 
@@ -117,7 +117,7 @@ With Anthropic and OpenAI, the tool can exchange a Kubernetes service account to
 
 These steps work for a cluster whose service account issuer cannot be reached from the internet, such as a default k3s cluster.
 
-For the `agent` builder, do the first two steps, then follow [Build a repository without a Dockerfile](../builds/no-dockerfile.mdx) instead of the third: the builder mounts the token and sets the variables.
+For the AI builder, do the first two steps, then follow [Build with the AI builder](../builds/ai-builder.mdx) instead of the third: the builder mounts the token and sets the variables.
 
 <Steps>
 

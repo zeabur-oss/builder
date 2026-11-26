@@ -1,9 +1,13 @@
 ---
-title: 构建没有 Dockerfile 的仓库
-description: 启用 agent 构建器，让模型写出能构建的 Dockerfile，之后的构建会沿用，也可以提交进仓库。
+title: 用 AI 构建器构建
+description: 仓库没有 Dockerfile、Railpack 也构建不了时，启用 AI 构建器。模型会写出能构建的 Dockerfile，之后的构建沿用这份。
 ---
 
-把 Build 的 `builderRef` 设为 `agent`，Zeabur Builder 就能构建没有 Dockerfile 的 Git 仓库：模型读取代码、写出 Dockerfile 并试着构建，然后照常构建并推送镜像。之后的构建会沿用这份 Dockerfile，不必再调用模型。
+使用 AI 构建器（`builderRef: agent`）时，模型会读取代码、写出 Dockerfile 并试着构建，然后照常构建并推送镜像。之后的构建会沿用这份 Dockerfile，不必再调用模型。
+
+仓库有 Dockerfile 就用 `dockerfile`，Railpack 认得它的语言就用 `railpack`，两个都构建不了时再用 AI 构建器。它需要模型提供商的 API 密钥，每写一份 Dockerfile 都会消耗 token。
+
+设置分三步：保存密钥、在 chart 启用 AI 构建器、把 Build 的 `builderRef` 设为 `agent`。Zeabur 开源版的界面还不能选 AI 构建器（[zeabur-oss/zeabur#1021](https://github.com/zeabur-oss/zeabur/issues/1021)），所以下面的步骤使用 `kubectl` 和 `helm`。
 
 <Steps>
 
@@ -23,7 +27,7 @@ kubectl -n team-a create secret generic model --from-file=anthropic=./model-key
 
 <Step>
 
-### 启用 agent 构建器
+### 启用 AI 构建器
 
 升级 chart，保留原有配置并启用 `agent`：
 
@@ -40,7 +44,7 @@ chart 会安装名为 `agent` 的 ClusterBuilder。要改用同一个 API 的其
 
 <Step>
 
-### 让 Build 使用 agent 构建器
+### 让 Build 使用 AI 构建器
 
 把 `spec.builderRef` 设为 `agent`：
 
@@ -59,7 +63,7 @@ spec:
 
 ## 不用 API 密钥登录
 
-使用 Anthropic 和 OpenAI 时，run 可以用 Kubernetes 服务账号令牌换取短期访问令牌，Namespace 里就不用存放 API 密钥。先按照 [用 AI 写 Dockerfile](../reference/ai-dockerfile.mdx) 中“用服务账号令牌代替 API 密钥”一节，在提供商处登记集群。subject 填 `system:serviceaccount:<namespace>:builder-agent`。
+使用 Anthropic 和 OpenAI 时，run 可以用 Kubernetes 服务账号令牌换取短期访问令牌，Namespace 里就不用存放 API 密钥。先按照[在集群外运行 AI 构建器](../reference/ai-dockerfile.mdx)中“用服务账号令牌代替 API 密钥”一节，在提供商处登记集群。subject 填 `system:serviceaccount:<namespace>:builder-agent`。
 
 在每个有 Build 使用 `agent` 构建器的 Namespace 创建这个 ServiceAccount：
 
@@ -126,7 +130,7 @@ plan 步骤会在日志打印完整的 Dockerfile，最后一行就是上面的�
 kubectl -n team-a logs job/<run> -c plan
 ```
 
-模型能读取哪些内容、有哪些限制，请见[用 AI 写 Dockerfile](../reference/ai-dockerfile.mdx)。
+模型能读取哪些内容、有哪些限制，请见[在集群外运行 AI 构建器](../reference/ai-dockerfile.mdx)。
 
 ## 之后的构建
 

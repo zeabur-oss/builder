@@ -3,7 +3,7 @@ title: 开始使用 Zeabur Builder
 description: 代码推到 GitHub 就会构建并部署。在 Zeabur 开源版中使用 Zeabur Builder，或单独用它以 BuildKit 从 Git 构建镜像。
 ---
 
-Zeabur Builder 把 Git 仓库变成可以运行的镜像。它用 [Railpack](https://railpack.com) 识别代码使用的语言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、静态网站和 shell 脚本），或按你的 Dockerfile 构建，之后分支一有更新就会重新构建。
+Zeabur Builder 把 Git 仓库变成可以运行的镜像。它用 [Railpack](https://railpack.com) 识别代码使用的语言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、静态网站和 shell 脚本），按你的 Dockerfile 构建，或用 [AI 构建器](builds/ai-builder.mdx)让模型写一份，之后分支一有更新就会重新构建。
 
 ## 我在用 Zeabur 开源版
 
@@ -41,7 +41,7 @@ API 版本是 `v1alpha1`。升级前请先阅读[更新日志](../../CHANGELOG.m
 - [部署构建好的镜像](builds/rollout.mdx)：标签和 Keel 通知。
 - [推送到外部镜像仓库](builds/external-registries.mdx)
 - [在构建节点上构建](builds/build-nodes.mdx)
-- [构建没有 Dockerfile 的仓库](builds/no-dockerfile.mdx)：模型写一份，之后的构建沿用。
+- [用 AI 构建器构建](builds/ai-builder.mdx)：没有 Dockerfile、Railpack 也构建不了时，由模型写一份，之后的构建沿用。
 
 ### 管理集群
 
@@ -53,4 +53,4 @@ API 版本是 `v1alpha1`。升级前请先阅读[更新日志](../../CHANGELOG.m
 
 - [工作原理](reference/how-it-works.mdx)
 - [安全性与信任模型](reference/security.mdx)：buildkitd 以 privileged 模式运行，让你不信任的人构建之前先读这一页。
-- [用 AI 写 Dockerfile](reference/ai-dockerfile.mdx)：自己运行 agent，并了解它报告的内容。
+- [在集群外运行 AI 构建器](reference/ai-dockerfile.mdx)：自己运行 agent，并了解它报告的内容。

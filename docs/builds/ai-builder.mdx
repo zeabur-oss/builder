@@ -1,9 +1,13 @@
 ---
-title: Build a repository without a Dockerfile
-description: Turn on the agent builder so a model writes a Dockerfile that builds, then reuse it or commit it to the repository.
+title: Build with the AI builder
+description: When a repository has no Dockerfile and Railpack can't build it, turn on the AI builder. A model writes a Dockerfile that builds, and later builds reuse it.
 ---
 
-Set a Build's `builderRef` to `agent`, and Zeabur Builder builds a Git repository that has no Dockerfile. A model reads the code, writes a Dockerfile and trial-builds it. Then the run builds and pushes the image as usual. Later runs reuse that Dockerfile and do not call the model.
+With the AI builder (`builderRef: agent`), a model reads the code, writes a Dockerfile and trial-builds it. Then the run builds and pushes the image as usual. Later runs reuse that Dockerfile and do not call the model.
+
+Use `dockerfile` when the repository has a Dockerfile, and `railpack` when Railpack knows its language. Use the AI builder when neither builds it. It needs an API key from a model provider, and each Dockerfile it writes uses tokens.
+
+Setup takes three steps: save the key, turn the AI builder on in the chart, and set the Build's `builderRef` to `agent`. The Zeabur OSS interface can't pick the AI builder yet ([zeabur-oss/zeabur#1021](https://github.com/zeabur-oss/zeabur/issues/1021)), so these steps use `kubectl` and `helm`.
 
 <Steps>
 
@@ -23,7 +27,7 @@ Every Namespace with a Build on the `agent` builder needs this Secret. Only the 
 
 <Step>
 
-### Turn on the agent builder
+### Turn on the AI builder
 
 Upgrade the chart, keep your values and turn on `agent`:
 
@@ -40,7 +44,7 @@ The chart installs a ClusterBuilder named `agent`. To send requests to another e
 
 <Step>
 
-### Point a Build at the agent builder
+### Point a Build at the AI builder
 
 Set `spec.builderRef` to `agent`:
 
@@ -59,7 +63,7 @@ spec:
 
 ## Sign in without an API key
 
-With Anthropic and OpenAI, a run can exchange a Kubernetes service account token for a short-lived access token, so no Namespace stores an API key. First register the cluster with the provider as in "Use a service account token instead of an API key" in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx). Use the subject `system:serviceaccount:<namespace>:builder-agent`.
+With Anthropic and OpenAI, a run can exchange a Kubernetes service account token for a short-lived access token, so no Namespace stores an API key. First register the cluster with the provider as in "Use a service account token instead of an API key" in [Run the AI builder outside a cluster](../reference/ai-dockerfile.mdx). Use the subject `system:serviceaccount:<namespace>:builder-agent`.
 
 Create that ServiceAccount in each Namespace with a Build on the `agent` builder:
 
@@ -126,7 +130,7 @@ The plan step's log has the whole Dockerfile, and its last line is the same repo
 kubectl -n team-a logs job/<run> -c plan
 ```
 
-What the model may read and its limits are in [Write a Dockerfile with AI](../reference/ai-dockerfile.mdx).
+What the model may read and its limits are in [Run the AI builder outside a cluster](../reference/ai-dockerfile.mdx).
 
 ## Later runs
 

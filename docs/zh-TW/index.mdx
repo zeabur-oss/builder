@@ -3,7 +3,7 @@ title: 開始使用 Zeabur Builder
 description: 程式碼推上 GitHub 就會建置並部署。在 Zeabur 開源版裡使用 Zeabur Builder，或單獨用它以 BuildKit 從 Git 建置映像檔。
 ---
 
-Zeabur Builder 把 Git 儲存庫變成可以執行的映像檔。它用 [Railpack](https://railpack.com) 判斷程式碼用的語言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、靜態網站和 shell 腳本），或依照你的 Dockerfile 建置，之後分支一有更新就會重新建置。
+Zeabur Builder 把 Git 儲存庫變成可以執行的映像檔。它用 [Railpack](https://railpack.com) 判斷程式碼用的語言（Node.js、Python、Go、PHP、Ruby、Java、Rust、Elixir、Deno、.NET、Gleam、C++、Zig、靜態網站和 shell 腳本），依照你的 Dockerfile 建置，或用 [AI 建置器](builds/ai-builder.mdx)讓模型寫一份，之後分支一有更新就會重新建置。
 
 ## 我在用 Zeabur 開源版
 
@@ -41,7 +41,7 @@ API 版本是 `v1alpha1`。升級前請先讀[更新紀錄](../../CHANGELOG.md)�
 - [部署建置好的映像檔](builds/rollout.mdx)：tag 和 Keel 通知。
 - [推送到外部 registry](builds/external-registries.mdx)
 - [在建置節點上建置](builds/build-nodes.mdx)
-- [建置沒有 Dockerfile 的儲存庫](builds/no-dockerfile.mdx)：模型寫一份，之後的建置沿用。
+- [用 AI 建置器建置](builds/ai-builder.mdx)：沒有 Dockerfile、Railpack 也建置不了時，由模型寫一份，之後的建置沿用。
 
 ### 管理叢集
 
@@ -53,4 +53,4 @@ API 版本是 `v1alpha1`。升級前請先讀[更新紀錄](../../CHANGELOG.md)�
 
 - [運作方式](reference/how-it-works.mdx)
 - [安全性與信任模型](reference/security.mdx)：buildkitd 以 privileged 模式執行，讓你不信任的人建置前先讀這一頁。
-- [用 AI 寫 Dockerfile](reference/ai-dockerfile.mdx)：自行執行 agent，並了解它回報的內容。
+- [在叢集外執行 AI 建置器](reference/ai-dockerfile.mdx)：自行執行 agent，並了解它回報的內容。

@@ -1,9 +1,9 @@
 ---
-title: 用 AI 写 Dockerfile
+title: 在集群外运行 AI 构建器
 description: 在没有 Dockerfile 的仓库上运行 zeabur-builder-agent，拿到通过试构建的 Dockerfile，再交给 Zeabur Builder 使用。
 ---
 
-仓库还没有 Dockerfile 时，可以运行 `zeabur-builder-agent`：模型读取代码、编写 Dockerfile，并在 BuildKit 守护进程（`buildkitd`）上试构建，只有构建成功的 Dockerfile 才会输出。本页介绍如何自己运行命令；要让 Zeabur Builder 在构建时运行，请看[构建没有 Dockerfile 的仓库](../builds/no-dockerfile.mdx)。
+仓库还没有 Dockerfile 时，可以运行 `zeabur-builder-agent`：模型读取代码、编写 Dockerfile，并在 BuildKit 守护进程（`buildkitd`）上试构建，只有构建成功的 Dockerfile 才会输出。本页介绍如何自己运行命令；要让 Zeabur Builder 在构建时运行，请看[用 AI 构建器构建](../builds/ai-builder.mdx)。
 
 ## 运行
 
@@ -117,7 +117,7 @@ zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
 
 下面的步骤适用于服务账号签发者（issuer）无法从互联网访问的集群，例如默认的 k3s 集群。
 
-使用 `agent` 构建器时，做完前两步后，第三步改按 [构建没有 Dockerfile 的仓库](../builds/no-dockerfile.mdx) 配置：构建器会自己挂载令牌并设置环境变量。
+使用 AI 构建器时，做完前两步后，第三步改按[用 AI 构建器构建](../builds/ai-builder.mdx)配置：构建器会自己挂载令牌并设置环境变量。
 
 <Steps>
 
