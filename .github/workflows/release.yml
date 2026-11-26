@@ -37,7 +37,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@0558836e9cf7e00101c99d4fd123276e4a20fe20 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@395adf27d31c77538ebf7c154946b52822387b96 # main
       - name: Install the packages
         run: bun install --frozen-lockfile
       - name: The version is the crate's and the chart's, with a CHANGELOG.md section, on main
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@0558836e9cf7e00101c99d4fd123276e4a20fe20 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@395adf27d31c77538ebf7c154946b52822387b96 # main
       - name: Build the three images
         env:
           ARCH: ${{ matrix.arch }}
@@ -110,7 +110,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@0558836e9cf7e00101c99d4fd123276e4a20fe20 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@395adf27d31c77538ebf7c154946b52822387b96 # main
       - name: Install the packages
         run: bun install --frozen-lockfile
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -186,7 +186,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: zeabur-oss/.github/actions/ci-setup@0558836e9cf7e00101c99d4fd123276e4a20fe20 # main
+      - uses: zeabur-oss/.github/actions/ci-setup@395adf27d31c77538ebf7c154946b52822387b96 # main
       - name: Install the packages
         run: bun install --frozen-lockfile
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -197,7 +197,7 @@ jobs:
         run: |
           mkdir assets
           cp "published/zeabur-builder-${VERSION#v}.tgz" published/digests.txt assets/
-      - uses: zeabur-oss/.github/actions/release-draft@0558836e9cf7e00101c99d4fd123276e4a20fe20 # main
+      - uses: zeabur-oss/.github/actions/release-draft@395adf27d31c77538ebf7c154946b52822387b96 # main
         with:
           version: ${{ env.VERSION }}
           name: Zeabur Builder
@@ -212,7 +212,7 @@ jobs:
       contents: write
       attestations: read
     steps:
-      - uses: zeabur-oss/.github/actions/release-verify@0558836e9cf7e00101c99d4fd123276e4a20fe20 # main
+      - uses: zeabur-oss/.github/actions/release-verify@395adf27d31c77538ebf7c154946b52822387b96 # main
         with:
           version: ${{ env.VERSION }}
       - name: Verify the images and the chart

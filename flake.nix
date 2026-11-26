@@ -10,7 +10,7 @@
     };
     # The base shell of every zeabur-oss repository: Bun, the release tools and the shared linters.
     oss = {
-      url = "github:zeabur-oss/.github/0558836e9cf7e00101c99d4fd123276e4a20fe20";
+      url = "github:zeabur-oss/.github/395adf27d31c77538ebf7c154946b52822387b96";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
