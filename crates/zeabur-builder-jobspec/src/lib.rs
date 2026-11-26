@@ -31,7 +31,7 @@
 //! The Pod runs as a non-root user with a read-only root filesystem, no capabilities and no
 //! service account token: `RUN` steps execute in buildkitd, so the Job needs no
 //! privileges. Every container has the same memory request and limit ([`JobMemory`]). The
-//! `plan` container of a planner that sets `resources` gets those instead ([`plan_requirements`]).
+//! `plan` container of a planner that sets `resources` gets those instead.
 
 pub mod buildkitd;
 
