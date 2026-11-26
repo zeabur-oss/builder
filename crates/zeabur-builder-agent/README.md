@@ -42,8 +42,10 @@ KiB, build log pages 8 KiB.
 
 ## Trial builds
 
-`buildctl build` with no output, the bundled Dockerfile frontend pinned
+`buildctl build` with the image as an OCI tarball on stdout, the bundled Dockerfile frontend pinned
 (`--opt cmdline=dockerfile.v0`, so `# syntax` loads nothing), no entitlements, and a source
 policy that denies everything but the two local sources and images of the allowed registries
 (`--registry`, default `docker.io`, `ghcr.io`, `quay.io`, `gcr.io`). Every build ignores `.git`,
-`.env` files and other credentials.
+`.env` files and other credentials. A build whose image does not run as a numeric UID other than 0
+fails, as Kubernetes would not start it under `runAsNonRoot`. The agent reads only the image
+config from the tarball.

@@ -38,6 +38,9 @@ Rules for the Dockerfile:
 node:24.9-alpine, never a bare major or `latest`. Use a multi-stage build with a small runtime \
 stage.
 - The app listens on the port in the PORT variable when it reads one; EXPOSE that port.
+- The image runs as a numeric UID other than 0: end the final stage with `USER 1000` or the \
+UID of a user the base image has, not a user name. Give that user the files it writes, and \
+listen on a port above 1023. A build whose image runs as root fails.
 - Never copy credentials. A value the build needs is a secret: \
 RUN --mount=type=secret,id=NAME,env=NAME. Trial builds have the values of the Build's variables \
 the task names, so a step that needs any other variable is a reason to stop.

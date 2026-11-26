@@ -211,7 +211,7 @@ FROM node:22.20-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000
 COPY --from=build --chown=node:node /app ./
-USER node
+USER 1000
 EXPOSE 3000
 CMD ["node", "server.js"]
 ```
@@ -219,7 +219,7 @@ CMD ["node", "server.js"]
 The `info.json` of the same run:
 
 ```json
-{"source":"agent","details":{"port":3000,"language":"javascript","version":"22","versionSource":"package.json","buildVariables":[],"runtimeVariables":["PORT"],"notes":["No dependencies, so no npm install step is needed.","Runs as the non-root node user."]},"modelCalled":true,"inputTokens":8489,"outputTokens":644}
+{"source":"agent","details":{"port":3000,"language":"javascript","version":"22","versionSource":"package.json","buildVariables":[],"runtimeVariables":["PORT"],"notes":["No dependencies, so no npm install step is needed.","Runs as the non-root node user, UID 1000."]},"modelCalled":true,"inputTokens":8489,"outputTokens":644}
 ```
 
 `source` is `agent`, so the model wrote this Dockerfile. `details` holds the port, the language, its version and where the version came from, the build and runtime variables, and the model's notes. The app listens on port 3000 and reads `PORT` at runtime.
@@ -285,3 +285,5 @@ Every trial build leaves out the same credential files, even when the Dockerfile
 The model sees the names of the build variables, not their values. When a trial build's output holds a value, the tool replaces it with the variable's name before the model reads the output.
 
 Trial builds pull images only from the allowed registries. The tool refuses other images, files downloaded with `ADD <url>`, Git sources and `RUN --network=host`. The tool ignores a `# syntax=` line in the Dockerfile and uses the Dockerfile frontend built into `buildkitd`. Trial builds push nothing.
+
+A trial build fails when its image runs as root or as a user name. The image must run as a numeric UID other than 0, such as `USER 1000`, so it starts under the restricted Pod Security profile (`runAsNonRoot`). To read the image's user, the tool gets the image from `buildkitd` and keeps only its config.
