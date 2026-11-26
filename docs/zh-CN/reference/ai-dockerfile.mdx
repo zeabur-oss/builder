@@ -211,7 +211,7 @@ FROM node:22.20-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000
 COPY --from=build --chown=node:node /app ./
-USER node
+USER 1000
 EXPOSE 3000
 CMD ["node", "server.js"]
 ```
@@ -219,7 +219,7 @@ CMD ["node", "server.js"]
 这次运行的 `info.json`：
 
 ```json
-{"source":"agent","details":{"port":3000,"language":"javascript","version":"22","versionSource":"package.json","buildVariables":[],"runtimeVariables":["PORT"],"notes":["No dependencies, so no npm install step is needed.","Runs as the non-root node user."]},"modelCalled":true,"inputTokens":8489,"outputTokens":644}
+{"source":"agent","details":{"port":3000,"language":"javascript","version":"22","versionSource":"package.json","buildVariables":[],"runtimeVariables":["PORT"],"notes":["No dependencies, so no npm install step is needed.","Runs as the non-root node user, UID 1000."]},"modelCalled":true,"inputTokens":8489,"outputTokens":644}
 ```
 
 这次运行的 `source` 是 `agent`，说明 Dockerfile 由模型编写。`details` 记录端口、语言、版本及版本来源、构建变量、运行时变量和备注；例子里的应用监听 3000 端口，运行时读取 `PORT`。
@@ -285,3 +285,5 @@ CMD ["node", "server.js"]
 模型能看到构建变量的名称，看不到变量值。试构建的输出里如果出现变量值，工具会先把它换成变量名，再交给模型。
 
 试构建只从允许的镜像仓库（registry）拉取镜像，其他镜像、用 `ADD <url>` 下载的文件、Git 源和 `RUN --network=host` 都会被拒绝。工具会忽略 Dockerfile 里的 `# syntax=`，改用 `buildkitd` 内置的 Dockerfile 前端。试构建不会推送镜像。
+
+如果镜像以 root 或用户名运行，试构建会失败。镜像必须以 0 以外的数字 UID 运行，例如 `USER 1000`，才能在受限的 Pod Security 配置（`runAsNonRoot`）下启动。为了读取镜像的用户，工具会从 `buildkitd` 获取镜像，只保留它的配置。

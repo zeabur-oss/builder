@@ -4385,6 +4385,7 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "serde_json",
+ "tar",
  "thiserror",
  "tokio",
  "zeabur-builder-core",

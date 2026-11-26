@@ -1,4 +1,6 @@
-//! Trial builds: `buildctl build` of a Dockerfile against the repository, with nothing exported.
+//! Trial builds: `buildctl build` of a Dockerfile against the repository. The image goes to the
+//! agent as an OCI tarball on `buildctl`'s stdout, and the agent reads only its config: a build
+//! whose image does not start under `runAsNonRoot` fails ([`crate::image`]).
 //!
 //! BuildKit enforces what a build may do, not this crate:
 //!
@@ -31,6 +33,7 @@ use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
 use zeabur_builder_core::progress::SolveStatus;
 
+use crate::image;
 use crate::repo::dockerignore;
 
 /// The largest Dockerfile a build accepts.
@@ -113,6 +116,8 @@ impl Buildctl {
                 "cmdline=dockerfile.v0",
                 "--opt",
                 "filename=Dockerfile",
+                "--output",
+                "type=oci,dest=-",
             ]
             .map(str::to_owned),
         );
@@ -148,7 +153,7 @@ impl Buildctl {
                     .map(|secret| (format!("{SECRET_ENV_PREFIX}{}", secret.name), &secret.value)),
             )
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn();
@@ -156,8 +161,12 @@ impl Buildctl {
             Ok(child) => child,
             Err(e) => return failed(format!("cannot run buildctl: {e}")),
         };
-        let Some(stderr) = child.stderr.take() else {
-            return failed("buildctl has no stderr".to_owned());
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            return failed("buildctl has no stdout or stderr".to_owned());
+        };
+        let image = match stdout.into_owned_fd() {
+            Ok(fd) => tokio::task::spawn_blocking(move || image::user(std::fs::File::from(fd))),
+            Err(e) => return failed(format!("cannot read buildctl's output: {e}")),
         };
         let mut progress = Progress::new(Redactor::new(&self.secrets));
         let run = async {
@@ -165,10 +174,20 @@ impl Buildctl {
             while let Ok(Some(line)) = lines.next_line().await {
                 progress.line(&line);
             }
-            child.wait().await
+            let status = child.wait().await?;
+            Ok::<_, std::io::Error>((status, image.await))
         };
         match tokio::time::timeout(self.timeout, run).await {
-            Ok(Ok(status)) if status.success() => Attempt::Built,
+            Ok(Ok((status, user))) if status.success() => match user {
+                Ok(Ok(user)) => {
+                    image::runs_as_root(&user).map_or(Attempt::Built, |summary| Attempt::Failed {
+                        summary,
+                        log: progress.log,
+                    })
+                }
+                Ok(Err(e)) => failed(format!("cannot read the image config: {e}")),
+                Err(e) => failed(format!("cannot read the image config: {e}")),
+            },
             Ok(Ok(_)) => progress.failure(),
             Ok(Err(e)) => failed(format!("buildctl failed: {e}")),
             Err(_) => {
@@ -478,7 +497,6 @@ mod tests {
                 .any(|w| w == ["--frontend", "dockerfile.v0"])
         );
         assert!(!args.iter().any(|a| a.starts_with("--allow")));
-        assert!(!args.iter().any(|a| a.starts_with("--output")));
     }
 
     #[test]
@@ -639,7 +657,7 @@ mod tests {
     #[ignore = "needs a buildkitd at ZB_TEST_BUILDKIT"]
     async fn builds_from_an_allowed_registry() {
         let attempt = on_buildkitd(
-            "FROM docker.io/library/busybox:1.37\nCOPY hello.txt /\nRUN cat /hello.txt\n",
+            "FROM docker.io/library/busybox:1.37\nCOPY hello.txt /\nRUN cat /hello.txt\nUSER 1000\n",
         )
         .await;
         assert_eq!(attempt, Attempt::Built);
@@ -690,9 +708,21 @@ mod tests {
     async fn ignores_a_syntax_line() {
         // A frontend from a registry the policy refuses: the build only succeeds if it is not used.
         let attempt = on_buildkitd(
-            "# syntax=registry.k8s.io/pause:3.10\nFROM docker.io/library/busybox:1.37\nRUN true\n",
+            "# syntax=registry.k8s.io/pause:3.10\nFROM docker.io/library/busybox:1.37\nRUN true\nUSER 1000\n",
         )
         .await;
         assert_eq!(attempt, Attempt::Built);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a buildkitd at ZB_TEST_BUILDKIT"]
+    async fn an_image_that_runs_as_root_fails() {
+        for dockerfile in [
+            "FROM docker.io/library/busybox:1.37\nRUN true\n",
+            "FROM docker.io/library/busybox:1.37\nUSER nobody\n",
+        ] {
+            let summary = summary(on_buildkitd(dockerfile).await);
+            assert!(summary.contains("USER <uid>"), "{summary}");
+        }
     }
 }
