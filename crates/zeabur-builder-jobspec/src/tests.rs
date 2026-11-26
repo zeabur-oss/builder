@@ -13,6 +13,7 @@ use zeabur_builder_api::build_run::{BuildRunSpec, Trigger};
 use zeabur_builder_api::cluster_builder::{
     AgentPlanner, AnthropicFederation, Frontend, FrontendSpec, MAX_IMAGE, MAX_OPT_KEY,
     MAX_OPT_VALUE, MAX_OPTS, ModelAuth, ModelSpec, Planner, PlannerSpec, ResourceList, Resources,
+    TokenExchange,
 };
 use zeabur_builder_api::common::SecretKeyRef;
 
@@ -357,6 +358,70 @@ fn agent_with_anthropic_federation() {
         include_str!("../golden/agent-federation.json"),
         &job,
     );
+}
+
+/// A token exchange reaches the agent as variables the kubelet does not expand, and the token is
+/// projected for the audience the builder names.
+#[test]
+fn agent_with_a_token_exchange() {
+    let run = build_run();
+    let mut build = build("https://github.com/acme/web", None, Vec::new());
+    build.metadata.uid = Some(UID.to_owned());
+    let mut builder = agent();
+    if let Planner::Agent { agent } = &mut builder.planner {
+        agent.model.auth = ModelAuth::TokenExchange {
+            token_exchange: TokenExchange {
+                service_account_name: "builder-agent".to_owned(),
+                audience: "api://AzureADTokenExchange".to_owned(),
+                url: "https://login.example/token".to_owned(),
+                subject_field: "client_assertion".to_owned(),
+                form: BTreeMap::from([
+                    ("client_id".to_owned(), "$(HOME)".to_owned()),
+                    ("grant_type".to_owned(), "client_credentials".to_owned()),
+                ]),
+            },
+        };
+    }
+    let tags = tags();
+    let job = job(&inputs(
+        &run,
+        &build,
+        "agent",
+        &builder,
+        &tags,
+        GitAuth::Anonymous,
+    ))
+    .unwrap();
+    let pod = job.spec.unwrap().template.spec.unwrap();
+    assert_eq!(pod.service_account_name.as_deref(), Some("builder-agent"));
+    let plan = pod
+        .init_containers
+        .unwrap()
+        .into_iter()
+        .find(|container| container.name == "plan")
+        .unwrap();
+    let vars: BTreeMap<_, _> = plan
+        .env
+        .unwrap()
+        .into_iter()
+        .filter_map(|var| Some((var.name, var.value?)))
+        .collect();
+    assert_eq!(vars["ZB_TOKEN_EXCHANGE_URL"], "https://login.example/token");
+    assert_eq!(vars["ZB_TOKEN_EXCHANGE_SUBJECT_FIELD"], "client_assertion");
+    assert_eq!(
+        vars["ZB_TOKEN_EXCHANGE_FORM"],
+        r#"{"client_id":"$$(HOME)","grant_type":"client_credentials"}"#
+    );
+    assert_eq!(vars["ZB_TOKEN_EXCHANGE_TOKEN_FILE"], MODEL_TOKEN);
+    let audiences: Vec<_> = pod
+        .volumes
+        .unwrap()
+        .into_iter()
+        .filter_map(|volume| volume.projected)
+        .flat_map(|projected| projected.sources.unwrap_or_default())
+        .filter_map(|source| source.service_account_token?.audience)
+        .collect();
+    assert_eq!(audiences, ["api://AzureADTokenExchange"]);
 }
 
 #[test]

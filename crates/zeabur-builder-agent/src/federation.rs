@@ -2,12 +2,14 @@
 //! Job's projected token, for a short-lived access token, so no long-lived model key is stored.
 //!
 //! Each vendor is one file with a [`TokenSource`] that reads the variables its own SDKs read; an
-//! API key in the vendor's key variable comes first. An access token can last less than a run,
-//! so [`Renewing`] exchanges the service account token again once three quarters of the access
-//! token's lifetime have passed.
+//! API key in the vendor's key variable comes first. A [`token_exchange`] that the `ClusterBuilder`
+//! names works for any vendor and comes before the vendor's own. An access token can last less than
+//! a run, so [`Renewing`] exchanges the service account token again once three quarters of the
+//! access token's lifetime have passed.
 
 mod anthropic;
 mod openai;
+mod token_exchange;
 
 use std::fmt::Debug;
 use std::path::Path;
@@ -50,7 +52,7 @@ pub(crate) trait TokenSource: Debug + Send + Sync {
     /// The vendor, for messages.
     fn name(&self) -> &'static str;
     /// The token endpoint.
-    fn url(&self) -> &'static str;
+    fn url(&self) -> &str;
     /// The service account token.
     fn token_file(&self) -> &Path;
     /// The request that exchanges `jwt`.
@@ -78,6 +80,9 @@ fn from_vars(
     var: impl Fn(&str) -> Option<String>,
 ) -> Result<Option<Arc<dyn TokenSource>>, Refusal<Reason>> {
     let var = |name: &str| var(name).filter(|value| !value.is_empty());
+    if let Some(source) = token_exchange::read(&var)? {
+        return Ok(Some(source));
+    }
     SOURCES
         .iter()
         .find(|(name, _)| *name == vendor)
@@ -148,12 +153,22 @@ fn access_token(
     source: &dyn TokenSource,
     status: StatusCode,
     reply: &[u8],
-) -> Result<Token, Refusal<Reason>> {
+) -> Result<TokenReply, Refusal<Reason>> {
     let vendor = source.name();
     if status.is_success() {
-        return serde_json::from_slice::<Token>(reply).map_err(|e| {
+        let token = serde_json::from_slice::<TokenReply>(reply).map_err(|e| {
             Refusal::new(Reason::ModelFailed, format!("{vendor}'s token reply: {e}"))
-        });
+        })?;
+        return match &token.token_type {
+            Some(kind) if !kind.eq_ignore_ascii_case("bearer") => Err(Refusal::new(
+                Reason::ModelKeyMissing,
+                format!(
+                    "{vendor} returned a token of type `{kind}`, not a bearer token; {}",
+                    source.check()
+                ),
+            )),
+            Some(_) | None => Ok(token),
+        };
     }
     let text = String::from_utf8_lossy(reply);
     let end = text
@@ -172,12 +187,23 @@ fn access_token(
     }
 }
 
-/// The part of an RFC 6749 token reply the run uses.
+/// The part of a token reply ([RFC 6749, section 5.1][reply]) the run uses. The run sends the
+/// access token as a bearer token ([RFC 6750][bearer]), so a reply whose `token_type` is another
+/// type, such as RFC 8693's `N_A` ([RFC 8693, section 2.2.1][n-a]), is refused.
+///
+/// [reply]: https://www.rfc-editor.org/rfc/rfc6749#section-5.1
+/// [bearer]: https://www.rfc-editor.org/rfc/rfc6750#section-6.1.1
+/// [n-a]: https://www.rfc-editor.org/rfc/rfc8693#section-2.2.1
 #[derive(Debug, Deserialize, PartialEq, Eq)]
-struct Token {
+struct TokenReply {
     access_token: String,
     /// Seconds the access token lasts.
     expires_in: u64,
+    /// Case-insensitive ([RFC 6749, section 5.1][reply]).
+    ///
+    /// [reply]: https://www.rfc-editor.org/rfc/rfc6749#section-5.1
+    #[serde(default)]
+    token_type: Option<String>,
 }
 
 /// An access token and when to exchange again.
@@ -318,9 +344,24 @@ mod tests {
 
     #[test]
     fn a_vendor_without_federation_has_no_token_source() {
-        let vars = |_: &str| Some("set".to_owned());
+        let vars = |name: &str| (!name.starts_with("ZB_")).then(|| "set".to_owned());
         assert!(matches!(from_vars("gcp.gemini", vars), Ok(None)));
         assert!(matches!(from_vars("anthropic", |_| None), Ok(None)));
+    }
+
+    #[test]
+    fn a_token_exchange_serves_any_vendor_before_its_own() {
+        let vars = |name: &str| match name {
+            "ZB_TOKEN_EXCHANGE_URL" => Some("https://login.example/token".to_owned()),
+            "ZB_TOKEN_EXCHANGE_SUBJECT_FIELD" => Some("client_assertion".to_owned()),
+            "ZB_TOKEN_EXCHANGE_TOKEN_FILE" => Some("/var/run/token".to_owned()),
+            "ANTHROPIC_FEDERATION_RULE_ID" => Some("fdrl_1".to_owned()),
+            _ => None,
+        };
+        for vendor in ["gcp.gemini", "anthropic"] {
+            let source = from_vars(vendor, vars).unwrap().unwrap();
+            assert_eq!(source.url(), "https://login.example/token", "{vendor}");
+        }
     }
 
     #[test]
@@ -333,9 +374,10 @@ mod tests {
         });
         assert_eq!(
             access_token(&vendor(), StatusCode::OK, reply.to_string().as_bytes()),
-            Ok(Token {
+            Ok(TokenReply {
                 access_token: "sk-ant-oat01-abc".to_owned(),
                 expires_in: 600,
+                token_type: Some("Bearer".to_owned()),
             })
         );
     }

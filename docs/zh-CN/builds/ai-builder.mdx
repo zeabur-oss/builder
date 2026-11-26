@@ -103,6 +103,39 @@ agent:
 
 只有 plan 容器会挂载令牌，而且令牌只用于提供商的 audience。run 拿不到 Kubernetes API 的令牌。ServiceAccount 不存在时，run 会停在 `ModelKeyMissing` 等待。
 
+### 其他令牌端点
+
+使用其他提供商时，`tokenExchange` 把服务账号令牌以表单发送到任一个 OAuth 2.0 令牌端点，再把响应中的 `access_token` 作为 bearer 令牌使用。响应必须有 `token_type` `Bearer` 和 `expires_in`。旧令牌过期前，run 会换取新令牌。
+
+- `audience`：令牌端点接受的服务账号令牌 audience。
+- `url`：令牌端点，必须以 `https://` 开头。
+- `subjectField`：放服务账号令牌的表单字段。
+- `form`：其他表单字段，原样发送。ClusterBuilder 不是 Secret，所以 `form` 中不要放任何机密。
+
+模型 API 必须接受以 `Authorization: Bearer` 发送的访问令牌。Azure OpenAI 配合 Microsoft Entra ID 时，在应用注册中添加联合凭据，填入集群的 issuer、subject `system:serviceaccount:<namespace>:builder-agent` 和 audience `api://AzureADTokenExchange`。Entra 必须能访问 issuer 的发现文档。在资源上给这个应用 Cognitive Services OpenAI User 角色。维护者没有测试过这个示例：
+
+```yaml
+agent:
+  enabled: true
+  provider: openai
+  model: <deployment>
+  baseUrl: https://<resource>.openai.azure.com/openai/v1/
+  auth:
+    type: tokenExchange
+    tokenExchange:
+      serviceAccountName: builder-agent
+      audience: api://AzureADTokenExchange
+      url: https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
+      subjectField: client_assertion
+      form:
+        grant_type: client_credentials
+        client_id: <application client ID>
+        client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+        scope: https://cognitiveservices.azure.com/.default
+```
+
+不接受 bearer 令牌的模型 API，例如使用 AWS Signature Version 4 的 Amazon Bedrock，需要一个接受 bearer 令牌的网关：把 `agent.baseUrl` 设为网关，再用 API 密钥或令牌交换登录网关。
+
 ## 查看结果
 
 列出这个 Build 的 BuildRun，再查看其中一个的 `status.plan`：

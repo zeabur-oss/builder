@@ -66,7 +66,7 @@ impl TokenSource for OpenAi {
         "OpenAI"
     }
 
-    fn url(&self) -> &'static str {
+    fn url(&self) -> &str {
         TOKEN_URL
     }
 

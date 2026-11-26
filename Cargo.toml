@@ -50,6 +50,8 @@ base64 = "0.23"
 bytes = "1"
 # The decompressor of archive sources, in pure Rust.
 flate2 = "1"
+# Token requests as `application/x-www-form-urlencoded`, from rust-url like `url`.
+form_urlencoded = { version = "1", default-features = false, features = ["std"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 http = "1"

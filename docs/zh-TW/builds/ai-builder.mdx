@@ -103,6 +103,39 @@ agent:
 
 只有 plan 容器會掛載權杖，而且權杖只給供應商的 audience 使用。run 拿不到 Kubernetes API 的權杖。ServiceAccount 不存在時，run 會停在 `ModelKeyMissing` 等待。
 
+### 其他權杖端點
+
+使用其他供應商時，`tokenExchange` 把服務帳戶權杖以表單送到任一個 OAuth 2.0 權杖端點，再把回應裡的 `access_token` 當成 bearer 權杖使用。回應必須有 `token_type` `Bearer` 與 `expires_in`。舊權杖過期前，run 會換取新權杖。
+
+- `audience`：權杖端點接受的服務帳戶權杖 audience。
+- `url`：權杖端點，必須以 `https://` 開頭。
+- `subjectField`：放服務帳戶權杖的表單欄位。
+- `form`：其他表單欄位，原樣送出。ClusterBuilder 不是 Secret，所以 `form` 裡不要放任何機密。
+
+模型 API 必須接受以 `Authorization: Bearer` 送出的存取權杖。Azure OpenAI 搭配 Microsoft Entra ID 時，在應用程式註冊加上同盟認證，填入叢集的 issuer、subject `system:serviceaccount:<namespace>:builder-agent` 與 audience `api://AzureADTokenExchange`。Entra 必須連得到 issuer 的探索文件。在資源上給這個應用程式 Cognitive Services OpenAI User 角色。維護者沒有測試過這個範例：
+
+```yaml
+agent:
+  enabled: true
+  provider: openai
+  model: <deployment>
+  baseUrl: https://<resource>.openai.azure.com/openai/v1/
+  auth:
+    type: tokenExchange
+    tokenExchange:
+      serviceAccountName: builder-agent
+      audience: api://AzureADTokenExchange
+      url: https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
+      subjectField: client_assertion
+      form:
+        grant_type: client_credentials
+        client_id: <application client ID>
+        client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+        scope: https://cognitiveservices.azure.com/.default
+```
+
+不接受 bearer 權杖的模型 API，例如使用 AWS Signature Version 4 的 Amazon Bedrock，需要一個接受 bearer 權杖的閘道：把 `agent.baseUrl` 設為閘道，再用 API 金鑰或權杖交換登入閘道。
+
 ## 檢視結果
 
 列出這個 Build 的 BuildRun，再檢視其中一個的 `status.plan`：

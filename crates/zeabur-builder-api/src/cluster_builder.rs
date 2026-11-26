@@ -26,6 +26,17 @@ pub const MAX_OPT_VALUE: usize = 512;
 /// Longest model provider id, such as a federation rule.
 #[cfg(feature = "schema")]
 const MAX_ID: usize = 256;
+/// Longest token endpoint URL or token audience.
+#[cfg(feature = "schema")]
+const MAX_URL: usize = 2048;
+/// Most form fields of a token exchange.
+pub const MAX_FORM: usize = 16;
+/// Longest form field name, in characters.
+#[cfg(feature = "schema")]
+const MAX_FORM_KEY: usize = 128;
+/// Longest form field value, in characters.
+#[cfg(feature = "schema")]
+const MAX_FORM_VALUE: usize = 1024;
 
 /// A way to build. Every builder reduces to the same shape: an optional planner that writes files
 /// into `/workspace/plan`, then a `BuildKit` frontend with options that reads them.
@@ -239,6 +250,12 @@ pub enum ModelAuth {
         /// The identity provider, and the service account whose token the run exchanges.
         openai_federation: OpenAiFederation,
     },
+    /// A token endpoint that takes a service account token in one form field and returns a
+    /// short-lived access token.
+    TokenExchange {
+        /// The token endpoint, its form, and the service account whose token the run exchanges.
+        token_exchange: TokenExchange,
+    },
 }
 
 impl ModelAuth {
@@ -257,6 +274,13 @@ impl ModelAuth {
             | Self::OpenaiFederation {
                 openai_federation:
                     OpenAiFederation {
+                        service_account_name,
+                        ..
+                    },
+            }
+            | Self::TokenExchange {
+                token_exchange:
+                    TokenExchange {
                         service_account_name,
                         ..
                     },
@@ -325,6 +349,53 @@ pub struct OpenAiFederation {
 impl OpenAiFederation {
     /// The audience OpenAI takes service account tokens for.
     pub const AUDIENCE: &str = "https://api.openai.com/v1";
+}
+
+/// A token endpoint that exchanges a service account token for an access token.
+///
+/// The run posts `form` and the token in `subjectField` as `application/x-www-form-urlencoded`.
+/// The reply is an OAuth 2.0 token response with `access_token` and `expires_in`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "schema", schemars(extend("x-kubernetes-validations" = [
+    {
+        "rule": "self.url.startsWith('https://')",
+        "message": "url must start with https://",
+    },
+    {
+        "rule": "!has(self.form) || !(self.subjectField in self.form)",
+        "message": "form must not hold subjectField",
+    },
+])))]
+pub struct TokenExchange {
+    /// The Kubernetes service account, in each `Build`'s own namespace, whose token the run
+    /// exchanges.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_NAME)))]
+    pub service_account_name: String,
+    /// The audience of the projected service account token, such as
+    /// `api://AzureADTokenExchange`.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_URL)))]
+    pub audience: String,
+    /// The token endpoint, `https://…`.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_URL)))]
+    pub url: String,
+    /// The form field that carries the service account token, such as `client_assertion` or
+    /// `subject_token`.
+    #[cfg_attr(feature = "schema", schemars(length(min = 1, max = MAX_FORM_KEY)))]
+    pub subject_field: String,
+    /// The other form fields, sent as they are. The `ClusterBuilder` is not a Secret: put no
+    /// secret here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "maxProperties" = MAX_FORM,
+        "additionalProperties" = {"type": "string", "maxLength": MAX_FORM_VALUE},
+        "x-kubernetes-validations" = [{
+            "rule": format!("self.all(k, size(k) <= {MAX_FORM_KEY})"),
+            "message": format!("a form field name is at most {MAX_FORM_KEY} characters"),
+        }],
+    )))]
+    pub form: BTreeMap<String, String>,
 }
 
 /// CPU and memory, as Kubernetes quantities.

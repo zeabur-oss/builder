@@ -711,7 +711,7 @@ struct SignIn<'a> {
 /// A service account token for a model provider's audience.
 struct ModelToken<'a> {
     service_account: &'a str,
-    audience: &'static str,
+    audience: &'a str,
 }
 
 /// The variables each provider's SDKs read, so the agent needs no flags of its own.
@@ -771,6 +771,26 @@ fn sign_in(auth: &ModelAuth) -> SignIn<'_> {
             token: Some(ModelToken {
                 service_account: &federation.service_account_name,
                 audience: OpenAiFederation::AUDIENCE,
+            }),
+        },
+        ModelAuth::TokenExchange {
+            token_exchange: exchange,
+        } => SignIn {
+            env: vec![
+                env("ZB_TOKEN_EXCHANGE_URL", &literal(&exchange.url)),
+                env(
+                    "ZB_TOKEN_EXCHANGE_SUBJECT_FIELD",
+                    &literal(&exchange.subject_field),
+                ),
+                env(
+                    "ZB_TOKEN_EXCHANGE_FORM",
+                    &literal(&serde_json::to_string(&exchange.form).unwrap_or_default()),
+                ),
+                env("ZB_TOKEN_EXCHANGE_TOKEN_FILE", MODEL_TOKEN),
+            ],
+            token: Some(ModelToken {
+                service_account: &exchange.service_account_name,
+                audience: &exchange.audience,
             }),
         },
     }
