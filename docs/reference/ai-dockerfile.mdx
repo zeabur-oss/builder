@@ -144,7 +144,7 @@ kubectl get --raw /openid/v1/jwks
 | Audience | `https://api.anthropic.com` | `https://api.openai.com/v1` |
 | Subject | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` |
 
-The provider keeps a copy of the keys. Before the cluster rotates its service account signing key, upload the new JWKS to the provider. For Anthropic, a rule with the `workspace:inference` scope is enough.
+The provider keeps a copy of the keys. Before the cluster rotates its service account signing key, upload the new JWKS to the provider. For Anthropic, create the federation rule with the `workspace:developer` scope, limit it to one workspace, and do not select `org:admin`.
 
 </Step>
 

@@ -144,7 +144,7 @@ kubectl get --raw /openid/v1/jwks
 | 受众（audience） | `https://api.anthropic.com` | `https://api.openai.com/v1` |
 | 主体（subject） | `system:serviceaccount:<namespace>:<name>` | `sub` = `system:serviceaccount:<namespace>:<name>` |
 
-厂商那边存了一份密钥。集群轮换服务账号的签名密钥前，先把新的 JWKS 上传到厂商。Anthropic 的规则只需要 `workspace:inference` 范围。
+厂商那边存了一份密钥。集群轮换服务账号的签名密钥前，先把新的 JWKS 上传到厂商。Anthropic 的规则请选择 `workspace:developer` 范围，并限定在单个工作区。不要选择 `org:admin`。
 
 </Step>
 
