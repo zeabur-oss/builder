@@ -1,9 +1,9 @@
 ---
-title: 用 AI 寫 Dockerfile
+title: 在叢集外執行 AI 建置器
 description: 在沒有 Dockerfile 的儲存庫執行 zeabur-builder-agent，取得通過試建置的 Dockerfile，再交給 Zeabur Builder 使用。
 ---
 
-儲存庫還沒有 Dockerfile 時，可以執行 `zeabur-builder-agent`，讓模型讀取程式碼、撰寫 Dockerfile，並在 BuildKit daemon（`buildkitd`）上試建置；工具只會給你建置成功的 Dockerfile。本頁說明如何自行執行指令；要讓 Zeabur Builder 在建置時執行，請看[建置沒有 Dockerfile 的儲存庫](../builds/no-dockerfile.mdx)。
+儲存庫還沒有 Dockerfile 時，可以執行 `zeabur-builder-agent`，讓模型讀取程式碼、撰寫 Dockerfile，並在 BuildKit daemon（`buildkitd`）上試建置；工具只會給你建置成功的 Dockerfile。本頁說明如何自行執行指令；要讓 Zeabur Builder 在建置時執行，請看[用 AI 建置器建置](../builds/ai-builder.mdx)。
 
 ## 執行
 
@@ -117,7 +117,7 @@ zeabur-builder-agent --context ./my-app --buildkit tcp://127.0.0.1:1234 \
 
 如果叢集的服務帳戶簽發者（issuer）從網際網路連不到，例如預設的 k3s 叢集，請照下面的步驟設定。
 
-使用 `agent` 建置器時，做完前兩步後，第三步改照 [建置沒有 Dockerfile 的儲存庫](../builds/no-dockerfile.mdx) 設定：建置器會自己掛載權杖並設定環境變數。
+使用 AI 建置器時，做完前兩步後，第三步改照[用 AI 建置器建置](../builds/ai-builder.mdx)設定：建置器會自己掛載權杖並設定環境變數。
 
 <Steps>
 

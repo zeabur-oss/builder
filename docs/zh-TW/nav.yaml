@@ -6,13 +6,13 @@
 - group: builds
   label: 建置
   pages:
+    ai-builder: 用 AI 建置器建置
     triggers: 觸發建置
     private-repos: 建置私有儲存庫
     archive-source: 從上傳的資料夾建置
     rollout: 部署建置好的映像檔
     external-registries: 推送到外部 registry
     build-nodes: 在建置節點上建置
-    no-dockerfile: 建置沒有 Dockerfile 的儲存庫
 - group: operations
   label: 維運
   pages:
@@ -24,4 +24,4 @@
   pages:
     how-it-works: 運作方式
     security: 安全性與信任模型
-    ai-dockerfile: 用 AI 寫 Dockerfile
+    ai-dockerfile: 在叢集外執行 AI 建置器

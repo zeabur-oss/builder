@@ -29,12 +29,13 @@ EOF
 
 This example omits `ref`, so it tracks the repository's default branch. Check `status.resolvedRef` for the branch the controller resolved.
 
-`builderRef` supports two builders:
+`builderRef` supports these builders:
 
 | Builder | Purpose |
 | --- | --- |
 | `dockerfile` | Builds the repository's Dockerfile. |
 | `railpack` | Uses [Railpack](https://railpack.com) to plan builds for repositories without a Dockerfile. The resulting image runs as UID 1000 and can start under Pod Security `restricted`. |
+| `agent` | The [AI builder](../builds/ai-builder.mdx): a model writes a Dockerfile for a repository the other two can't build. Off until you turn it on in the chart. |
 
 Use `spec.env` to pass build variables. You can specify values directly or read them from keys in a Secret. Zeabur Builder passes these values to the build as BuildKit secrets.
 

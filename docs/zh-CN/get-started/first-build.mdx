@@ -29,12 +29,13 @@ EOF
 
 示例省略了 `ref`，因此会跟踪仓库的默认分支。你可以从 `status.resolvedRef` 查看控制器解析出的分支。
 
-`builderRef` 支持两个构建器：
+`builderRef` 支持这些构建器：
 
 | 构建器 | 用途 |
 | --- | --- |
 | `dockerfile` | 构建仓库中的 Dockerfile。 |
 | `railpack` | 使用 [Railpack](https://railpack.com) 为没有 Dockerfile 的仓库规划构建。生成的镜像以 UID 1000 运行，可在 Pod Security `restricted` 下启动。 |
+| `agent` | [AI 构建器](../builds/ai-builder.mdx)：另外两个构建不了时，由模型写一份 Dockerfile。要在 chart 启用后才能用。 |
 
 需要传入构建变量时，使用 `spec.env`。你可以直接指定值，也可以从 Secret 的 key 获取值。Zeabur Builder 会通过 BuildKit secrets 将这些值传入构建。
 

@@ -29,12 +29,13 @@ EOF
 
 這個範例沒有指定 `ref`，因此會追蹤儲存庫的預設分支。你可以檢視 `status.resolvedRef`，確認控制器解析出的分支。
 
-`builderRef` 支援兩個建置器：
+`builderRef` 支援這些建置器：
 
 | 建置器 | 用途 |
 | --- | --- |
 | `dockerfile` | 依照儲存庫中的 Dockerfile 建置映像檔。 |
 | `railpack` | 使用 [Railpack](https://railpack.com) 為沒有 Dockerfile 的儲存庫規劃建置流程。產出的映像檔使用 UID 1000 執行，可在 Pod Security `restricted` 下啟動。 |
+| `agent` | [AI 建置器](../builds/ai-builder.mdx)：另外兩個建置不了時，由模型寫一份 Dockerfile。要在 chart 啟用後才能用。 |
 
 需要傳入建置變數時，請使用 `spec.env`。你可以直接指定值，也可以從 Secret 的 key 取值。Zeabur Builder 會使用 BuildKit secrets，將這些值傳入建置流程。
 
