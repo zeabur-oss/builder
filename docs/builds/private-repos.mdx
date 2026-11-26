@@ -65,7 +65,7 @@ spec:
 
 </Steps>
 
-The GitHub App provides a short-lived installation token that the Job uses for read-only access to the private repository. Each commit receives a commit status.
+The GitHub App provides a short-lived installation token that the Job uses for read-only access to the private repository. Each commit receives a commit status. To make its **Details** link open a page that shows the Build, such as your dashboard, set the annotation `builder.zeabur.com/details-url` on the Build to that page's `http` or `https` URL.
 
 The App's push events wake the corresponding Builds without a separate Secret for each Build. When the controller receives webhooks, these Builds poll every 10 minutes instead of every minute. For other ways to trigger builds, see [Trigger builds](./triggers.mdx).
 

@@ -849,7 +849,12 @@ mod tests {
             })
         );
         let plain = status_body(State::Pending, "zeabur-builder/a/b", "Building", None);
-        assert!(serde_json::to_value(&plain).unwrap().get("target_url").is_none());
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("target_url")
+                .is_none()
+        );
     }
 
     fn annotated(value: &str) -> BTreeMap<String, String> {
@@ -864,7 +869,13 @@ mod tests {
             details_url(&annotated("http://zeabur.localhost/projects/p")),
             Some("http://zeabur.localhost/projects/p")
         );
-        for refused in ["/projects/p", "javascript:alert(1)", "ftp://host/x", "not a url", ""] {
+        for refused in [
+            "/projects/p",
+            "javascript:alert(1)",
+            "ftp://host/x",
+            "not a url",
+            "",
+        ] {
             assert_eq!(details_url(&annotated(refused)), None, "{refused}");
         }
         assert_eq!(details_url(&BTreeMap::new()), None);
@@ -892,30 +903,62 @@ mod tests {
     #[test]
     fn finished_descriptions_are_one_short_line() {
         let cases = [
-            (finished(Phase::Succeeded, None, None), "Built and pushed newsletter"),
             (
-                finished(Phase::Failed, Some(Reason::BuildFailed), Some("[2/3] RUN npm ci")),
+                finished(Phase::Succeeded, None, None),
+                "Built and pushed newsletter",
+            ),
+            (
+                finished(
+                    Phase::Failed,
+                    Some(Reason::BuildFailed),
+                    Some("[2/3] RUN npm ci"),
+                ),
                 "Build failed: [2/3] RUN npm ci",
             ),
-            (finished(Phase::Failed, Some(Reason::BuildFailed), None), "Build failed"),
-            (finished(Phase::Failed, Some(Reason::PlanFailed), Some("plan")), "Planning failed"),
+            (
+                finished(Phase::Failed, Some(Reason::BuildFailed), None),
+                "Build failed",
+            ),
+            (
+                finished(Phase::Failed, Some(Reason::PlanFailed), Some("plan")),
+                "Planning failed",
+            ),
             (
                 finished(Phase::Failed, Some(Reason::SourceFailed), Some("fetch")),
                 "Could not fetch the source",
             ),
-            (finished(Phase::Failed, Some(Reason::OutOfMemory), None), "Ran out of memory"),
-            (finished(Phase::Failed, Some(Reason::Timeout), None), "Timed out"),
-            (finished(Phase::Cancelled, Some(Reason::Cancelled), None), "Cancelled"),
             (
-                finished(Phase::Failed, Some(Reason::RegistryCredentialsMissing), None),
+                finished(Phase::Failed, Some(Reason::OutOfMemory), None),
+                "Ran out of memory",
+            ),
+            (
+                finished(Phase::Failed, Some(Reason::Timeout), None),
+                "Timed out",
+            ),
+            (
+                finished(Phase::Cancelled, Some(Reason::Cancelled), None),
+                "Cancelled",
+            ),
+            (
+                finished(
+                    Phase::Failed,
+                    Some(Reason::RegistryCredentialsMissing),
+                    None,
+                ),
                 "Registry credentials missing",
             ),
-            (finished(Phase::Failed, Some(Reason::ModelKeyMissing), None), "Model key missing"),
+            (
+                finished(Phase::Failed, Some(Reason::ModelKeyMissing), None),
+                "Model key missing",
+            ),
             (
                 finished(Phase::Failed, Some(Reason::InfraError), None),
                 "Build infrastructure failed",
             ),
-            (finished(Phase::Failed, None, None), "Build infrastructure failed"),
+            (
+                finished(Phase::Failed, None, None),
+                "Build infrastructure failed",
+            ),
         ];
         for (status, want) in cases {
             assert_eq!(finished_description("newsletter", &status), want);

@@ -825,7 +825,12 @@ async fn report(ctx: &Context, build: &Build, sha: &str, state: State, descripti
         return;
     }
     let context = format!("zeabur-builder/{namespace}/{}", build.name_any());
-    let body = github::status_body(state, &context, description, github::details_url(build.annotations()));
+    let body = github::status_body(
+        state,
+        &context,
+        description,
+        github::details_url(build.annotations()),
+    );
     ctx.github
         .report(app.installation_id, &key, sha, &body)
         .await;

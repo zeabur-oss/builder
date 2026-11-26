@@ -65,7 +65,7 @@ spec:
 
 </Steps>
 
-GitHub App 會提供短效 installation 權杖，讓 Job 以唯讀權限存取私有儲存庫。每個 commit 都會收到 commit status。
+GitHub App 會提供短效 installation 權杖，讓 Job 以唯讀權限存取私有儲存庫。每個 commit 都會收到 commit status。想讓狀態的 **Details** 連結打開顯示這個 Build 的頁面（例如你的控制台），在 Build 加上註解 `builder.zeabur.com/details-url`，值設成該頁面的 `http` 或 `https` 網址。
 
 App 的 push 事件會喚醒對應的 Build，不需要為每個 Build 設定 Secret。控制器有接收 webhook 時，這些 Build 改為每 10 分鐘輪詢一次，而不是每分鐘。其他觸發方式請見[觸發建置](./triggers.mdx)。
 
