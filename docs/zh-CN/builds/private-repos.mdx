@@ -65,7 +65,7 @@ spec:
 
 </Steps>
 
-GitHub App 会提供短期 installation 令牌，供 Job 以只读权限访问私有仓库。每个 commit 都会收到 commit status。
+GitHub App 会提供短期 installation 令牌，供 Job 以只读权限访问私有仓库。每个 commit 都会收到 commit status。想让状态的 **Details** 链接打开显示这个 Build 的页面（例如你的控制台），在 Build 上加注解 `builder.zeabur.com/details-url`，值设为该页面的 `http` 或 `https` 网址。
 
 App 的 push 事件会唤醒对应的 Build，无需为每个 Build 配置 Secret。控制器接收 webhook 时，这些 Build 改为每 10 分钟轮询一次，而不是每分钟。其他触发方式见[触发构建](./triggers.mdx)。
 

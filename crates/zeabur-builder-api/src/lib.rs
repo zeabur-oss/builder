@@ -64,6 +64,9 @@ pub mod annotations {
     /// On a `Build`: a new value rebuilds the ref's current commit. On a `BuildRun` the
     /// controller created: the `Build`'s value when it was created, the request it answered.
     pub const REBUILD: &str = "builder.zeabur.com/rebuild";
+    /// On a `Build`: an `http` or `https` URL of the page that shows it, such as a dashboard's.
+    /// The commit statuses of its runs link to it as their details.
+    pub const DETAILS_URL: &str = "builder.zeabur.com/details-url";
     /// On a `BuildRun` the controller created: the `Build`'s `metadata.generation` when it was
     /// created, which the `Build`'s `Ready` condition compares with the current one.
     pub const BUILD_GENERATION: &str = "builder.zeabur.com/build-generation";
