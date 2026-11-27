@@ -2,6 +2,36 @@
 
 All notable changes to Zeabur Builder. Versions follow [Semantic Versioning](https://semver.org/); each section comes from the change files in `.changeset/` (CONTRIBUTING.md, "Releases").
 
+## 0.3.1 (2026-11-27)
+
+### Features
+
+#### Commit statuses link to the Build's page and say what happened in one line
+
+Set the `builder.zeabur.com/details-url` annotation on a Build to an `http` or `https` URL, such as the dashboard page that shows it. Its commit statuses then link to that page as their details. The status descriptions are now one short line, such as `Built and pushed api` or `Build failed: [2/3] RUN npm ci`. The run's Events keep the tag, digest and full message.
+
+### Fixes
+
+#### The AI builder writes images that run as a non-root user
+
+A trial build of the `agent` builder fails when its image runs as root or as a user name, and the model gets the reason. The model writes `USER` with a numeric UID other than 0, so the image starts under the restricted Pod Security profile. A run whose builds all run as root ends with `BuildKeepsFailing` instead of `Succeeded`. The last plan of a service is used again only when its image runs as a non-root UID.
+
+#### The AI builder signs in through any OAuth 2.0 token endpoint
+
+`spec.agent.model.auth.type: tokenExchange` sends a Kubernetes service account token to a token endpoint, such as Microsoft Entra ID, and uses the access token of the reply as a bearer token for the model API. The run gets a new access token before the old one expires. The reply must have `token_type` `Bearer` and `expires_in`.
+
+#### Chart values for the controller's Pod
+
+The chart takes `imagePullSecrets`, `podLabels`, `podAnnotations`, `podSecurityContext`, `nodeSelector`, `tolerations` and `affinity` for the controller's Pod. With the defaults, the Deployment is the same as before.
+
+#### The plan container takes the planner's resources
+
+If a ClusterBuilder's planner sets `resources`, the build Job's `plan` container gets those requests and limits. Before, it always got the Job memory. A planner whose `resources` set no memory keeps the Job memory.
+
+#### The API server checks a planner's CPU and memory
+
+`resources.requests` and `resources.limits` of a ClusterBuilder's planner take Kubernetes quantities. The API server refuses a value such as `memory: lots`, and takes a number such as `cpu: 1` without quotes.
+
 ## 0.3.0 (2026-11-24)
 
 ### Breaking Changes

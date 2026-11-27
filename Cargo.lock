@@ -4332,7 +4332,7 @@ dependencies = [
 
 [[package]]
 name = "zeabur-builder"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aws-lc-rs",
  "backon",
@@ -4368,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "zeabur-builder-agent"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4394,7 +4394,7 @@ dependencies = [
 
 [[package]]
 name = "zeabur-builder-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "jiff",
  "k8s-openapi",
@@ -4407,7 +4407,7 @@ dependencies = [
 
 [[package]]
 name = "zeabur-builder-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -4418,7 +4418,7 @@ dependencies = [
 
 [[package]]
 name = "zeabur-builder-job"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "backon",
  "base64 0.23.1",
@@ -4443,7 +4443,7 @@ dependencies = [
 
 [[package]]
 name = "zeabur-builder-jobspec"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "k8s-openapi",
  "kube_quantity",
