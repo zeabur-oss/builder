@@ -26,7 +26,7 @@ env:
 
 jobs:
   lint:
-    runs-on: instabox-medium
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,7 +42,7 @@ jobs:
             run: nix develop -c scripts/ci/lint.sh cargo
 
   test:
-    runs-on: instabox-medium
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,8 +56,6 @@ jobs:
 
   kubernetes:
     if: github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref_type == 'branch')
-    # A GitHub runner: Instabox machines do not enforce the NetworkPolicy that the isolation
-    # checks test.
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 45
     steps:
@@ -83,7 +81,7 @@ jobs:
           retention-days: 14
 
   docs:
-    runs-on: instabox-small
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: zeabur-oss/website/.github/actions/docs-check@67391868f623c2cbf6bf211565def6750bf1398d # main
@@ -93,7 +91,7 @@ jobs:
     name: ci / ok
     if: always()
     needs: [lint, test, kubernetes, docs]
-    runs-on: instabox-small
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
